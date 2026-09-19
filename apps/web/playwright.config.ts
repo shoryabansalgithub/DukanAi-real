@@ -14,7 +14,7 @@ import path from 'node:path';
  * Overrides: E2E_WEB_PORT, E2E_API_PORT, E2E_API_URL, E2E_WEB_URL,
  * E2E_API_COMMAND (e.g. `node dist/main` after `npm run build`).
  */
-const WEB_PORT = Number(process.env.E2E_WEB_PORT ?? 3000);
+const WEB_PORT = Number(process.env.E2E_WEB_PORT ?? 3010);
 const API_PORT = Number(process.env.E2E_API_PORT ?? 3003);
 const WEB_URL = process.env.E2E_WEB_URL ?? `http://localhost:${WEB_PORT}`;
 const API_URL = process.env.E2E_API_URL ?? `http://localhost:${API_PORT}/api`;
