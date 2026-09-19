@@ -17,3 +17,16 @@ export function PaymentModeBadge({ mode }: { mode: PaymentMode | string }) {
   const variant = mode === 'UDHAR' ? 'danger' : mode === 'SPLIT' ? 'warning' : 'default';
   return <Badge variant={variant}>{tenderLabel(mode)}</Badge>;
 }
+
+/** Marks an ad-hoc line (`productId: null`): priced as typed, no stock movement. */
+export function CustomItemBadge({ className = '' }: { className?: string }) {
+  return (
+    <span
+      data-testid="custom-item-badge"
+      title="Custom item: not a catalogue product, no stock movement"
+      className={`inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700 ${className}`}
+    >
+      custom
+    </span>
+  );
+}

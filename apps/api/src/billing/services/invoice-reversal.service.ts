@@ -9,9 +9,11 @@ import { InvoiceMathEngine, Decimal, deriveInvoicePaymentMode, InvoiceMathError,
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 import { InventoryLocationService } from '../../inventory-domain/services/inventory-location.service';
 import { InvoiceNumberService } from './invoice-number.service';
-import { LedgerPostingService, LedgerEntryInput } from './ledger-posting.service';
+import { LedgerPostingService, LedgerEntryInput } from '../../ledger/ledger-posting.service';
 import { BillingActor, INVOICE_INCLUDE, InvoiceWithRelations, StockOutcome, money, qty } from '../billing.types';
 import { BillingFeatureConfig } from '../../config/domains/features/billing-feature.config';
+import { BillingCheckpoints, BillingFlow } from '../billing-checkpoints';
+import { withSerializationRetry } from '../../common/db/serialization-retry';
 import { financialYearLabel, isSameBusinessDay } from '../../common/time/business-day';
 
 type Tx = Prisma.TransactionClient;
@@ -19,6 +21,12 @@ type Tx = Prisma.TransactionClient;
 interface ReversalLine {
   item: InvoiceItem;
   quantity: Decimal;
+}
+
+interface RestoredStock {
+  stock: StockOutcome[];
+  /** Cost of the goods that physically came back (custom, SERVICE and DIGITAL lines excluded). */
+  costOfGoods: Decimal;
 }
 
 export interface ReturnResult {
@@ -31,6 +39,10 @@ export interface ReturnResult {
  * Returns and cancellations: the exact financial and physical inverse of a
  * sale, executed through the same authorities (inventory engine, ledger
  * posting, shift, customer credit) inside one transaction.
+ *
+ * Lock order matches BillingService: original Invoice → Shift → Customer →
+ * NumberSequence → Product rows (ascending productId, before any line insert)
+ * → ledger balances.
  */
 @Injectable()
 export class InvoiceReversalService {
@@ -45,7 +57,23 @@ export class InvoiceReversalService {
     private readonly invoiceNumbers: InvoiceNumberService,
     private readonly ledger: LedgerPostingService,
     private readonly billingConfig: BillingFeatureConfig,
+    private readonly checkpoints: BillingCheckpoints,
   ) {}
+
+  private transaction<T>(flow: BillingFlow, fn: (tx: Tx) => Promise<T>): Promise<T> {
+    return withSerializationRetry(
+      () =>
+        this.prisma.$transaction(fn, {
+          isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+          timeout: this.billingConfig.gatewayTimeoutMs,
+          maxWait: this.billingConfig.transactionMaxWaitMs,
+        }),
+      { attempts: 3, baseDelayMs: this.billingConfig.jitterDelayBaseMs, randomDelayMs: this.billingConfig.jitterDelayRandomMultiplier },
+    ).catch((e) => {
+      this.logger.debug(`${flow} transaction failed: ${(e as Error).message}`);
+      throw e;
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // Returns (full or partial)
@@ -71,8 +99,7 @@ export class InvoiceReversalService {
     const timeZone = await this.helpers.shopTimeZone(actor.shopId);
     const locationId = await this.locationService.resolveSaleLocation(this.prisma, actor.shopId);
 
-    const outcome = await this.prisma.$transaction(
-      async (tx) => {
+    const outcome = await this.transaction('RETURN', async (tx) => {
         const original = await this.lockOriginal(tx, actor.shopId, dto.invoiceId);
         if (original.type !== 'SALE' || original.status !== 'COMPLETED') {
           throw new ConflictException({ message: 'Only completed sales can be returned.', code: 'INVOICE_NOT_RETURNABLE' });
@@ -84,26 +111,31 @@ export class InvoiceReversalService {
         const now = new Date();
         const financialYear = financialYearLabel(now, timeZone);
 
-        // Credit reversal first (only the still-unpaid part of this sale's credit).
+        // Shift before customer (canonical lock order). Cash leaves the drawer: an open shift is mandatory.
+        const shiftId = await this.billing.lockShift(tx, actor, undefined);
+
+        // Credit reversal: the refund first cancels credit (up to this sale's not
+        // yet reversed credit and the customer's current outstanding balance;
+        // repayments are not allocated per invoice), the rest is paid out.
         const priorReturnedUdhar = await this.priorReturnedUdhar(tx, actor.shopId, original.id);
-        let customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId) : null;
+        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId, { allowInactive: true }) : null;
         const reversibleCredit = Prisma.Decimal.max(original.udharAmount.minus(priorReturnedUdhar), 0);
         const udharReversal = customer
           ? Prisma.Decimal.min(refundTotal, reversibleCredit, Prisma.Decimal.max(customer.outstandingBalance, 0))
           : new Prisma.Decimal(0);
         const physicalRefund = refundTotal.minus(udharReversal);
         const tender: TenderType = dto.refund?.tender ?? 'CASH';
-
-        // Cash leaves the drawer: an open shift is mandatory.
-        const shiftId = await this.billing.lockShift(tx, actor, undefined);
         if (physicalRefund.greaterThan(0) && tender === 'CASH' && !shiftId) {
           throw new ConflictException({ message: 'Open a shift before refunding cash.', code: 'SHIFT_REQUIRED' });
         }
 
         const { number: invoiceNumber } = await this.invoiceNumbers.next(tx, actor.shopId, 'POS_RETURN', `RET-${financialYear}-`);
+        // Product locks before the return lines are inserted (see BillingService).
+        await this.engine.lockProducts(tx, actor.shopId, lines.map((l) => l.item.productId).filter((id): id is string => !!id));
         const tenders = physicalRefund.greaterThan(0) ? [{ type: tender as 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER', amount: new Decimal(physicalRefund.toString()) }] : [];
         const paymentMode = deriveInvoicePaymentMode(tenders, new Decimal(udharReversal.toString()));
 
+        await this.checkpoints.reach('BEFORE_INVOICE', 'RETURN');
         const returnInvoice = await tx.invoice.create({
           data: {
             invoiceNumber,
@@ -138,6 +170,7 @@ export class InvoiceReversalService {
                 const src = lines.find((l) => l.item.id === line.lineRef)!.item;
                 return {
                   productId: src.productId,
+                  isCustom: src.isCustom,
                   productName: src.productName,
                   productSku: src.productSku,
                   quantity: qty(line.quantity),
@@ -164,13 +197,18 @@ export class InvoiceReversalService {
           include: INVOICE_INCLUDE,
         });
 
+        await this.checkpoints.reach('AFTER_INVOICE', 'RETURN');
+
         // Track returned quantities on the original lines.
         for (const line of lines) {
           await tx.invoiceItem.update({ where: { id: line.item.id }, data: { returnedQuantity: { increment: qty(line.quantity) } } });
         }
 
-        const stock = await this.restoreStock(tx, actor, locationId, lines, returnInvoice.id, `Return ${invoiceNumber}`, now);
+        await this.checkpoints.reach('BEFORE_INVENTORY', 'RETURN');
+        const { stock, costOfGoods } = await this.restoreStock(tx, actor, locationId, lines, returnInvoice.id, `Return ${invoiceNumber}`, now);
+        await this.checkpoints.reach('AFTER_INVENTORY', 'RETURN');
 
+        await this.checkpoints.reach('BEFORE_CUSTOMER', 'RETURN');
         if (customer) {
           if (udharReversal.greaterThan(0)) {
             const after = customer.outstandingBalance.minus(udharReversal);
@@ -193,17 +231,24 @@ export class InvoiceReversalService {
           }
         }
 
+        await this.checkpoints.reach('AFTER_CUSTOMER', 'RETURN');
+
+        await this.checkpoints.reach('BEFORE_SHIFT', 'RETURN');
         if (shiftId) {
           await this.applyShiftReversal(tx, shiftId, refundTotal, tenders, udharReversal);
         }
+        await this.checkpoints.reach('AFTER_SHIFT', 'RETURN');
 
+        await this.checkpoints.reach('BEFORE_LEDGER', 'RETURN');
         await this.ledger.post(tx, {
           shopId: actor.shopId,
           invoiceId: returnInvoice.id,
           description: `Return ${invoiceNumber}`,
-          entries: this.reversalLedgerEntries(math, tenders, udharReversal, lines),
+          entries: this.reversalLedgerEntries(math, tenders, udharReversal, costOfGoods),
         });
+        await this.checkpoints.reach('AFTER_LEDGER', 'RETURN');
 
+        await this.checkpoints.reach('BEFORE_AUDIT', 'RETURN');
         await tx.auditLog.create({
           data: {
             shopId: actor.shopId,
@@ -220,11 +265,13 @@ export class InvoiceReversalService {
               refundTender: physicalRefund.greaterThan(0) ? tender : null,
               creditReversed: udharReversal.toFixed(2),
               reason: dto.reason ?? null,
-              items: lines.map((l) => ({ invoiceItemId: l.item.id, productId: l.item.productId, quantity: l.quantity.toFixed(3) })),
+              items: lines.map((l) => ({ invoiceItemId: l.item.id, productId: l.item.productId, isCustom: l.item.isCustom, quantity: l.quantity.toFixed(3) })),
             },
           },
         });
+        await this.checkpoints.reach('AFTER_AUDIT', 'RETURN');
 
+        await this.checkpoints.reach('EVENT_STAGING', 'RETURN');
         await this.helpers.stageEvent(tx, actor, 'INVOICE_RETURNED', returnInvoice.id, {
           invoiceId: returnInvoice.id,
           invoiceNumber,
@@ -233,10 +280,9 @@ export class InvoiceReversalService {
           items: stock.map((s) => ({ productId: s.productId, quantity: s.quantity, balanceAfter: s.productStockAfter })),
         });
 
+        await this.checkpoints.reach('BEFORE_COMMIT', 'RETURN');
         return { invoice: returnInvoice, stock };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: this.billingConfig.gatewayTimeoutMs, maxWait: this.billingConfig.transactionMaxWaitMs },
-    );
+      });
 
     await this.helpers.afterStockChange(actor, outcome.stock);
     return { ...outcome, replayed: false };
@@ -250,8 +296,7 @@ export class InvoiceReversalService {
     const timeZone = await this.helpers.shopTimeZone(actor.shopId);
     const locationId = await this.locationService.resolveSaleLocation(this.prisma, actor.shopId);
 
-    const outcome = await this.prisma.$transaction(
-      async (tx) => {
+    const outcome = await this.transaction('CANCEL', async (tx) => {
         const original = await this.lockOriginal(tx, actor.shopId, invoiceId);
         if (original.type !== 'SALE') {
           throw new ConflictException({ message: 'Only sales can be cancelled; use a return for return invoices.', code: 'INVOICE_NOT_CANCELLABLE' });
@@ -271,12 +316,15 @@ export class InvoiceReversalService {
         }
 
         const now = new Date();
-        const lines: ReversalLine[] = original.items.map((item) => ({ item, quantity: new Decimal(item.quantity.toString()) }));
+        const lines: ReversalLine[] = this.sortForLocking(original.items.map((item) => ({ item, quantity: new Decimal(item.quantity.toString()) })));
         const math = this.returnMath(lines);
         const refundTotal = original.totalAmount;
 
+        // Shift before customer (canonical lock order).
+        const shiftId = await this.billing.lockShift(tx, actor, undefined);
+
         // Refund every tender the way it was paid; credit that was already repaid comes back as cash.
-        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId) : null;
+        const customer = original.customerId ? await this.billing.lockCustomer(tx, actor.shopId, original.customerId, { allowInactive: true }) : null;
         const udharReversal = customer ? Prisma.Decimal.min(original.udharAmount, Prisma.Decimal.max(customer.outstandingBalance, 0)) : new Prisma.Decimal(0);
         const repaidCredit = original.udharAmount.minus(udharReversal);
         const tenderMap = new Map<TenderType, Prisma.Decimal>();
@@ -290,20 +338,25 @@ export class InvoiceReversalService {
           .filter(([, amount]) => amount.greaterThan(0))
           .map(([type, amount]) => ({ type: type as 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER', amount: new Decimal(amount.toString()) }));
 
-        const shiftId = await this.billing.lockShift(tx, actor, undefined);
         const cashRefund = tenderMap.get('CASH') ?? new Prisma.Decimal(0);
         if (cashRefund.greaterThan(0) && !shiftId) {
           throw new ConflictException({ message: 'Open a shift before cancelling a cash invoice.', code: 'SHIFT_REQUIRED' });
         }
 
+        await this.checkpoints.reach('BEFORE_INVOICE', 'CANCEL');
         const cancelled = await tx.invoice.update({
           where: { id: original.id },
           data: { status: 'CANCELLED', cancelReason: dto.reason, cancelledAt: now, cancelledById: actor.userId },
           include: INVOICE_INCLUDE,
         });
 
-        const stock = await this.restoreStock(tx, actor, locationId, lines, original.id, `Cancelled ${original.invoiceNumber}`, now);
+        await this.checkpoints.reach('AFTER_INVOICE', 'CANCEL');
 
+        await this.checkpoints.reach('BEFORE_INVENTORY', 'CANCEL');
+        const { stock, costOfGoods } = await this.restoreStock(tx, actor, locationId, lines, original.id, `Cancelled ${original.invoiceNumber}`, now);
+        await this.checkpoints.reach('AFTER_INVENTORY', 'CANCEL');
+
+        await this.checkpoints.reach('BEFORE_CUSTOMER', 'CANCEL');
         if (customer) {
           if (udharReversal.greaterThan(0)) {
             const after = customer.outstandingBalance.minus(udharReversal);
@@ -326,15 +379,22 @@ export class InvoiceReversalService {
           }
         }
 
-        if (shiftId) await this.applyShiftReversal(tx, shiftId, refundTotal, tenders, udharReversal);
+        await this.checkpoints.reach('AFTER_CUSTOMER', 'CANCEL');
 
+        await this.checkpoints.reach('BEFORE_SHIFT', 'CANCEL');
+        if (shiftId) await this.applyShiftReversal(tx, shiftId, refundTotal, tenders, udharReversal);
+        await this.checkpoints.reach('AFTER_SHIFT', 'CANCEL');
+
+        await this.checkpoints.reach('BEFORE_LEDGER', 'CANCEL');
         await this.ledger.post(tx, {
           shopId: actor.shopId,
           invoiceId: original.id,
           description: `Cancellation ${original.invoiceNumber}`,
-          entries: this.reversalLedgerEntries(math, tenders, udharReversal, lines),
+          entries: this.reversalLedgerEntries(math, tenders, udharReversal, costOfGoods),
         });
+        await this.checkpoints.reach('AFTER_LEDGER', 'CANCEL');
 
+        await this.checkpoints.reach('BEFORE_AUDIT', 'CANCEL');
         await tx.auditLog.create({
           data: {
             shopId: actor.shopId,
@@ -347,7 +407,9 @@ export class InvoiceReversalService {
             afterData: { status: 'CANCELLED', reason: dto.reason, refunds: tenders.map((t) => ({ type: t.type, amount: t.amount.toFixed(2) })), creditReversed: udharReversal.toFixed(2) },
           },
         });
+        await this.checkpoints.reach('AFTER_AUDIT', 'CANCEL');
 
+        await this.checkpoints.reach('EVENT_STAGING', 'CANCEL');
         await this.helpers.stageEvent(tx, actor, 'INVOICE_CANCELLED', original.id, {
           invoiceId: original.id,
           invoiceNumber: original.invoiceNumber,
@@ -355,10 +417,9 @@ export class InvoiceReversalService {
           items: stock.map((s) => ({ productId: s.productId, quantity: s.quantity, balanceAfter: s.productStockAfter })),
         });
 
+        await this.checkpoints.reach('BEFORE_COMMIT', 'CANCEL');
         return { invoice: cancelled, stock, alreadyCancelled: false };
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted, timeout: this.billingConfig.gatewayTimeoutMs, maxWait: this.billingConfig.transactionMaxWaitMs },
-    );
+      });
 
     await this.helpers.afterStockChange(actor, outcome.stock);
     return { invoice: outcome.invoice, stock: outcome.stock, replayed: outcome.alreadyCancelled };
@@ -407,7 +468,17 @@ export class InvoiceReversalService {
     if (lines.length === 0) {
       throw new ConflictException({ message: 'Nothing left to return on this invoice.', code: 'INVOICE_NOT_RETURNABLE' });
     }
-    return lines;
+    return this.sortForLocking(lines);
+  }
+
+  /** Catalogue lines in ascending productId (the engine's lock order), custom lines last. */
+  private sortForLocking(lines: ReversalLine[]): ReversalLine[] {
+    return [...lines].sort((a, b) => {
+      if (!a.item.productId && !b.item.productId) return 0;
+      if (!a.item.productId) return 1;
+      if (!b.item.productId) return -1;
+      return a.item.productId.localeCompare(b.item.productId);
+    });
   }
 
   /** Legacy lines (before persisted line math) derive taxable/discount from the stored totals. */
@@ -454,13 +525,17 @@ export class InvoiceReversalService {
     return agg._sum.udharAmount ?? new Prisma.Decimal(0);
   }
 
-  private async restoreStock(tx: Tx, actor: BillingActor, locationId: string, lines: ReversalLine[], referenceId: string, reason: string, occurredAt: Date): Promise<StockOutcome[]> {
+  /** Physical restock for catalogue lines; custom lines are money-only and never enter the inventory authority. */
+  private async restoreStock(tx: Tx, actor: BillingActor, locationId: string, lines: ReversalLine[], referenceId: string, reason: string, occurredAt: Date): Promise<RestoredStock> {
     const stock: StockOutcome[] = [];
+    let costOfGoods = new Decimal(0);
     for (const line of lines) {
+      const productId = line.item.productId;
+      if (!productId || line.item.isCustom) continue;
       const result = await this.engine.mutateStock(tx, {
         shopId: actor.shopId,
         locationId,
-        productId: line.item.productId,
+        productId,
         quantity: line.quantity.toNumber(),
         mutationType: MutationType.RETURN,
         reason,
@@ -470,10 +545,11 @@ export class InvoiceReversalService {
         allowNegative: true,
       });
       if (!result.bypassed) {
-        stock.push({ productId: line.item.productId, quantity: line.quantity.toNumber(), balanceAfter: result.balanceAfter.toNumber(), productStockAfter: result.productStockAfter.toNumber() });
+        stock.push({ productId, quantity: line.quantity.toNumber(), balanceAfter: result.balanceAfter.toNumber(), productStockAfter: result.productStockAfter.toNumber() });
+        costOfGoods = costOfGoods.plus(new Decimal(line.item.costPrice.toString()).mul(line.quantity));
       }
     }
-    return stock;
+    return { stock, costOfGoods };
   }
 
   private async applyShiftReversal(tx: Tx, shiftId: string, refundTotal: Prisma.Decimal, tenders: ReadonlyArray<{ type: string; amount: Decimal }>, udharReversal: Prisma.Decimal) {
@@ -491,7 +567,7 @@ export class InvoiceReversalService {
     });
   }
 
-  private reversalLedgerEntries(math: ReturnCalculationResult, tenders: ReadonlyArray<{ type: string; amount: Decimal }>, udharReversal: Prisma.Decimal, lines: ReversalLine[]): LedgerEntryInput[] {
+  private reversalLedgerEntries(math: ReturnCalculationResult, tenders: ReadonlyArray<{ type: string; amount: Decimal }>, udharReversal: Prisma.Decimal, costOfGoods: Decimal): LedgerEntryInput[] {
     const buckets = this.billing.tenderBuckets(tenders);
     const entries: LedgerEntryInput[] = [
       { account: LedgerAccount.SALES_REVENUE, type: LedgerEntryType.DEBIT, amount: money(math.taxableTotal.plus(math.roundOff)) },
@@ -500,10 +576,9 @@ export class InvoiceReversalService {
       { account: LedgerAccount.BANK, type: LedgerEntryType.CREDIT, amount: buckets.bank },
       { account: LedgerAccount.ACCOUNTS_RECEIVABLE, type: LedgerEntryType.CREDIT, amount: udharReversal },
     ];
-    const cost = lines.reduce((acc, l) => acc.plus(new Decimal(l.item.costPrice.toString()).mul(l.quantity)), new Decimal(0));
-    if (cost.greaterThan(0)) {
-      entries.push({ account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: money(cost) });
-      entries.push({ account: LedgerAccount.COST_OF_GOODS, type: LedgerEntryType.CREDIT, amount: money(cost) });
+    if (costOfGoods.greaterThan(0)) {
+      entries.push({ account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: money(costOfGoods) });
+      entries.push({ account: LedgerAccount.COST_OF_GOODS, type: LedgerEntryType.CREDIT, amount: money(costOfGoods) });
     }
     return entries;
   }

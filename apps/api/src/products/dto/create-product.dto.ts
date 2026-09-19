@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, MaxLength } from 'class-validator';
+import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, MaxLength, Min, Max } from 'class-validator';
 import { PartialType } from '@nestjs/swagger';
 import { ProductType, ProductStatus, ProductUnit, GstRate } from '@prisma/client';
 
@@ -46,6 +46,13 @@ export class CreateProductDto {
   @IsEnum(GstRate)
   @IsOptional()
   gstRate?: GstRate;
+
+  /** Cess percentage on the taxable amount (0-100); part of every POS line's tax. */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  cessRate?: number;
 
   @IsString()
   @IsOptional()

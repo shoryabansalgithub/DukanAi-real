@@ -202,6 +202,20 @@ describe('InvoiceMathEngine.calculate', () => {
     expectCode(() => InvoiceMathEngine.calculate({ items: [] }), 'ERR_EMPTY_INVOICE');
   });
 
+  it('rejects amounts and quantities that do not fit the invoice columns', () => {
+    expect(() => InvoiceMathEngine.calculate({ items: [line({ quantity: 1_000_000, unitPrice: 100 })] })).toThrow(
+      expect.objectContaining({ code: 'ERR_AMOUNT_TOO_LARGE' }),
+    );
+    expect(() => InvoiceMathEngine.calculate({ items: [line({ quantity: 10_000_000 })] })).toThrow(expect.objectContaining({ code: 'ERR_INVALID_QUANTITY' }));
+    expect(() => InvoiceMathEngine.calculate({ items: [line({ unitPrice: 100_000_000 })] })).toThrow(expect.objectContaining({ code: 'ERR_INVALID_PRICE' }));
+    expect(() => InvoiceMathEngine.calculate({ items: [line({ productId: 'a', quantity: 999_999, unitPrice: 99 }), line({ productId: 'b', quantity: 999_999, unitPrice: 99 })] })).toThrow(
+      expect.objectContaining({ code: 'ERR_AMOUNT_TOO_LARGE' }),
+    );
+    // The largest representable line still calculates.
+    const max = InvoiceMathEngine.calculate({ items: [line({ quantity: 999_999, unitPrice: 84.74, gstRateStr: 'EIGHTEEN' })] });
+    expect(max.finalTotal.lessThanOrEqualTo('99999999.99')).toBe(true);
+  });
+
   it('is deterministic for identical input', () => {
     const input = { items: [line(), line({ productId: '2', unitPrice: 33.33, gstRateStr: 'FIVE' })], discountAmount: 5, discountReason: 'r' };
     const a = InvoiceMathEngine.calculate(input);

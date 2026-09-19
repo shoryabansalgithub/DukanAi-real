@@ -18,6 +18,8 @@ import type {
   PaymentMode,
   ShiftStatus,
   ReceiptGstRow,
+  GstRate,
+  ProductUnit,
 } from '@/types';
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,7 @@ function mapProduct(raw: Record<string, unknown>): Product {
     type: (raw.type as string) ?? 'SIMPLE',
     mrp: toNumber(raw.mrp ?? raw.sellingPrice),
     sellingPrice: toNumber(raw.sellingPrice ?? raw.mrp),
+    cessRate: toNumber(raw.cessRate),
   };
 }
 
@@ -839,6 +842,7 @@ export function mapSearchResult(raw: Raw): SearchResult {
     sellingPrice: toNumber(raw.sellingPrice ?? raw.price ?? raw.mrp),
     mrp: toNumber(raw.mrp ?? raw.sellingPrice),
     gstRate: (raw.gstRate as string) ?? 'EIGHTEEN',
+    cessRate: toNumber(raw.cessRate),
     unit: (raw.unit as string) ?? 'PCS',
     currentStock: toNumber(raw.currentStock ?? raw.quantity),
     type: (raw.type as string) ?? 'SIMPLE',
@@ -859,6 +863,7 @@ export function productToSearchResult(product: Product): SearchResult {
     sellingPrice: product.sellingPrice ?? product.price,
     mrp: product.mrp ?? product.price,
     gstRate: product.gstRate ?? 'EIGHTEEN',
+    cessRate: product.cessRate ?? 0,
     unit: product.unit ?? 'PCS',
     currentStock: product.currentStock ?? product.quantity,
     type: product.type ?? 'SIMPLE',
@@ -947,11 +952,27 @@ export const posCustomersApi = {
 // ---------------------------------------------------------------------------
 // Billing
 // ---------------------------------------------------------------------------
-export interface InvoiceLineRequest {
+/** Catalogue product line (contract §2). */
+export interface ProductLineRequest {
   productId: string;
   quantity: number;
   discountPercent?: number;
 }
+
+/** Ad-hoc line: priced and taxed as given, never merged, never touches stock (contract §2). */
+export interface CustomLineRequest {
+  custom: {
+    name: string;
+    unitPrice: number;
+    gstRate: GstRate;
+    unit?: ProductUnit;
+  };
+  quantity: number;
+  discountPercent?: number;
+}
+
+/** Exactly one of `productId` / `custom` per item. */
+export type InvoiceLineRequest = ProductLineRequest | CustomLineRequest;
 
 export interface InvoicePaymentRequest {
   tender: TenderType;
@@ -1042,9 +1063,13 @@ export function mapInvoiceItem(raw: Raw): InvoiceDetailItem {
   const sgst = toNumber(raw.sgstAmount);
   const igst = toNumber(raw.igstAmount);
   const cess = toNumber(raw.cessAmount);
+  const productId = typeof raw.productId === 'string' && raw.productId ? raw.productId : null;
   return {
     id: (raw.id as string) ?? '',
-    productId: (raw.productId as string) ?? '',
+    productId,
+    // Receipt rows omit `productId`; only an explicit null (or the CUSTOM sku) marks an ad-hoc line.
+    isCustom:
+      raw.isCustom !== undefined ? Boolean(raw.isCustom) : 'productId' in raw ? productId === null : raw.productSku === 'CUSTOM',
     productName: (raw.productName as string) ?? (asRaw(raw.product).name as string) ?? '',
     productSku: (raw.productSku as string) ?? (asRaw(raw.product).sku as string) ?? '',
     quantity: toNumber(raw.quantity),

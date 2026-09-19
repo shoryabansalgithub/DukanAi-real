@@ -10,7 +10,7 @@ export const PRODUCT_LIST_DEFAULT_LIMIT = 50;
 export const PRODUCT_LIST_MAX_LIMIT = 200;
 
 /** Fields whose change on PATCH is recorded as `PRODUCT_PRICE_CHANGED` in AuditLog. */
-const PRICE_FIELDS = ['sellingPrice', 'costPrice', 'mrp', 'wholesalePrice', 'gstRate'] as const;
+const PRICE_FIELDS = ['sellingPrice', 'costPrice', 'mrp', 'wholesalePrice', 'gstRate', 'cessRate'] as const;
 type PriceField = (typeof PRICE_FIELDS)[number];
 
 type PriceSnapshot = Record<PriceField, string>;
@@ -21,6 +21,7 @@ interface ProductPriceRow {
   mrp: Prisma.Decimal;
   wholesalePrice: Prisma.Decimal;
   gstRate: string;
+  cessRate: Prisma.Decimal;
 }
 
 export interface ProductListQuery {
@@ -43,6 +44,7 @@ export function snapshotPrices(row: ProductPriceRow): PriceSnapshot {
     mrp: new Prisma.Decimal(row.mrp).toFixed(2),
     wholesalePrice: new Prisma.Decimal(row.wholesalePrice).toFixed(2),
     gstRate: row.gstRate,
+    cessRate: new Prisma.Decimal(row.cessRate).toFixed(2),
   };
 }
 
@@ -155,6 +157,7 @@ export class ProductsService {
       mrp: updateProductDto.mrp !== undefined ? new Prisma.Decimal(updateProductDto.mrp) : product.mrp,
       wholesalePrice: updateProductDto.wholesalePrice !== undefined ? new Prisma.Decimal(updateProductDto.wholesalePrice) : product.wholesalePrice,
       gstRate: updateProductDto.gstRate ?? product.gstRate,
+      cessRate: updateProductDto.cessRate !== undefined ? new Prisma.Decimal(updateProductDto.cessRate) : product.cessRate,
     });
     const priceChanged = PRICE_FIELDS.some((field) => before[field] !== after[field]);
 

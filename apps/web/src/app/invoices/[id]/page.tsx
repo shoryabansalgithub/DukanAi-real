@@ -14,7 +14,7 @@ import type { InvoiceDetail } from '@/types';
 import { extractApiError } from '@/components/pos/api-errors';
 import { dateTime, gstLabel, money, percent, qty, signedMoney, tenderLabel } from '@/components/pos/format';
 import { openReceiptWindow } from '@/components/pos/ReceiptModal';
-import { InvoiceStatusBadge, InvoiceTypeBadge, PaymentModeBadge } from '@/components/invoices/InvoiceBadges';
+import { CustomItemBadge, InvoiceStatusBadge, InvoiceTypeBadge, PaymentModeBadge } from '@/components/invoices/InvoiceBadges';
 import { ReturnDialog, returnableQuantity } from '@/components/invoices/ReturnDialog';
 import { CancelDialog } from '@/components/invoices/CancelDialog';
 
@@ -191,13 +191,14 @@ export default function InvoiceDetailPage() {
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {invoice.items.map((item) => (
-                  <tr key={item.id}>
+                  <tr key={item.id} data-testid="invoice-item" data-custom={item.isCustom ? 'true' : 'false'}>
                     <td className="px-4 py-2.5">
-                      <p className="font-bold text-gray-800 truncate max-w-[260px]" title={item.productName}>
-                        {item.productName}
+                      <p className="font-bold text-gray-800 truncate max-w-[260px] flex items-center gap-1.5" title={item.productName}>
+                        <span className="truncate">{item.productName}</span>
+                        {item.isCustom && <CustomItemBadge className="shrink-0" />}
                       </p>
                       <p className="text-[11px] text-gray-400">
-                        {item.productSku} · GST {gstLabel(item.gstRate)}
+                        {item.isCustom ? 'Custom item' : item.productSku} · GST {gstLabel(item.gstRate)}
                       </p>
                     </td>
                     <td className="px-4 py-2.5 text-right tabular-nums whitespace-nowrap">{qty(item.quantity, item.unit)}</td>

@@ -2,17 +2,17 @@
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { AlertTriangle, CreditCard, Keyboard, Pause } from 'lucide-react';
+import { AlertTriangle, CreditCard, Keyboard, Pause, PenLine } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { billingApi, mapSearchResult, productsApi, productToSearchResult, searchApi, shopApi } from '@/lib/api-client';
-import type { CreateInvoiceRequest } from '@/lib/api-client';
+import type { CreateInvoiceRequest, InvoiceLineRequest } from '@/lib/api-client';
 import { useIdempotencyKey } from '@/hooks/useIdempotencyKey';
 import { useBarcodeScanner } from '@/hooks/useBarcodeScanner';
 import { useHotkeys } from '@/hooks/useHotkeys';
-import { hydratePosStore, scopePosStoreToShop, usePosStore } from '@/store/pos';
-import type { CreateInvoiceResponse, SearchResult, Shift, ShopProfile } from '@/types';
+import { hydratePosStore, scopePosStoreToShop, usePosStore, type CartLine, type CustomItemInput } from '@/store/pos';
+import type { CreateInvoiceResponse, GstRate, ProductUnit, SearchResult, Shift, ShopProfile } from '@/types';
 import { ShiftBanner } from '@/components/pos/ShiftBanner';
 import { ProductSearch, isSellable } from '@/components/pos/ProductSearch';
 import { CartPanel } from '@/components/pos/CartPanel';
@@ -21,6 +21,7 @@ import { CustomerPicker } from '@/components/pos/CustomerPicker';
 import { PaymentPanel, type SubmitError } from '@/components/pos/PaymentPanel';
 import { ReceiptModal } from '@/components/pos/ReceiptModal';
 import { HeldCartsMenu, HoldCartModal } from '@/components/pos/HeldCarts';
+import { CustomItemModal } from '@/components/pos/CustomItemModal';
 import { calculateCart, type PaymentSpec } from '@/components/pos/engine';
 import { detailNumber, detailString, extractApiError } from '@/components/pos/api-errors';
 import { isInterStateSupply } from '@/components/pos/indian-states';
@@ -38,6 +39,7 @@ function BillingContent() {
   const notes = usePosStore((s) => s.notes);
   const heldCarts = usePosStore((s) => s.heldCarts);
   const addProduct = usePosStore((s) => s.addProduct);
+  const addCustomItem = usePosStore((s) => s.addCustomItem);
   const setQuantity = usePosStore((s) => s.setQuantity);
   const increment = usePosStore((s) => s.increment);
   const decrement = usePosStore((s) => s.decrement);
@@ -61,6 +63,7 @@ function BillingContent() {
   const [query, setQuery] = useState('');
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [holdOpen, setHoldOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
   const [candidates, setCandidates] = useState<SearchResult[] | null>(null);
   const [receipt, setReceipt] = useState<CreateInvoiceResponse | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -182,7 +185,17 @@ function BillingContent() {
     [handleAdd, toast],
   );
 
-  useBarcodeScanner(handleScan, { enabled: !receipt && !paymentOpen && !holdOpen });
+  useBarcodeScanner(handleScan, { enabled: !receipt && !paymentOpen && !holdOpen && !customOpen });
+
+  const handleAddCustom = useCallback(
+    (input: CustomItemInput): string | null => {
+      const result = addCustomItem(input);
+      if (!result.ok) return result.reason;
+      toast(`Added ${qty(input.quantity)} × ${input.name} (custom)`, 'success');
+      return null;
+    },
+    [addCustomItem, toast],
+  );
 
   const openPayment = useCallback(() => {
     if (lines.length === 0) {
@@ -234,11 +247,7 @@ function BillingContent() {
     const key = ensureKey();
     const body: CreateInvoiceRequest = {
       idempotencyKey: key,
-      items: lines.map((l) => ({
-        productId: l.productId,
-        quantity: l.quantity,
-        discountPercent: l.discountPercent > 0 ? l.discountPercent : undefined,
-      })),
+      items: lines.map(toLineRequest),
       customerId: customer?.id,
       notes: notes.trim() || undefined,
       shiftId: shift?.id,
@@ -312,6 +321,15 @@ function BillingContent() {
           setSubmitError({ code: info.code, message: 'A customer is required for credit sales. Close this panel and select one.', retryable: false });
           break;
         }
+        case 'CUSTOM_ITEM_INVALID': {
+          setSubmitError({
+            code: info.code,
+            message: `${info.message} Check the custom item's name, price, GST slab and unit, then try again.`,
+            retryable: false,
+            details: info.details,
+          });
+          break;
+        }
         default: {
           if (info.isNetwork) {
             setSubmitError({
@@ -348,11 +366,15 @@ function BillingContent() {
     F9: () => {
       if (lines.length > 0 && !paymentOpen && !receipt) setHoldOpen(true);
     },
+    F6: () => {
+      if (!paymentOpen && !receipt && !holdOpen) setCustomOpen(true);
+    },
     Escape: () => {
       if (paymentOpen) closePayment();
       if (holdOpen) setHoldOpen(false);
+      if (customOpen) setCustomOpen(false);
       if (candidates) setCandidates(null);
-      if (!paymentOpen && !holdOpen && !candidates && !receipt) focusSearch();
+      if (!paymentOpen && !holdOpen && !customOpen && !candidates && !receipt) focusSearch();
     },
   });
 
@@ -368,12 +390,20 @@ function BillingContent() {
             <Keyboard size={14} className="text-gray-400" />
             <span>
               <kbd className="font-mono">F2</kbd> search · <kbd className="font-mono">F4</kbd> customer · <kbd className="font-mono">F8</kbd> pay ·{' '}
-              <kbd className="font-mono">F9</kbd> hold · <kbd className="font-mono">Esc</kbd> close
+              <kbd className="font-mono">F6</kbd> custom item · <kbd className="font-mono">F9</kbd> hold · <kbd className="font-mono">Esc</kbd> close
             </span>
           </p>
         </div>
         <div className="flex items-center gap-2">
           <HeldCartsMenu carts={heldCarts} onResume={handleResume} onDelete={deleteHeldCart} />
+          <button
+            type="button"
+            data-testid="pos-custom-item"
+            onClick={() => setCustomOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
+          >
+            <PenLine size={14} /> Custom item <span className="text-gray-400 font-mono">F6</span>
+          </button>
           <button
             type="button"
             onClick={() => setHoldOpen(true)}
@@ -450,6 +480,7 @@ function BillingContent() {
           <div className="p-4 border-t border-gray-100">
             <button
               type="button"
+              data-testid="pos-charge"
               onClick={openPayment}
               disabled={checkoutDisabled}
               className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] disabled:bg-purple-300 disabled:cursor-not-allowed py-3.5 text-white font-bold shadow-lg shadow-purple-500/30 transition-colors"
@@ -491,6 +522,15 @@ function BillingContent() {
         suggestedLabel={customer?.name ?? `Cart ${heldCarts.length + 1}`}
       />
 
+      <CustomItemModal
+        isOpen={customOpen}
+        onClose={() => {
+          setCustomOpen(false);
+          focusSearch();
+        }}
+        onAdd={handleAddCustom}
+      />
+
       <ReceiptModal result={receipt} onNewSale={handleNewSale} />
 
       <Modal isOpen={candidates !== null} onClose={() => setCandidates(null)} title="Which product?" size="sm">
@@ -522,6 +562,27 @@ function BillingContent() {
       </Modal>
     </div>
   );
+}
+
+/**
+ * Contract §2 item payload: product lines send `productId`, custom lines send
+ * `custom` and no `productId` (exactly one of the two per item).
+ */
+function toLineRequest(line: CartLine): InvoiceLineRequest {
+  const discountPercent = line.discountPercent > 0 ? line.discountPercent : undefined;
+  if (line.isCustom) {
+    return {
+      custom: {
+        name: line.name,
+        unitPrice: line.unitPrice,
+        gstRate: (line.gstRate || 'EIGHTEEN') as GstRate,
+        unit: (line.unit || 'PCS') as ProductUnit,
+      },
+      quantity: line.quantity,
+      discountPercent,
+    };
+  }
+  return { productId: line.productId, quantity: line.quantity, discountPercent };
 }
 
 export default function BillingPage() {

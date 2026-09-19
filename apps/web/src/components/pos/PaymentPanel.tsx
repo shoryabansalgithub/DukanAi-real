@@ -173,7 +173,9 @@ export function PaymentPanel({
         {/* Amount due */}
         <div className="rounded-2xl bg-gray-900 text-white p-5">
           <p className="text-xs uppercase tracking-wider text-gray-400 font-bold">Amount due</p>
-          <p className="text-4xl font-extrabold tabular-nums mt-1">{money(total)}</p>
+          <p data-testid="payment-amount-due" className="text-4xl font-extrabold tabular-nums mt-1">
+            {money(total)}
+          </p>
           <p className="text-[11px] text-gray-400 mt-1">
             {lines.length} {lines.length === 1 ? 'item' : 'items'}
             {customer ? ` · ${customer.name}` : ' · Walk-in customer'}
@@ -215,6 +217,7 @@ export function PaymentPanel({
               <input
                 ref={firstFieldRef}
                 id="cash-tendered"
+                data-testid="cash-tendered"
                 type="number"
                 inputMode="decimal"
                 min={0}
@@ -242,7 +245,9 @@ export function PaymentPanel({
             </div>
             <div className="flex items-center justify-between rounded-xl bg-green-50 border border-green-100 px-4 py-3">
               <span className="text-sm font-bold text-green-800">Change to return</span>
-              <span className="text-xl font-extrabold text-green-700 tabular-nums">{money(settledTotals ? changeAmount : 0)}</span>
+              <span data-testid="cash-change" className="text-xl font-extrabold text-green-700 tabular-nums">
+                {money(settledTotals ? changeAmount : 0)}
+              </span>
             </div>
           </div>
         )}
@@ -367,6 +372,7 @@ export function PaymentPanel({
           </button>
           <button
             type="button"
+            data-testid="payment-confirm"
             onClick={confirm}
             disabled={!canConfirm}
             className="flex-[2] py-3 rounded-xl bg-[#8B5CF6] hover:bg-[#7C3AED] disabled:bg-purple-300 disabled:cursor-not-allowed text-white font-bold shadow-lg shadow-purple-500/30 transition-colors"

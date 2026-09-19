@@ -53,3 +53,24 @@ quantity is returned the stored amounts are used unchanged; otherwise each
 stored amount (`discountAmount`, `taxableAmount`, `cgst`, `sgst`, `igst`,
 `cess`) is multiplied by `ratio` and rounded to 2 dp. Totals are sums of the
 line values and a fresh round-off is applied to the return grand total.
+
+## Limits (storage-backed)
+
+Money columns are `Decimal(10,2)` and quantities `Decimal(10,3)`, so the
+engine rejects, before any database write:
+
+- quantity `> 9999999.999` → `ERR_INVALID_QUANTITY`
+- unit price `> 99999999.99` → `ERR_INVALID_PRICE`
+- any line subtotal, the invoice subtotal or the final total `> 99999999.99` →
+  `ERR_AMOUNT_TOO_LARGE`
+- any tender amount `> 99999999.99` → `ERR_INVALID_PAYMENT`
+
+`MONEY_MAX` / `QUANTITY_MAX` are exported constants.
+
+## Custom (ad-hoc) lines
+
+A custom line is an ordinary engine line whose `productId` is a caller-chosen
+unique key (the API uses `custom:<n>`, the web POS `custom:<lineId>`). It is
+priced from the supplied `unitPrice`, taxed by the supplied GST slab, carries
+no cess, and follows every discount and rounding rule above. Uniqueness of the
+key is enforced (`ERR_DUPLICATE_LINE`).

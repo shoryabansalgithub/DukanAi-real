@@ -17,5 +17,6 @@
   "maxWorkers": 1,
   "moduleNameMapper": {
     "^archiver$": "<rootDir>/test/stubs/archiver.stub.js"
-  }
+  },
+  "forceExit": true
 }

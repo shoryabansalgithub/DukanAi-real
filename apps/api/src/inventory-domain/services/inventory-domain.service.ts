@@ -1,9 +1,9 @@
 import { Injectable, Logger, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
-import { AdjustmentReason, InventoryStockState, Prisma, StockMovementType } from '@prisma/client';
+import { AdjustmentReason, LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
+import { LedgerPostingService } from '../../ledger/ledger-posting.service';
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
-import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { InventoryFeatureConfig } from '../../config/domains/features/inventory-feature.config';
 import { InventoryMutationEngine, MutationType } from './inventory-mutation.engine';
 import { OptimisticLockConflictError, InsufficientStockError } from '../errors/inventory.errors';
@@ -18,11 +18,11 @@ export class InventoryDomainService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly eventPublisher: ProductEventPublisher,
-    private readonly stockLedger: StockLedgerService,
     private readonly inventoryFeatureConfig: InventoryFeatureConfig,
     private readonly inventoryMutationEngine: InventoryMutationEngine,
     private readonly locationService: InventoryLocationService,
     private readonly inventoryCache: InventoryCacheService,
+    private readonly ledger: LedgerPostingService,
   ) {}
 
   async ensureInventoryItem(productId: string, variantId?: string, explicitLocationId?: string) {
@@ -38,27 +38,17 @@ export class InventoryDomainService {
       locationId = await this.locationService.resolveSaleLocation(this.prisma, shopId);
     }
 
-    const existing = await this.prisma.inventoryItem.findFirst({
-      where: {
-        shopId,
-        productId,
-        variantId: variantId || null,
-        locationId,
-        isDeleted: false,
-      },
-    });
-
+    const existing = await this.prisma.inventoryItem.findFirst({ where: { shopId, productId, variantId: variantId || null, locationId, isDeleted: false } });
     if (existing) return existing;
 
-    return this.prisma.inventoryItem.create({
-      data: {
-        shopId,
-        productId,
-        variantId: variantId || undefined,
-        locationId,
-        createdBy: this.tenantContext.getUserId(),
-      },
-    });
+    // Same authority as every stock mutation: Product row lock, unique-index
+    // guard and the legacy `Product.currentStock` bootstrap, so the row this
+    // creates is the row the POS sells from with the stock it already had.
+    const created = await this.prisma.$transaction(
+      (tx) => this.inventoryMutationEngine.ensureInventoryItem(tx, { shopId, productId, locationId, variantId: variantId || null, performedBy: this.tenantContext.getUserId() }),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+    return this.prisma.inventoryItem.findUniqueOrThrow({ where: { id: created.id } });
   }
 
   /** The shop's POS sale location (default warehouse, default bin). */
@@ -143,9 +133,6 @@ export class InventoryDomainService {
           performedBy: createdBy,
           occurredAt: new Date(),
           allowNegative: item.isNegativeAllowed,
-          occ: {
-            expectedInventoryItemVersion: item.version
-          }
         });
       } catch (e: any) {
         if (e instanceof OptimisticLockConflictError) {
@@ -159,8 +146,31 @@ export class InventoryDomainService {
         throw e;
       }
 
-      const oldOnHand = item.onHand.toNumber();
-      const newOnHand = engineResult.balanceAfter ? engineResult.balanceAfter.toNumber() : oldOnHand;
+      // Authoritative values come from the engine (post-update row), never from the pre-lock read.
+      const newOnHand = engineResult.balanceAfter.toNumber();
+      const oldOnHand = engineResult.balanceAfter.minus(isDeduction ? -Math.abs(quantityChange) : Math.abs(quantityChange)).toNumber();
+
+      // Accounting effect of a manual adjustment: stock value moves between
+      // INVENTORY (asset) and INVENTORY_ADJUSTMENT (expense) at cost price.
+      if (!engineResult.bypassed) {
+        const product = await tx.product.findUnique({ where: { id: item.productId }, select: { costPrice: true } });
+        const value = new Prisma.Decimal(product?.costPrice ?? 0).mul(Math.abs(quantityChange)).toDecimalPlaces(2);
+        if (value.greaterThan(0)) {
+          await this.ledger.post(tx, {
+            shopId,
+            description: `Stock adjustment ${inventoryItemId} (${reason})`,
+            entries: isDeduction
+              ? [
+                  { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.DEBIT, amount: value },
+                  { account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: value },
+                ]
+              : [
+                  { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: value },
+                  { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.CREDIT, amount: value },
+                ],
+          });
+        }
+      }
 
       await tx.inventoryAdjustment.create({
         data: {

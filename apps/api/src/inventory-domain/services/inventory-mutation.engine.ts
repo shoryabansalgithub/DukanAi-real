@@ -120,6 +120,25 @@ export class InventoryMutationEngine {
     }
   }
 
+  /**
+   * Takes the exclusive Product row locks that every stock mutation runs under,
+   * in ascending productId order. Callers that insert rows referencing the
+   * product (invoice lines, return lines) call this BEFORE those inserts:
+   * a child-row insert takes a shared lock on the parent row, and turning a
+   * shared lock into the exclusive one later is a deadlock between two
+   * transactions on the same product.
+   */
+  async lockProducts(tx: Prisma.TransactionClient, shopId: string, productIds: readonly string[]): Promise<void> {
+    const ids = Array.from(new Set(productIds)).sort();
+    for (const id of ids) {
+      const locked = await tx.$queryRaw<Array<{ id: string; shopId: string }>>`
+        SELECT id, shopId FROM Product WHERE id = ${id} FOR UPDATE
+      `;
+      if (locked.length === 0) throw new InventoryNotFoundError(`Product ${id} not found.`);
+      if (locked[0].shopId !== shopId) throw new TenantViolationError(`Cross-tenant mutation blocked for product ${id}`);
+    }
+  }
+
   async mutateStock(tx: Prisma.TransactionClient, request: InventoryMutationRequest): Promise<InventoryMutationResult> {
     const traceId = uuidv4();
 
@@ -129,6 +148,10 @@ export class InventoryMutationEngine {
     if (!(request.quantity > 0) || !Number.isFinite(request.quantity)) {
       throw new InventoryError('INVALID_QUANTITY', 'InventoryMutationEngine: quantity must be strictly positive.');
     }
+
+    // 0. Serialise every mutation of this product inside the caller's transaction
+    //    (a no-op when the caller already holds the lock, see lockProducts).
+    await this.lockProducts(tx, request.shopId, [request.productId]);
 
     if (request.idempotencyKey) {
       const existingLedger = await tx.stockLedgerEntry.findFirst({
@@ -153,7 +176,11 @@ export class InventoryMutationEngine {
     const occurredAt = request.occurredAt || new Date();
     const qty = new Prisma.Decimal(request.quantity);
 
-    // 1. Product ownership / service bypass
+    // 1. Location ownership, product ownership / service bypass
+    const location = await tx.location.findFirst({ where: { id: request.locationId, shopId: request.shopId, isDeleted: false }, select: { id: true } });
+    if (!location) {
+      throw new InventoryError('LOCATION_INVALID', `Location ${request.locationId} does not belong to shop ${request.shopId}.`);
+    }
     const product = await tx.product.findUnique({
       where: { id: request.productId },
       select: { shopId: true, type: true, name: true, currentStock: true, stockVersion: true, isDeleted: true },
@@ -175,7 +202,7 @@ export class InventoryMutationEngine {
     }
 
     // 2. InventoryItem authority (lazy creation with legacy bootstrap)
-    const invItem = await this.ensureInventoryItem(tx, request, product, occurredAt, traceId);
+    const invItem = await this.ensureItemForRequest(tx, request, product, occurredAt, traceId);
     const direction = this.getDirection(request);
     const isReservation =
       request.mutationType === MutationType.RESERVATION || request.mutationType === MutationType.RESERVATION_RELEASE;
@@ -288,7 +315,8 @@ export class InventoryMutationEngine {
           referenceType: request.mutationType,
           correlationId: request.idempotencyKey || null,
           createdBy: request.performedBy,
-          createdAt: occurredAt,
+          // createdAt is stamped by the database at insert time, i.e. after the
+          // product lock, so ledger order equals posting order under contention.
         },
       });
       await tx.inventoryLog.create({
@@ -339,6 +367,9 @@ export class InventoryMutationEngine {
 
   /**
    * Finds the InventoryItem for (shop, product, location) or creates it.
+   * Runs under the Product row lock taken in `mutateStock`, and the unique
+   * index (shopId, productId, variantKey, locationId) rejects a duplicate if
+   * anything ever bypasses that lock.
    *
    * Legacy bootstrap: products created before the inventory ledger existed
    * carry their stock only in `Product.currentStock`. When a product has no
@@ -346,34 +377,69 @@ export class InventoryMutationEngine {
    * seeded with that quantity and an OPENING_BALANCE ledger entry so that
    * `SUM(InventoryItem.onHand) == Product.currentStock` holds from day one.
    */
-  private async ensureInventoryItem(
+  private async ensureItemForRequest(
     tx: Prisma.TransactionClient,
     request: InventoryMutationRequest,
     product: { currentStock: Prisma.Decimal; name: string },
     occurredAt: Date,
     traceId: string,
   ): Promise<{ id: string; isNegativeAllowed: boolean; version: number }> {
-    const existing = await tx.inventoryItem.findFirst({
-      where: { shopId: request.shopId, productId: request.productId, locationId: request.locationId, variantId: null, isDeleted: false },
-      select: { id: true, isNegativeAllowed: true, version: true },
-    });
-    if (existing) return existing;
+    return this.ensureItem(tx, { shopId: request.shopId, productId: request.productId, locationId: request.locationId, variantId: null, performedBy: request.performedBy }, product, traceId);
+  }
 
+  /**
+   * Public entry for other services (inventory screens, receipts) that need
+   * the InventoryItem row to exist: takes the Product lock, then finds or
+   * creates the row with the same legacy bootstrap the mutation path uses.
+   */
+  async ensureInventoryItem(
+    tx: Prisma.TransactionClient,
+    params: { shopId: string; productId: string; locationId: string; variantId?: string | null; performedBy?: string | null },
+  ): Promise<{ id: string; isNegativeAllowed: boolean; version: number }> {
+    await this.lockProducts(tx, params.shopId, [params.productId]);
+    const product = await tx.product.findUnique({ where: { id: params.productId }, select: { currentStock: true, name: true, isDeleted: true } });
+    if (!product || product.isDeleted) throw new InventoryNotFoundError(`Product ${params.productId} not found.`);
+    return this.ensureItem(tx, params, product, uuidv4());
+  }
+
+  private async ensureItem(
+    tx: Prisma.TransactionClient,
+    params: { shopId: string; productId: string; locationId: string; variantId?: string | null; performedBy?: string | null },
+    product: { currentStock: Prisma.Decimal; name: string },
+    traceId: string,
+  ): Promise<{ id: string; isNegativeAllowed: boolean; version: number }> {
+    const variantId = params.variantId ?? null;
+    const variantKey = variantId ?? '-';
+    const existing = await tx.inventoryItem.findFirst({
+      where: { shopId: params.shopId, productId: params.productId, locationId: params.locationId, variantKey },
+      select: { id: true, isNegativeAllowed: true, version: true, isDeleted: true },
+    });
+    if (existing) {
+      if (existing.isDeleted) {
+        // The unique index still holds the row: revive it rather than failing the mutation.
+        await tx.inventoryItem.update({ where: { id: existing.id }, data: { isDeleted: false, deletedAt: null } });
+      }
+      return { id: existing.id, isNegativeAllowed: existing.isNegativeAllowed, version: existing.version };
+    }
+
+    // Legacy bootstrap applies to the product-level row only (variantId null).
     const anyItem = await tx.inventoryItem.findFirst({
-      where: { shopId: request.shopId, productId: request.productId, isDeleted: false },
+      where: { shopId: params.shopId, productId: params.productId, isDeleted: false },
       select: { id: true },
     });
-    const bootstrapQty = !anyItem && product.currentStock.greaterThan(0) ? product.currentStock : new Prisma.Decimal(0);
+    const bootstrapQty = variantId === null && !anyItem && product.currentStock.greaterThan(0) ? product.currentStock : new Prisma.Decimal(0);
 
     const created = await tx.inventoryItem.create({
       data: {
-        shopId: request.shopId,
-        productId: request.productId,
-        locationId: request.locationId,
+        shopId: params.shopId,
+        productId: params.productId,
+        variantId: variantId ?? undefined,
+        variantKey,
+        locationId: params.locationId,
         isNegativeAllowed: false,
         onHand: bootstrapQty,
         version: 0,
-        createdBy: request.performedBy,
+        createdBy: params.performedBy ?? null,
       },
       select: { id: true, isNegativeAllowed: true, version: true },
     });
@@ -382,26 +448,25 @@ export class InventoryMutationEngine {
       this.logger.log(`[${traceId}] Bootstrapped inventory item for ${product.name} from legacy currentStock=${bootstrapQty.toString()}`);
       await tx.stockLedgerEntry.create({
         data: {
-          shopId: request.shopId,
+          shopId: params.shopId,
           inventoryItemId: created.id,
           movementType: StockMovementType.OPENING_BALANCE,
           quantity: bootstrapQty,
           balanceAfter: bootstrapQty,
-          referenceId: request.productId,
+          referenceId: params.productId,
           referenceType: 'LEGACY_STOCK_BOOTSTRAP',
-          createdBy: request.performedBy,
-          createdAt: occurredAt,
+          createdBy: params.performedBy ?? 'SYSTEM',
         },
       });
       await tx.inventoryLog.create({
         data: {
-          shopId: request.shopId,
-          productId: request.productId,
+          shopId: params.shopId,
+          productId: params.productId,
           type: InventoryChangeType.OPENING,
           quantityBefore: 0,
           quantityChange: bootstrapQty,
           quantityAfter: bootstrapQty,
-          recordedById: request.performedBy,
+          recordedById: params.performedBy ?? 'SYSTEM',
           notes: 'Opening balance migrated from Product.currentStock',
         },
       });

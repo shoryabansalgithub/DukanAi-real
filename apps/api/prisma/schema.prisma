@@ -248,6 +248,8 @@ enum LedgerAccount {
   COST_OF_GOODS
   INVENTORY
   UDHAR_RECEIVABLE
+  ACCOUNTS_PAYABLE
+  INVENTORY_ADJUSTMENT
 }
 
 /// Physical tender used to settle an invoice or a customer repayment.
@@ -1316,7 +1318,9 @@ model LedgerAccountBalance {
 model InvoiceItem {
   id               String      @id @default(cuid())
   invoiceId        String
-  productId        String
+  /** Null for custom (ad-hoc) lines; see docs/POS_BILLING_CONTRACT.md §2. */
+  productId        String?
+  isCustom         Boolean     @default(false)
   productName      String
   productSku       String
   quantity         Decimal     @db.Decimal(10, 3)
@@ -1340,7 +1344,7 @@ model InvoiceItem {
   deletedAt        DateTime?
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  product Product? @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([invoiceId])
   @@index([productId])
@@ -3748,7 +3752,9 @@ model InventoryItem {
   shopId     String
   productId  String
   variantId  String?
-  locationId String  @default("DEFAULT")
+  /** variantId with "-" for NULL: MySQL treats NULLs as distinct in unique indexes, so the real uniqueness key uses this column. */
+  variantKey String  @default("-")
+  locationId String
 
   onHand    Decimal @default(0) @db.Decimal(12, 3)
   reserved  Decimal @default(0) @db.Decimal(12, 3)
@@ -3792,7 +3798,7 @@ model InventoryItem {
   adjustmentRequests     AdjustmentRequest[]
   batchStocks            BatchStock[]
 
-  @@unique([shopId, productId, variantId, locationId])
+  @@unique([shopId, productId, variantKey, locationId])
   @@index([shopId, status])
   @@index([productId])
   @@index([shopId, locationId])

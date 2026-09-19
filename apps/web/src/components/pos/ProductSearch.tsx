@@ -153,6 +153,7 @@ export function ProductSearch({ query, onQueryChange, onAdd, inputRef, cartQuant
             onKeyDown={handleKeyDown}
             placeholder="Search name, SKU or barcode…  (F2)"
             aria-label="Search products"
+            data-testid="pos-search"
             aria-controls={listboxId}
             aria-activedescendant={highlight >= 0 ? `pos-product-${highlight}` : undefined}
             autoComplete="off"

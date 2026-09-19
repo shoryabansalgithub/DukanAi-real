@@ -27,7 +27,8 @@ export const SYSTEM_EVENT_PROCESSED_ACTION = 'SYSTEM_EVENT_PROCESSED';
 const MAX_ERROR_LENGTH = 191;
 
 /** Prisma codes that mean "try again later", not "this event is broken". */
-const TRANSIENT_PRISMA_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1011', 'P1017', 'P2024', 'P2034']);
+/** P2024/P2028: pool wait or transaction start timed out under load; P2034: deadlock / write conflict. */
+const TRANSIENT_PRISMA_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1011', 'P1017', 'P2024', 'P2028', 'P2034']);
 
 export type SystemEventOutcome = { status: 'processed' | 'skipped-duplicate' | 'ignored-unknown' };
 
@@ -200,7 +201,7 @@ export class SystemEventsProcessor extends WorkerHost {
       });
 
       return { status };
-    });
+    }, { maxWait: 30_000, timeout: 60_000 });
 
     // Post-commit, best-effort: the marker is committed, so a socket failure must not fail the job.
     for (const alert of lowStockAlerts) {
@@ -389,6 +390,7 @@ export class SystemEventsProcessor extends WorkerHost {
     const message = errorMessage(error).toLowerCase();
     return (
       message.includes('deadlock') ||
+      message.includes('unable to start a transaction') ||
       message.includes('timeout') ||
       message.includes('timed out') ||
       message.includes('connection') ||

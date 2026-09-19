@@ -41,6 +41,8 @@ export type Product = {
   type?: string;
   mrp?: number;
   sellingPrice?: number;
+  /** Cess percentage on the taxable amount (0 for most products). */
+  cessRate?: number;
 };
 
 export type Customer = {
@@ -147,6 +149,7 @@ export type ShiftStatus = 'OPEN' | 'CLOSED';
 export type DiscountType = 'FIXED_AMOUNT' | 'PERCENTAGE';
 export type ProductUnit = 'PCS' | 'KG' | 'GM' | 'LTR' | 'ML' | 'BOX' | 'PACK' | 'DOZEN' | 'BUNDLE';
 export type ProductType = 'SIMPLE' | 'VARIABLE' | 'BUNDLE' | 'COMBO' | 'SERVICE' | 'DIGITAL';
+export type GstRate = 'ZERO' | 'FIVE' | 'TWELVE' | 'EIGHTEEN' | 'TWENTYEIGHT';
 
 /** Lean product row from `GET /search`, `GET /search/barcode/:code` and the POS grid. */
 export type SearchResult = {
@@ -157,6 +160,8 @@ export type SearchResult = {
   sellingPrice: number;
   mrp: number;
   gstRate: string;
+  /** Cess percentage on the taxable amount; the engine needs it for parity with the API. */
+  cessRate: number;
   unit: string;
   currentStock: number;
   type: string;
@@ -222,7 +227,10 @@ export type InvoicePayment = {
 
 export type InvoiceDetailItem = {
   id: string;
-  productId: string;
+  /** `null` for ad-hoc (custom) lines that were never a catalogue product. */
+  productId: string | null;
+  /** Custom lines never touch stock; `productSku` is `CUSTOM` for them. */
+  isCustom: boolean;
   productName: string;
   productSku: string;
   quantity: number;

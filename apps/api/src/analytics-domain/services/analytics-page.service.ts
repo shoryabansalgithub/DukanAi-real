@@ -134,7 +134,7 @@ export class AnalyticsPageService {
              COALESCE(SUM(${INVOICE_SIGN} * ii.totalAmount), 0) AS total
       FROM InvoiceItem ii
       INNER JOIN Invoice i ON i.id = ii.invoiceId
-      INNER JOIN Product p ON p.id = ii.productId
+      LEFT JOIN Product p ON p.id = ii.productId
       LEFT JOIN Category c ON c.id = p.categoryId
       WHERE ${completedInvoiceFilter(shopId, start, end)}
         AND ii.isDeleted = false

@@ -23,6 +23,7 @@ const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
   LedgerAccount.UDHAR_RECEIVABLE,
   LedgerAccount.COST_OF_GOODS,
   LedgerAccount.INVENTORY,
+  LedgerAccount.INVENTORY_ADJUSTMENT,
 ]);
 
 /**

@@ -1,13 +1,22 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import type { DiscountType, PosCustomer, SearchResult } from '@/types';
+import type { DiscountType, GstRate, PosCustomer, ProductUnit, SearchResult } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface CartLine {
+  /** Stable per-line id (uuid). Every line has one, custom or not. */
+  lineId: string;
+  /**
+   * Engine / UI key. Product lines use the catalogue product id; custom lines
+   * use `custom:<lineId>` so each one is a distinct engine line
+   * (`InvoiceMathEngine.calculate` throws ERR_DUPLICATE_LINE on repeated keys).
+   */
   productId: string;
+  /** Ad-hoc line typed in at the counter: no stock, no cess, never merged. */
+  isCustom: boolean;
   name: string;
   sku: string;
   /** ProductUnit enum value (PCS, KG, GM, LTR, ML, BOX, PACK, DOZEN, BUNDLE). */
@@ -16,14 +25,29 @@ export interface CartLine {
   mrp: number;
   /** GstRate enum value (ZERO, FIVE, TWELVE, EIGHTEEN, TWENTYEIGHT). */
   gstRate: string;
+  /** Cess percentage on the taxable amount (0 when the product carries none; always 0 for custom lines). */
+  cessRate: number;
   /** Stock seen when the line was added; null when the product is not stock-tracked. */
   stockSnapshot: number | null;
   quantity: number;
   /** Line discount 0-100. */
   discountPercent: number;
-  /** ProductType enum value; SERVICE / DIGITAL lines are never stock-capped. */
+  /** ProductType enum value; SERVICE / DIGITAL lines are never stock-capped. Custom lines carry `CUSTOM`. */
   productType: string;
 }
+
+/** Input for an ad-hoc (custom) line; mirrors the contract's `custom` payload. */
+export interface CustomItemInput {
+  name: string;
+  unitPrice: number;
+  quantity: number;
+  gstRate: GstRate;
+  unit: ProductUnit;
+}
+
+export const CUSTOM_LINE_PREFIX = 'custom:';
+export const CUSTOM_ITEM_NAME_MAX = 120;
+export const CUSTOM_ITEM_PRICE_MAX = 99999999.99;
 
 export interface CartDiscount {
   type: DiscountType;
@@ -52,6 +76,8 @@ export interface PosState {
   idempotencyKey: string | null;
 
   addProduct: (product: SearchResult, quantity?: number) => QuantityResult;
+  /** Adds a custom line; each call creates a new line (custom lines are never merged). */
+  addCustomItem: (input: CustomItemInput) => QuantityResult;
   setQuantity: (productId: string, quantity: number) => QuantityResult;
   increment: (productId: string) => QuantityResult;
   decrement: (productId: string) => QuantityResult;
@@ -149,18 +175,86 @@ const EMPTY_DISCOUNT: CartDiscount = { type: 'FIXED_AMOUNT', value: 0, reason: '
 function lineFromProduct(product: SearchResult, quantity: number): CartLine {
   const type = (product.type || 'SIMPLE').toUpperCase();
   return {
+    lineId: generateUuid(),
     productId: product.id,
+    isCustom: false,
     name: product.name,
     sku: product.sku,
     unit: product.unit || 'PCS',
     unitPrice: product.sellingPrice,
     mrp: product.mrp,
     gstRate: product.gstRate || 'EIGHTEEN',
+    cessRate: Number.isFinite(product.cessRate) ? product.cessRate : 0,
     stockSnapshot: UNCAPPED_TYPES.has(type) ? null : product.currentStock,
     quantity,
     discountPercent: 0,
     productType: type,
   };
+}
+
+export type CustomItemResult = { ok: true; line: CartLine } | { ok: false; reason: string };
+
+/** Validates a custom item against the contract limits and builds its cart line. */
+export function lineFromCustomItem(input: CustomItemInput): CustomItemResult {
+  const name = (input.name ?? '').trim();
+  if (!name) return { ok: false, reason: 'Enter a name for the item' };
+  if (name.length > CUSTOM_ITEM_NAME_MAX) return { ok: false, reason: `Name must be ${CUSTOM_ITEM_NAME_MAX} characters or fewer` };
+  const unitPrice = Number(input.unitPrice);
+  if (!Number.isFinite(unitPrice) || unitPrice <= 0) return { ok: false, reason: 'Price must be greater than 0' };
+  if (unitPrice > CUSTOM_ITEM_PRICE_MAX) return { ok: false, reason: 'Price is too large' };
+  if (Number(unitPrice.toFixed(2)) !== unitPrice) return { ok: false, reason: 'Price can have at most 2 decimal places' };
+  const lineId = generateUuid();
+  const line: CartLine = {
+    lineId,
+    productId: `${CUSTOM_LINE_PREFIX}${lineId}`,
+    isCustom: true,
+    name,
+    sku: '',
+    unit: input.unit || 'PCS',
+    unitPrice,
+    mrp: unitPrice,
+    gstRate: input.gstRate || 'EIGHTEEN',
+    cessRate: 0,
+    stockSnapshot: null,
+    quantity: input.quantity,
+    discountPercent: 0,
+    productType: 'CUSTOM',
+  };
+  const check = validateQuantity(line, input.quantity);
+  if (!check.ok) return check;
+  return { ok: true, line: { ...line, quantity: check.value } };
+}
+
+/**
+ * Fills in fields added after a cart was persisted (sessionStorage carts and
+ * held carts saved before `lineId` / `isCustom` / `cessRate` existed).
+ */
+function normalizeLine(raw: Partial<CartLine> & { productId: string }): CartLine {
+  const isCustom = raw.isCustom === true || raw.productId.startsWith(CUSTOM_LINE_PREFIX);
+  return {
+    lineId: raw.lineId || (isCustom ? raw.productId.slice(CUSTOM_LINE_PREFIX.length) : raw.productId),
+    productId: raw.productId,
+    isCustom,
+    name: raw.name ?? '',
+    sku: raw.sku ?? '',
+    unit: raw.unit || 'PCS',
+    unitPrice: Number(raw.unitPrice) || 0,
+    mrp: Number(raw.mrp) || 0,
+    gstRate: raw.gstRate || 'EIGHTEEN',
+    cessRate: isCustom ? 0 : Number(raw.cessRate) || 0,
+    stockSnapshot: isCustom ? null : raw.stockSnapshot ?? null,
+    quantity: Number(raw.quantity) || 0,
+    discountPercent: Number(raw.discountPercent) || 0,
+    productType: raw.productType || (isCustom ? 'CUSTOM' : 'SIMPLE'),
+  };
+}
+
+function normalizeLines(lines: unknown): CartLine[] {
+  if (!Array.isArray(lines)) return [];
+  return lines
+    .filter((l): l is Partial<CartLine> & { productId: string } => Boolean(l) && typeof (l as CartLine).productId === 'string')
+    .map(normalizeLine)
+    .filter((l) => l.quantity > 0);
 }
 
 const STORAGE_PREFIX = 'dukaanai-pos';
@@ -193,6 +287,13 @@ export const usePosStore = create<PosState>()(
         if (!check.ok) return check;
         set({ lines: [...get().lines, { ...line, quantity: check.value }] });
         return check;
+      },
+
+      addCustomItem: (input) => {
+        const built = lineFromCustomItem(input);
+        if (!built.ok) return built;
+        set({ lines: [...get().lines, built.line] });
+        return { ok: true, value: built.line.quantity };
       },
 
       setQuantity: (productId, quantity) => {
@@ -322,6 +423,19 @@ export const usePosStore = create<PosState>()(
         heldCarts: state.heldCarts,
         idempotencyKey: state.idempotencyKey,
       }),
+      // Carts persisted before `lineId` / `isCustom` / `cessRate` existed are
+      // upgraded on every rehydrate (held carts included).
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as Partial<PosState>;
+        return {
+          ...current,
+          ...saved,
+          lines: normalizeLines(saved.lines),
+          heldCarts: Array.isArray(saved.heldCarts)
+            ? saved.heldCarts.map((held) => ({ ...held, lines: normalizeLines(held.lines) }))
+            : [],
+        };
+      },
     },
   ),
 );

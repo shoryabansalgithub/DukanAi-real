@@ -5,7 +5,7 @@ import { Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
 import type { CartLine, QuantityResult } from '@/store/pos';
 import { allowsDecimalQuantity, quantityStep } from '@/store/pos';
 import type { EngineTotals } from './engine';
-import { money, qty } from './format';
+import { gstLabel, money, qty } from './format';
 import { useNumericField } from './useNumericField';
 
 interface CartPanelProps {
@@ -52,7 +52,7 @@ export function CartPanel({
           Clear cart
         </button>
       </div>
-      <ul className="divide-y divide-gray-50 max-h-[40vh] lg:max-h-[calc(100vh-560px)] min-h-[160px] overflow-y-auto">
+      <ul data-testid="cart-lines" className="divide-y divide-gray-50 max-h-[40vh] lg:max-h-[calc(100vh-560px)] min-h-[160px] overflow-y-auto">
         {lines.map((line) => (
           <CartRow
             key={line.productId}
@@ -112,20 +112,39 @@ function CartRow({ line, lineTotal, serverError, onSetQuantity, onIncrement, onD
   const highlighted = Boolean(serverError);
 
   return (
-    <li className={`px-4 py-3 ${highlighted ? 'bg-red-50/70' : ''}`}>
+    <li
+      data-testid="cart-line"
+      data-line-id={line.lineId}
+      data-custom={line.isCustom ? 'true' : 'false'}
+      className={`px-4 py-3 ${highlighted ? 'bg-red-50/70' : ''}`}
+    >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-bold text-gray-800 truncate" title={line.name}>
-            {line.name}
+          <p className="text-sm font-bold text-gray-800 truncate flex items-center gap-1.5" title={line.name}>
+            <span className="truncate" data-testid="cart-line-name">
+              {line.name}
+            </span>
+            {line.isCustom && (
+              <span
+                data-testid="cart-line-custom-badge"
+                className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700"
+                title="Custom item: priced as typed, no stock movement"
+              >
+                custom
+              </span>
+            )}
           </p>
           <p className="text-[11px] text-gray-400 mt-0.5">
             {money(line.unitPrice)} / {line.unit}
             {line.mrp > line.unitPrice ? <span className="ml-1 line-through">{money(line.mrp)}</span> : null}
             {line.sku ? <span className="ml-1">· {line.sku}</span> : null}
+            {line.isCustom ? <span className="ml-1">· GST {gstLabel(line.gstRate)}</span> : null}
           </p>
         </div>
         <div className="text-right shrink-0">
-          <p className="text-sm font-bold text-[#8B5CF6]">{lineTotal === null ? '—' : money(lineTotal)}</p>
+          <p className="text-sm font-bold text-[#8B5CF6]" data-testid="cart-line-total">
+            {lineTotal === null ? '—' : money(lineTotal)}
+          </p>
           <p className="text-[10px] text-gray-400">incl. tax</p>
         </div>
       </div>
