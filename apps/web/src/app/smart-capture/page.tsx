@@ -35,7 +35,7 @@ export default function SmartCapturePage() {
 
     try {
       const data = await customersApi.list();
-      setCustomers(data);
+      setCustomers(data.items);
     } catch (err) {
       console.error('Error fetching customers', err);
       setCustomers([]);

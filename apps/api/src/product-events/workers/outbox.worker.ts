@@ -44,7 +44,7 @@ export class OutboxProcessorWorker implements OnApplicationBootstrap {
           SELECT id 
           FROM OutboxEvent 
           WHERE status = 'PENDING' 
-            AND (type LIKE 'Product%' OR type LIKE 'Inventory%' OR type LIKE 'Category%' OR type LIKE 'Brand%')
+            AND (type LIKE BINARY 'Product%' OR type LIKE BINARY 'Inventory%' OR type LIKE BINARY 'Category%' OR type LIKE BINARY 'Brand%')
           ORDER BY createdAt ASC 
           LIMIT ${batchSize} 
           FOR UPDATE SKIP LOCKED

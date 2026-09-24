@@ -9,11 +9,13 @@ import { CustomerLifecycleService } from './services/customer-lifecycle.service'
 import { CustomerSearchService } from './services/customer-search.service';
 import { EventsModule } from '../events-domain/events.module';
 import { CustomerWorker } from './workers/customer.worker';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [
     PrismaModule, 
     EventsModule,
+    BillingModule,
     BullModule.registerQueue({
       name: 'customer-queue',
     })

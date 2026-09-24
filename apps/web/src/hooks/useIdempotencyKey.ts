@@ -1,46 +1,40 @@
-import { useState, useEffect, useCallback } from 'react';
-import { v4 as uuidv4 } from 'uuid';
+'use client';
+
+import { useCallback, useEffect } from 'react';
+import { usePosStore } from '@/store/pos';
 
 interface UseIdempotencyKeyReturn {
+  /** The current key. `null` only for the first client render before the effect runs. */
   key: string | null;
-  clearKey: () => void;
-  regenerateKey: () => void;
+  /** Rotates to a brand-new key (IDEMPOTENCY_KEY_REUSED recovery). */
+  rotate: () => string;
+  /** Returns the current key, generating one synchronously when there is none. */
+  ensure: () => string;
+  /** Clears the key after a successful submit; a fresh one is generated immediately. */
+  consume: () => void;
 }
 
-export function useIdempotencyKey(draftId: string): UseIdempotencyKeyReturn {
-  const [key, setKey] = useState<string | null>(null);
+/**
+ * Idempotency key for the POS invoice submit, derived from the POS store
+ * (persisted per tab / per shop in sessionStorage).
+ *
+ * A fresh key is generated whenever there is none — on first use and
+ * immediately after a success consumes it — so a retry after a network
+ * failure reuses the same key while every new sale gets its own.
+ */
+export function useIdempotencyKey(): UseIdempotencyKeyReturn {
+  const key = usePosStore((s) => s.idempotencyKey);
+  const newIdempotencyKey = usePosStore((s) => s.newIdempotencyKey);
+  const ensureIdempotencyKey = usePosStore((s) => s.ensureIdempotencyKey);
+  const consumeIdempotencyKey = usePosStore((s) => s.consumeIdempotencyKey);
 
-  const storageKey = `idempotency_${draftId}`;
-
-  // Initialize or fetch existing key
   useEffect(() => {
-    // Prevent SSR errors by ensuring window is defined
-    if (typeof window !== 'undefined') {
-      const existing = sessionStorage.getItem(storageKey);
-      if (existing) {
-        setKey(existing);
-      } else {
-        const newKey = uuidv4();
-        sessionStorage.setItem(storageKey, newKey);
-        setKey(newKey);
-      }
-    }
-  }, [draftId, storageKey]);
+    if (!key) ensureIdempotencyKey();
+  }, [key, ensureIdempotencyKey]);
 
-  const clearKey = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      sessionStorage.removeItem(storageKey);
-      setKey(null);
-    }
-  }, [storageKey]);
+  const rotate = useCallback(() => newIdempotencyKey(), [newIdempotencyKey]);
+  const ensure = useCallback(() => ensureIdempotencyKey(), [ensureIdempotencyKey]);
+  const consume = useCallback(() => consumeIdempotencyKey(), [consumeIdempotencyKey]);
 
-  const regenerateKey = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      const newKey = uuidv4();
-      sessionStorage.setItem(storageKey, newKey);
-      setKey(newKey);
-    }
-  }, [storageKey]);
-
-  return { key, clearKey, regenerateKey };
+  return { key, rotate, ensure, consume };
 }

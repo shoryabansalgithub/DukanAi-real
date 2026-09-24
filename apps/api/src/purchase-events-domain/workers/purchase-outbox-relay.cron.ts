@@ -44,7 +44,7 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
           SELECT id, type, payload, status, retryCount 
           FROM OutboxEvent 
           WHERE status = 'PENDING' 
-            AND (type LIKE 'Purchase%' OR type LIKE 'GRN%' OR type LIKE 'VendorBill%' OR type LIKE 'SupplierCredit%')
+            AND (type LIKE BINARY 'Purchase%' OR type LIKE BINARY 'GRN%' OR type LIKE BINARY 'VendorBill%' OR type LIKE BINARY 'SupplierCredit%')
           ORDER BY createdAt ASC 
           LIMIT ${batchSize} 
           FOR UPDATE SKIP LOCKED

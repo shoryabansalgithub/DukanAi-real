@@ -1,9 +1,15 @@
 import { DefaultSession } from 'next-auth';
 
+/** Set on the session/JWT when the refresh-token exchange fails. */
+export type SessionErrorCode = 'RefreshAccessTokenError';
+
 declare module 'next-auth' {
   interface Session {
     accessToken?: string;
-    authError?: string;
+    /** Epoch milliseconds at which `accessToken` expires. */
+    accessTokenExpires?: number;
+    /** Present when the server-side refresh failed; the client must sign in again. */
+    error?: SessionErrorCode;
     user: {
       id: string;
       role: string;
@@ -26,6 +32,8 @@ declare module 'next-auth/jwt' {
     shopId?: string;
     accessToken?: string;
     refreshToken?: string;
-    authError?: string;
+    /** Epoch milliseconds at which `accessToken` expires. */
+    accessTokenExpires?: number;
+    error?: SessionErrorCode;
   }
 }

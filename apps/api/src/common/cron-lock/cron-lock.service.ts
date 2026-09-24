@@ -3,6 +3,27 @@ import { REDIS_CLIENT } from '../redis/redis.module';
 import Redis from 'ioredis';
 import Redlock from 'redlock';
 
+/**
+ * The runtime is redlock v5 (package "main" -> dist/cjs), but its `exports` map
+ * has no `types` condition, so under nodenext TypeScript falls back to the v4
+ * `@types/redlock` stubs. The v5 surface we rely on is typed structurally here.
+ */
+interface RedlockV5Lock {
+  release(): Promise<unknown>;
+}
+interface RedlockExecutionStats {
+  votesAgainst: Map<unknown, Error>;
+}
+interface RedlockExecutionError extends Error {
+  attempts?: ReadonlyArray<Promise<RedlockExecutionStats>>;
+}
+
+export const CRON_LOCK_ALLOW_UNLOCKED_ENV = 'CRON_LOCK_ALLOW_UNLOCKED';
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 @Injectable()
 export class CronLockService implements OnModuleInit {
   private readonly logger = new Logger(CronLockService.name);
@@ -39,7 +60,12 @@ export class CronLockService implements OnModuleInit {
   /**
    * Attempts to acquire a distributed lock. If successful, executes the callback.
    * If the lock is already held by another pod, returns null and does not execute the callback.
-   * 
+   *
+   * With the fail-fast Redis client, `acquire` rejects when Redis is unreachable.
+   * That is NOT treated as "another pod has it": the callback is skipped with a
+   * warning unless CRON_LOCK_ALLOW_UNLOCKED=true, because running crons unlocked
+   * on every pod is exactly what the lock exists to prevent.
+   *
    * @param resource The string identifier for the lock (e.g., 'cron:purge-outbox')
    * @param ttlMs Time-to-live for the lock in milliseconds
    * @param callback Function to execute if lock is acquired
@@ -51,20 +77,56 @@ export class CronLockService implements OnModuleInit {
       return await callback();
     }
 
+    if (this.redisClient.status !== 'ready') {
+      return this.handleRedisUnavailable(resource, `Redis client status is '${this.redisClient.status}'`, callback);
+    }
+
+    let lock: RedlockV5Lock;
     try {
-      const lock = await this.redlock.acquire([resource], ttlMs);
-      this.logger.debug(`Lock acquired: ${resource}`);
-      try {
-        return await callback();
-      } finally {
-        await (lock as any).unlock().catch((e: any) => {
-          this.logger.error(`Failed to release lock ${resource}: ${e.message}`);
-        });
+      lock = (await this.redlock.acquire([resource], ttlMs)) as unknown as RedlockV5Lock;
+    } catch (error) {
+      if (await this.isHeldByAnotherPod(error)) {
+        this.logger.debug(`Lock ${resource} is held by another pod. Skipping execution.`);
+        return null;
       }
+      return this.handleRedisUnavailable(resource, errorMessage(error), callback);
+    }
+
+    this.logger.debug(`Lock acquired: ${resource}`);
+    try {
+      return await callback();
+    } finally {
+      await lock.release().catch((e: unknown) => {
+        this.logger.error(`Failed to release lock ${resource}: ${errorMessage(e)}`);
+      });
+    }
+  }
+
+  private async handleRedisUnavailable<T>(resource: string, reason: string, callback: () => Promise<T>): Promise<T | null> {
+    if (process.env[CRON_LOCK_ALLOW_UNLOCKED_ENV] === 'true') {
+      this.logger.warn(`Could not acquire lock ${resource} (${reason}); ${CRON_LOCK_ALLOW_UNLOCKED_ENV}=true, running UNLOCKED.`);
+      return await callback();
+    }
+    this.logger.warn(
+      `Could not acquire lock ${resource} (${reason}); skipping this run. Set ${CRON_LOCK_ALLOW_UNLOCKED_ENV}=true to run unlocked.`,
+    );
+    return null;
+  }
+
+  /**
+   * Redlock v5 rejects with an ExecutionError whether the resource is locked or
+   * Redis is unreachable; the per-client votes tell them apart.
+   */
+  private async isHeldByAnotherPod(error: unknown): Promise<boolean> {
+    if (!(error instanceof Error)) return false;
+    if (error.name === 'ResourceLockedError') return true;
+    if (error.name !== 'ExecutionError') return false;
+    try {
+      const stats = await Promise.all((error as RedlockExecutionError).attempts ?? []);
+      const votes = stats.flatMap((stat) => [...stat.votesAgainst.values()]);
+      return votes.length > 0 && votes.every((vote) => vote.name === 'ResourceLockedError');
     } catch {
-      // ExecutionExecutionError means lock couldn't be acquired (another pod has it). This is expected.
-      this.logger.debug(`Lock ${resource} is held by another pod. Skipping execution.`);
-      return null;
+      return false;
     }
   }
 }

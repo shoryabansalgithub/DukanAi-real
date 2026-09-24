@@ -1,9 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import * as crypto from 'crypto';
 import { QueueConfig } from '../../config/domains/queue.config';
+import { SalesEventJobData } from './sales-event-router.worker';
 
 @Injectable()
 @Processor('sales-webhooks')
@@ -17,17 +18,26 @@ export class SalesWebhookWorker extends WorkerHost {
     super();
   }
 
-  async process(job: Job<any, any, string>): Promise<any> {
-    const { shopId, type, payload, eventId, tenantId, correlationId } = job.data;
-    
-    // Find active endpoints subscribed to this event
+  async process(job: Job<SalesEventJobData, unknown, string>): Promise<{ status: string }> {
+    const { shopId, payload, eventId, tenantId, correlationId } = job.data ?? {};
+    const type = job.data?.type ?? job.name;
+
+    if (!shopId || !eventId) {
+      // WebhookEndpoint is not tenant-scoped by the Prisma extension: a query
+      // with `shopId: undefined` would match every shop's endpoints.
+      const message = `Webhook job ${String(job.id)} (${type}) is missing ${!shopId ? 'shopId' : 'eventId'}; refusing to look up endpoints.`;
+      this.logger.error(message);
+      throw new UnrecoverableError(message);
+    }
+
+    // Find active endpoints subscribed to this event (explicit shopId filter)
     const endpoints = await this.prisma.webhookEndpoint.findMany({
       where: { shopId, isActive: true }
     });
 
     // Filter endpoints that actually want this event
     const targetEndpoints = endpoints.filter(ep => {
-      const events = ep.events as string[];
+      const events = Array.isArray(ep.events) ? (ep.events as string[]) : [];
       return events.includes('*') || events.includes(type);
     });
 
@@ -37,7 +47,7 @@ export class SalesWebhookWorker extends WorkerHost {
 
     const deliverPromises = targetEndpoints.map(async (endpoint) => {
       const startTime = Date.now();
-      
+
       const webhookPayload = {
         eventId,
         eventType: type,
@@ -83,6 +93,7 @@ export class SalesWebhookWorker extends WorkerHost {
 
       } catch (error: any) {
         const latencyMs = Date.now() - startTime;
+        this.logger.warn(`Webhook delivery to ${endpoint.url} for event ${eventId} failed: ${error.message}`);
         await this.prisma.webhookDelivery.create({
           data: {
             endpointId: endpoint.id,

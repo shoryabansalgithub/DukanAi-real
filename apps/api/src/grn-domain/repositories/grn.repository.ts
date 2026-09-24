@@ -203,6 +203,7 @@ export class GrnRepository {
 
       // Safe Inventory Engine Integration
       const updatedGrn = await tx.goodsReceipt.findUnique({ where: { id }, include: { lines: true } });
+      if (!updatedGrn) throw new NotFoundException();
       await this.integration.updateInventoryFromGrn(tx, shopId, updatedGrn);
 
       await this.eventPublisher.publish(tx, shopId, {

@@ -1,24 +1,30 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RecommendationType } from '@prisma/client';
+import { kpiDateFor } from './kpi.service';
+import { ShopTimezoneService } from './shop-timezone.service';
 
 @Injectable()
 export class RecommendationEngineService {
   private readonly logger = new Logger(RecommendationEngineService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly shopTimezone: ShopTimezoneService,
+  ) {}
 
   /**
    * Analyzes current KPIs and classifications to generate actionable business advice.
+   * Reads the KPI snapshot written for the same shop business date by KpiService.
    */
-  async generateRecommendations(shopId: string) {
+  async generateRecommendations(shopId: string, now: Date = new Date()) {
     this.logger.log(`Generating Inventory Recommendations for shop ${shopId}...`);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const timeZone = await this.shopTimezone.resolve(shopId);
+    const date = kpiDateFor(now, timeZone);
 
     const kpis = await this.prisma.inventoryKpi.findMany({
-      where: { shopId, date: today }
+      where: { shopId, date }
     });
 
     for (const kpi of kpis) {

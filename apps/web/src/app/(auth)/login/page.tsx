@@ -23,12 +23,17 @@ function LoginPageContent() {
   const { status } = useSession();
   const { toast } = useToast();
 
+  // Where to go after sign-in: the protected page the middleware bounced from,
+  // restricted to same-origin paths so the parameter cannot redirect off-site.
+  const rawCallback = searchParams.get('callbackUrl');
+  const callbackUrl = rawCallback && rawCallback.startsWith('/') && !rawCallback.startsWith('//') ? rawCallback : '/dashboard';
+
   // If already authenticated (or auth is bypassed), redirect away from login
   useEffect(() => {
     if (AUTH_DISABLED || status === 'authenticated') {
-      router.replace('/dashboard');
+      router.replace(callbackUrl);
     }
-  }, [status, router]);
+  }, [status, router, callbackUrl]);
 
   // Show error from NextAuth callback (e.g. OAuth failures)
   useEffect(() => {
@@ -70,7 +75,7 @@ function LoginPageContent() {
 
       if (result?.ok) {
         toast('Welcome back!', 'success');
-        router.push('/dashboard');
+        router.push(callbackUrl);
       }
     } catch (err) {
       console.error('Sign-in request failed:', err);
@@ -88,7 +93,7 @@ function LoginPageContent() {
     setError(null);
     setLoading(true);
     try {
-      await signIn('google', { callbackUrl: '/dashboard' });
+      await signIn('google', { callbackUrl });
     } catch (err) {
       console.error('Google sign-in failed:', err);
       setError('Could not connect to Google. Please try again.');

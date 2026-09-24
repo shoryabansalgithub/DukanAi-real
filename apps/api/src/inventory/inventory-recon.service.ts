@@ -6,7 +6,7 @@ import type { Cache } from 'cache-manager';
 import { PrismaService } from '../prisma/prisma.service';
 import { CronLockService } from '../common/cron-lock/cron-lock.service';
 import { DriftAlertService } from './drift-alert.service';
-import { DriftStatus } from '@prisma/client';
+import { DriftStatus, Prisma } from '@prisma/client';
 import { InventoryFeatureConfig } from '../config/domains/features/inventory-feature.config';
 import { CronConfig } from '../config/domains/cron.config';
 import { CacheConfig } from '../config/domains/cache.config';
@@ -14,6 +14,35 @@ import { REDIS_CLIENT } from '../common/redis/redis.module';
 import Redis from 'ioredis';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
+interface ReconProduct {
+  id: string;
+  shopId: string;
+  currentStock: Prisma.Decimal;
+  stockVersion: number;
+}
+
+interface DriftCounters {
+  found: number;
+  fixed: number;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Periodic stock reconciliation. Two invariants, checked in this order per batch:
+ *
+ *  1. STOCK_CACHE_DRIFT : Product.currentStock == SUM(InventoryItem.onHand) for the
+ *     product's non-deleted InventoryItem rows. The InventoryItem ledger is the
+ *     authority; Product.currentStock is repaired to the sum (only for products
+ *     that have at least one InventoryItem row).
+ *  2. REDIS_STOCK_DRIFT : the Redis cache `stock:{shopId}:{productId}` must equal
+ *     Product.currentStock (after step 1). Redis is repaired from the DB.
+ *
+ * Runs under a cron lock and as super-admin (Product and InventoryDriftLog are
+ * tenant-scoped; InventoryItem is not and is always filtered by shopId).
+ */
 @Injectable()
 export class InventoryReconService implements OnApplicationBootstrap {
   private readonly logger = new Logger(InventoryReconService.name);
@@ -33,7 +62,7 @@ export class InventoryReconService implements OnApplicationBootstrap {
 
   onApplicationBootstrap() {
     const job = new CronJob(this.cronConfig.inventoryReconCron, () => {
-      this.handleCron();
+      void this.handleCron();
     });
     this.schedulerRegistry.addCronJob('InventoryRecon', job);
     job.start();
@@ -62,22 +91,22 @@ export class InventoryReconService implements OnApplicationBootstrap {
     }
 
     let productsChecked = 0;
-    let driftsFound = 0;
-    let driftsFixed = 0;
+    const ledgerDrifts: DriftCounters = { found: 0, fixed: 0 };
+    const redisDrifts: DriftCounters = { found: 0, fixed: 0 };
 
-    const fifteenMinsAgo = new Date(Date.now() - this.inventoryConfig.reconLookbackMs);
+    const lookbackStart = new Date(Date.now() - this.inventoryConfig.reconLookbackMs);
     const batchSize = this.inventoryConfig.reconBatchSize;
     let skip = 0;
 
     try {
       while (true) {
         // Fetch from Prisma in batches
-        const products = await this.prisma.product.findMany({
+        const products: ReconProduct[] = await this.prisma.product.findMany({
           where: {
-            updatedAt: { gte: fifteenMinsAgo },
+            updatedAt: { gte: lookbackStart },
             isDeleted: false,
           },
-          select: { id: true, shopId: true, currentStock: true },
+          select: { id: true, shopId: true, currentStock: true, stockVersion: true },
           take: batchSize,
           skip: skip,
           orderBy: { id: 'asc' },
@@ -87,101 +116,19 @@ export class InventoryReconService implements OnApplicationBootstrap {
 
         productsChecked += products.length;
 
-        // Fetch Redis values efficiently via pipeline
-        const pipeline = this.redis.pipeline();
-        products.forEach((p) => {
-          pipeline.get(`stock:${p.shopId}:${p.id}`);
-        });
+        // Invariant 1: ledger is the authority; repaired values are carried into invariant 2.
+        const ledgerOutcome = await this.reconcileLedgerInvariant(products);
+        ledgerDrifts.found += ledgerOutcome.found;
+        ledgerDrifts.fixed += ledgerOutcome.fixed;
 
-        const redisResults = await pipeline.exec();
-
-        // Compare and repair
-        for (let i = 0; i < products.length; i++) {
-          const product = products[i];
-          const prismaStock = product.currentStock.toNumber();
-          const [err, redisRaw] = redisResults![i];
-
-          if (err) {
-            this.logger.error(`Failed to read Redis stock for product ${product.id}`, err);
-            continue;
-          }
-
-          if (redisRaw !== null) {
-            const redisStock = parseFloat(redisRaw as string);
-
-            // Compare: Case B (Different)
-            if (redisStock !== prismaStock) {
-              driftsFound++;
-              
-              const difference = Math.abs(prismaStock - redisStock);
-
-              // 1. Structured Logging
-              this.logger.warn({
-                event: 'REDIS_STOCK_DRIFT',
-                severity: 'WARN',
-                shopId: product.shopId,
-                productId: product.id,
-                redisStock,
-                databaseStock: prismaStock,
-                difference,
-                timestamp: new Date().toISOString(),
-                correlationId: `drift-${Date.now()}-${product.id}`
-              });
-
-              // 2. Persistent Drift Audit Record (DETECTED)
-              const driftLog = await this.prisma.inventoryDriftLog.create({
-                data: {
-                  shopId: product.shopId,
-                  productId: product.id,
-                  redisValue: redisStock,
-                  databaseValue: prismaStock,
-                  difference,
-                  status: DriftStatus.DETECTED
-                }
-              });
-
-              // 3. Attempt Redis Repair
-              try {
-                await this.redis.set(`stock:${product.shopId}:${product.id}`, prismaStock.toString(), 'EX', this.cacheConfig.inventoryDriftTtlSeconds);
-                
-                // Repair successful
-                await this.prisma.inventoryDriftLog.update({
-                  where: { id: driftLog.id },
-                  data: {
-                    status: DriftStatus.REPAIRED,
-                    resolvedAt: new Date()
-                  }
-                });
-
-                await this.driftAlertService.notifyCriticalDrift({
-                  driftId: driftLog.id,
-                  productId: product.id,
-                  repairedValue: prismaStock
-                });
-
-                driftsFixed++;
-              } catch (repairErr: any) {
-                // Repair failed
-                await this.prisma.inventoryDriftLog.update({
-                  where: { id: driftLog.id },
-                  data: {
-                    status: DriftStatus.FAILED
-                  }
-                });
-
-                await this.driftAlertService.notifyRepairFailure({
-                  driftId: driftLog.id,
-                  productId: product.id,
-                  error: repairErr.message
-                });
-              }
-            }
-          }
-        }
+        // Invariant 2: Redis cache mirrors Product.currentStock.
+        const redisOutcome = await this.reconcileRedisInvariant(products);
+        redisDrifts.found += redisOutcome.found;
+        redisDrifts.fixed += redisOutcome.fixed;
 
         skip += batchSize;
       }
-    } catch (error: any) {
+    } catch (error) {
       this.logger.error('Database or Redis unavailable. Aborting reconciliation cleanly.', error);
     }
 
@@ -190,9 +137,248 @@ export class InventoryReconService implements OnApplicationBootstrap {
     this.logger.log({
       event: 'inventory_reconciliation_completed',
       productsChecked,
-      driftsFound,
-      driftsFixed,
+      ledgerDriftsFound: ledgerDrifts.found,
+      ledgerDriftsFixed: ledgerDrifts.fixed,
+      redisDriftsFound: redisDrifts.found,
+      redisDriftsFixed: redisDrifts.fixed,
+      // Backwards-compatible totals
+      driftsFound: ledgerDrifts.found + redisDrifts.found,
+      driftsFixed: ledgerDrifts.fixed + redisDrifts.fixed,
       durationMs,
     });
+  }
+
+  /**
+   * Product.currentStock must equal SUM(InventoryItem.onHand) over the product's
+   * non-deleted InventoryItem rows in its shop. Products without any
+   * InventoryItem row are skipped (the ledger is not in use for them).
+   * Mutates `product.currentStock` to the repaired value on success.
+   */
+  private async reconcileLedgerInvariant(products: ReconProduct[]): Promise<DriftCounters> {
+    const counters: DriftCounters = { found: 0, fixed: 0 };
+    if (products.length === 0) return counters;
+
+    const productIds = products.map((p) => p.id);
+    const shopIds = [...new Set(products.map((p) => p.shopId))];
+
+    // InventoryItem is not tenant-scoped: filter shopId explicitly and match on (shopId, productId).
+    const sums = await this.prisma.inventoryItem.groupBy({
+      by: ['shopId', 'productId'],
+      where: {
+        shopId: { in: shopIds },
+        productId: { in: productIds },
+        isDeleted: false,
+      },
+      _sum: { onHand: true },
+    });
+
+    const ledgerByKey = new Map<string, Prisma.Decimal>();
+    for (const row of sums) {
+      ledgerByKey.set(`${row.shopId}:${row.productId}`, row._sum.onHand ?? new Prisma.Decimal(0));
+    }
+
+    for (const product of products) {
+      const ledgerStock = ledgerByKey.get(`${product.shopId}:${product.id}`);
+      if (ledgerStock === undefined) continue; // no InventoryItem rows for this product
+      if (product.currentStock.equals(ledgerStock)) continue;
+
+      counters.found++;
+      const cachedStock = product.currentStock;
+      const difference = cachedStock.minus(ledgerStock).abs();
+      const correlationId = `ledger-drift-${Date.now()}-${product.id}`;
+
+      // 1. Structured logging
+      this.logger.warn({
+        event: 'STOCK_CACHE_DRIFT',
+        severity: 'WARN',
+        shopId: product.shopId,
+        productId: product.id,
+        productCurrentStock: cachedStock.toString(),
+        ledgerOnHand: ledgerStock.toString(),
+        difference: difference.toString(),
+        timestamp: new Date().toISOString(),
+        correlationId,
+      });
+
+      // 2. Persistent drift audit record (DETECTED). redisValue holds the cached
+      //    Product.currentStock, databaseValue the authoritative ledger sum.
+      const driftLog = await this.prisma.inventoryDriftLog.create({
+        data: {
+          shopId: product.shopId,
+          productId: product.id,
+          redisValue: cachedStock,
+          databaseValue: ledgerStock,
+          difference,
+          status: DriftStatus.DETECTED,
+        },
+      });
+
+      // 3. Repair Product.currentStock from the ledger.
+      //    `stockVersion` makes this a compare-and-swap against the row we read:
+      //    InventoryMutationEngine bumps it on every sale, so a checkout that
+      //    committed between the groupBy above and this write makes the update
+      //    match zero rows. Without that guard the stale ledger sum would
+      //    overwrite the sale's decrement and re-create the drift this job exists
+      //    to repair. A contended row is left for the next run, not an error.
+      try {
+        const result = await this.prisma.product.updateMany({
+          where: { id: product.id, shopId: product.shopId, stockVersion: product.stockVersion },
+          data: { currentStock: ledgerStock, stockVersion: { increment: 1 } },
+        });
+        if (result.count === 0) {
+          this.logger.warn(
+            `Skipping repair of product ${product.id}: stock changed concurrently (stockVersion moved past ${product.stockVersion}); the next run re-evaluates it.`,
+          );
+          await this.prisma.inventoryDriftLog.update({
+            where: { id: driftLog.id },
+            data: { status: DriftStatus.DETECTED },
+          });
+          continue;
+        }
+        product.currentStock = ledgerStock;
+        product.stockVersion += 1;
+
+        await this.prisma.inventoryDriftLog.update({
+          where: { id: driftLog.id },
+          data: { status: DriftStatus.REPAIRED, resolvedAt: new Date() },
+        });
+
+        await this.driftAlertService.notifyCriticalDrift({
+          kind: 'STOCK_CACHE_DRIFT',
+          driftId: driftLog.id,
+          shopId: product.shopId,
+          productId: product.id,
+          repairedValue: ledgerStock.toString(),
+          correlationId,
+        });
+
+        counters.fixed++;
+      } catch (repairErr) {
+        this.logger.error(`Failed to repair Product.currentStock for product ${product.id}: ${errorMessage(repairErr)}`);
+        await this.prisma.inventoryDriftLog.update({
+          where: { id: driftLog.id },
+          data: { status: DriftStatus.FAILED },
+        });
+
+        await this.driftAlertService.notifyRepairFailure({
+          kind: 'STOCK_CACHE_DRIFT',
+          driftId: driftLog.id,
+          shopId: product.shopId,
+          productId: product.id,
+          error: errorMessage(repairErr),
+          correlationId,
+        });
+      }
+    }
+
+    return counters;
+  }
+
+  /** Redis `stock:{shopId}:{productId}` must equal Product.currentStock; Redis is repaired from the DB. */
+  private async reconcileRedisInvariant(products: ReconProduct[]): Promise<DriftCounters> {
+    const counters: DriftCounters = { found: 0, fixed: 0 };
+    if (products.length === 0) return counters;
+
+    // Fetch Redis values efficiently via pipeline
+    const pipeline = this.redis.pipeline();
+    products.forEach((p) => {
+      pipeline.get(`stock:${p.shopId}:${p.id}`);
+    });
+    const redisResults = (await pipeline.exec()) ?? [];
+
+    for (let i = 0; i < products.length; i++) {
+      const product = products[i];
+      const dbStock = product.currentStock;
+      const [err, redisRaw] = redisResults[i] ?? [new Error('Missing pipeline result'), null];
+
+      if (err) {
+        this.logger.error(`Failed to read Redis stock for product ${product.id}`, err);
+        continue;
+      }
+      if (redisRaw === null || redisRaw === undefined) continue;
+
+      let redisStock: Prisma.Decimal;
+      try {
+        redisStock = new Prisma.Decimal(String(redisRaw));
+        if (redisStock.isNaN()) throw new Error('NaN');
+      } catch {
+        this.logger.error(`Unparsable Redis stock value '${String(redisRaw)}' for product ${product.id}; skipping.`);
+        continue;
+      }
+
+      if (redisStock.equals(dbStock)) continue;
+
+      counters.found++;
+      const difference = dbStock.minus(redisStock).abs();
+      const correlationId = `drift-${Date.now()}-${product.id}`;
+
+      // 1. Structured Logging
+      this.logger.warn({
+        event: 'REDIS_STOCK_DRIFT',
+        severity: 'WARN',
+        shopId: product.shopId,
+        productId: product.id,
+        redisStock: redisStock.toString(),
+        databaseStock: dbStock.toString(),
+        difference: difference.toString(),
+        timestamp: new Date().toISOString(),
+        correlationId,
+      });
+
+      // 2. Persistent Drift Audit Record (DETECTED)
+      const driftLog = await this.prisma.inventoryDriftLog.create({
+        data: {
+          shopId: product.shopId,
+          productId: product.id,
+          redisValue: redisStock,
+          databaseValue: dbStock,
+          difference,
+          status: DriftStatus.DETECTED,
+        },
+      });
+
+      // 3. Attempt Redis Repair
+      try {
+        await this.redis.set(
+          `stock:${product.shopId}:${product.id}`,
+          dbStock.toString(),
+          'EX',
+          this.cacheConfig.inventoryDriftTtlSeconds,
+        );
+
+        await this.prisma.inventoryDriftLog.update({
+          where: { id: driftLog.id },
+          data: { status: DriftStatus.REPAIRED, resolvedAt: new Date() },
+        });
+
+        await this.driftAlertService.notifyCriticalDrift({
+          kind: 'REDIS_STOCK_DRIFT',
+          driftId: driftLog.id,
+          shopId: product.shopId,
+          productId: product.id,
+          repairedValue: dbStock.toString(),
+          correlationId,
+        });
+
+        counters.fixed++;
+      } catch (repairErr) {
+        this.logger.error(`Failed to repair Redis stock for product ${product.id}: ${errorMessage(repairErr)}`);
+        await this.prisma.inventoryDriftLog.update({
+          where: { id: driftLog.id },
+          data: { status: DriftStatus.FAILED },
+        });
+
+        await this.driftAlertService.notifyRepairFailure({
+          kind: 'REDIS_STOCK_DRIFT',
+          driftId: driftLog.id,
+          shopId: product.shopId,
+          productId: product.id,
+          error: errorMessage(repairErr),
+          correlationId,
+        });
+      }
+    }
+
+    return counters;
   }
 }

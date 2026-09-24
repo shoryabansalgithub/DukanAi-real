@@ -18,12 +18,8 @@ import { SalesEventsController } from './sales-events.controller';
     BullModule.registerQueue({
       name: 'sales-webhooks',
     }),
-    BullModule.registerQueue({
-      name: 'sales-analytics',
-    }),
-    BullModule.registerQueue({
-      name: 'sales-notifications',
-    }),
+    // 'sales-analytics' and 'sales-notifications' were registered here but never
+    // consumed; the router no longer fans out to them.
   ],
   controllers: [SalesEventsController],
   providers: [

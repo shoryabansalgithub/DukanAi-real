@@ -116,4 +116,16 @@ export class CacheConfig {
   @Transform(({ value }) => (value ? parseInt(value, 10) : 3600))
   @EnvVariable('CACHE_INVENTORY_STOCK_TTL_SECONDS')
   inventoryStockTtlSeconds: number = 3600;
+
+  @IsOptional()
+  @IsNumber()
+  @Transform(({ value }) => (value ? parseInt(value, 10) : 30000))
+  @EnvVariable('CACHE_SEARCH_STOCK_TTL_MS')
+  searchStockTtlMs: number = 30000;
+
+  @IsOptional()
+  @IsNumber()
+  @Transform(({ value }) => (value ? parseInt(value, 10) : 60000))
+  @EnvVariable('CACHE_ANALYTICS_KPI_TTL_MS')
+  analyticsKpiTtlMs: number = 60000;
 }

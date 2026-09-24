@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class CustomerAuditService {
@@ -17,7 +16,7 @@ export class CustomerAuditService {
     return this.prisma.customerAudit.create({
       data: {
         customerId: data.customerId,
-        actorId: data.actorId,
+        actorId: data.actorId ?? null,
         action: data.action,
         previousPayload: data.previousPayload ? data.previousPayload : undefined,
         newPayload: data.newPayload ? data.newPayload : undefined,

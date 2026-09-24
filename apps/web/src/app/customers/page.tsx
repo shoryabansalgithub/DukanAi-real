@@ -1,575 +1,424 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
-import { Card } from '@/components/ui/Card';
-import { Search, UserPlus, Calendar as CalendarIcon, Filter, MoreVertical, IndianRupee, Users, ChevronDown, Receipt } from 'lucide-react';
-import { Modal } from '@/components/ui/Modal';
-import { useToast } from '@/components/ui/Toast';
-import { SlidingPanel } from '@/components/ui/SlidingPanel';
-import { customersApi } from '@/lib/api-client';
-import { describeApiError } from '@/lib/api-error';
-import type { Customer } from '@/types';
+import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { IndianRupee, MoreVertical, Search, UserPlus, Users, X } from 'lucide-react';
+import { Card } from '@/components/ui/Card';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { useToast } from '@/components/ui/Toast';
+import { SkeletonBox } from '@/components/ui/Skeleton';
+import { useDebounce } from '@/hooks/useDebounce';
+import { analyticsApi, customersApi, type CustomerView, type PaginatedResult } from '@/lib/api-client';
+import { describeApiError, getApiErrorCode } from '@/lib/api-error';
+import { CustomerFormModal } from '@/components/customers/CustomerFormModal';
+import { RecordPaymentModal } from '@/components/customers/RecordPaymentModal';
+import { PaginationControls } from '@/components/customers/PaginationControls';
+import { EmptyState, ErrorState, TableSkeleton } from '@/components/customers/States';
+import { formatDate, formatMoney } from '@/components/customers/format';
+import { canDeleteCustomers } from '@/components/customers/permissions';
 
-type CustomerRecord = Customer & {
-  outstandingUdhar?: number;
-  creditBalance?: number;
-  totalPurchases?: number;
-  lastPurchaseAt?: string | null;
-};
+const PAGE_SIZE = 25;
 
-function normalizeCustomer(customer: CustomerRecord): Customer {
-  return {
-    ...customer,
-    phone: customer.phone ?? '',
-    email: customer.email ?? '',
-    address: customer.address ?? '',
-    udharAmount: Number(customer.udharAmount ?? customer.outstandingUdhar ?? customer.creditBalance ?? 0),
-    totalSpent: Number(customer.totalSpent ?? customer.totalPurchases ?? 0),
-    lastPurchase: customer.lastPurchase ?? customer.lastPurchaseAt ?? undefined,
-  };
+function availableCredit(customer: CustomerView): number {
+  return customer.creditLimit - customer.outstandingBalance;
 }
 
-export default function CustomersPage() {
+function isOverLimit(customer: CustomerView): boolean {
+  return customer.outstandingBalance > customer.creditLimit;
+}
+
+function CustomersPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { data: session } = useSession();
   const { toast } = useToast();
-  
-  const [customers, setCustomers] = useState<Customer[]>([]);
+
+  // ---- list state ----
+  const [query, setQuery] = useState('');
+  const debouncedQuery = useDebounce(query.trim(), 300);
+  const [skip, setSkip] = useState(0);
+  const [page, setPage] = useState<PaginatedResult<CustomerView> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
+  const requestSeq = useRef(0);
 
-  const fetchCustomers = async () => {
+  // ---- outstanding udhar across all customers (server aggregate) ----
+  const [outstandingUdhar, setOutstandingUdhar] = useState<number | 'error' | null>(null);
+
+  // ---- modals ----
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<CustomerView | null>(null);
+  const [paymentTarget, setPaymentTarget] = useState<CustomerView | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CustomerView | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  const allowDelete = canDeleteCustomers(session?.user?.role);
+
+  const fetchPage = useCallback(async () => {
+    const seq = ++requestSeq.current;
     setIsLoading(true);
     setError(null);
-
     try {
-      const data = await customersApi.list();
-      setCustomers(data.map(normalizeCustomer));
+      const result = await customersApi.list({ q: debouncedQuery || undefined, skip, take: PAGE_SIZE });
+      if (seq !== requestSeq.current) return;
+      setPage(result);
     } catch (err) {
-      setCustomers([]);
+      if (seq !== requestSeq.current) return;
+      setPage(null);
       setError(describeApiError(err, 'Loading customers (GET /customers)'));
     } finally {
-      setIsLoading(false);
+      if (seq === requestSeq.current) setIsLoading(false);
     }
-  };
+  }, [debouncedQuery, skip]);
 
   useEffect(() => {
-    void fetchCustomers();
-  }, []);
-  
-  // Modals & Panels
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
-  const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
-  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
-  const [activeTab, setActiveTab] = useState('Details');
+    void fetchPage();
+  }, [fetchPage]);
 
-  // Dropdowns
-  const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
-  
-  const filterRef = useRef<HTMLDivElement>(null);
-
-  // Filters & Sorting
-  const [statusFilter, setStatusFilter] = useState('All');
-  const [sortBy, setSortBy] = useState('Name');
-
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
-        setIsFilterOpen(false);
-      }
-      // Action menu handled by click logic inside the component to prevent multiple closing issues
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  // Form State
-  const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('');
-  const [newEmail, setNewEmail] = useState('');
-  const [newAddress, setNewAddress] = useState('');
-  const [newCreditLimit, setNewCreditLimit] = useState('5000');
-  const [newUdhar, setNewUdhar] = useState('');
-
-  // Payment modal state
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMode, setPaymentMode] = useState('Cash');
-  const [paymentNotes, setPaymentNotes] = useState('');
-
-  // Derived Stats
-  const totalUdhar = customers.reduce((acc, curr) => acc + curr.udharAmount, 0);
-  const overdueCount = customers.filter(c => c.udharAmount > 0).length; // Dummy logic
-  const totalCustomers = customers.length;
-
-  // Filter & Sort Logic
-  let processedCustomers = customers.filter(c => 
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    c.phone.includes(searchTerm)
-  );
-
-  if (statusFilter !== 'All') {
-    processedCustomers = processedCustomers.filter(c => {
-      const status = c.udharAmount > 0 ? 'Pending' : 'Clear';
-      if (statusFilter === 'Overdue') return c.udharAmount > 5000; // Dummy
-      return status === statusFilter;
-    });
-  }
-
-  processedCustomers.sort((a, b) => {
-    if (sortBy === 'Name') return a.name.localeCompare(b.name);
-    if (sortBy === 'Pending Amount') return b.udharAmount - a.udharAmount;
-    if (sortBy === 'Last Payment') return new Date(b.lastPurchase ?? 0).getTime() - new Date(a.lastPurchase ?? 0).getTime();
-    return 0;
-  });
-
-  const handleSaveCustomer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newName.trim() || !newPhone.trim()) return;
-
-    try {
-      const createdCustomer = normalizeCustomer(
-        await customersApi.create({
-          name: newName.trim(),
-          phone: newPhone.trim(),
-          email: newEmail.trim() || undefined,
-          address: newAddress.trim() || undefined,
-        })
-      );
-
-      setCustomers((current) => [createdCustomer, ...current]);
-      toast('Customer added successfully!', 'success');
-      setIsAddModalOpen(false);
-
-      setNewName('');
-      setNewPhone('');
-      setNewEmail('');
-      setNewAddress('');
-      setNewCreditLimit('5000');
-      setNewUdhar('');
-    } catch (error) {
-      toast(describeApiError(error, 'Saving customer (POST /customers)'), 'error');
-    }
+  // A new search always starts on the first page.
+  const handleQueryChange = (value: string) => {
+    setQuery(value);
+    setSkip(0);
   };
 
-  const handleRecordPayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedCustomer || !paymentAmount || Number(paymentAmount) <= 0) return;
-    try {
-      const updated = await customersApi.recordPayment(selectedCustomer.id, {
-        amount: Number(paymentAmount),
-        mode: paymentMode,
-        notes: paymentNotes || undefined,
+  const fetchOutstanding = useCallback(() => {
+    analyticsApi
+      .dashboardSummary()
+      .then((summary) => setOutstandingUdhar(summary.outstandingUdhar))
+      .catch((err) => {
+        describeApiError(err, 'Loading outstanding udhar (GET /dashboard/summary)');
+        setOutstandingUdhar('error');
       });
-      setCustomers((current) =>
-        current.map((c) => (c.id === updated.id ? { ...c, udharAmount: updated.udharAmount } : c)),
-      );
-      setSelectedCustomer((current: Customer | null) =>
-        current && current.id === updated.id ? { ...current, udharAmount: updated.udharAmount } : current,
-      );
-      toast(`₹${paymentAmount} payment recorded for ${selectedCustomer.name}`, 'success');
-      setIsPaymentModalOpen(false);
-      setPaymentAmount('');
-      setPaymentNotes('');
-    } catch (error) {
-      toast(describeApiError(error, 'Recording payment (POST /customers/:id/payments)'), 'error');
+  }, []);
+
+  useEffect(() => {
+    fetchOutstanding();
+  }, [fetchOutstanding]);
+
+  // `/customers?new=1` (dashboard quick action) opens the create modal.
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      setIsAddOpen(true);
+      router.replace('/customers');
+    }
+  }, [searchParams, router]);
+
+  // Close the row menu on outside click.
+  useEffect(() => {
+    if (!openMenuId) return;
+    const close = () => setOpenMenuId(null);
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [openMenuId]);
+
+  const replaceRow = (updated: CustomerView) => {
+    setPage((current) =>
+      current ? { ...current, items: current.items.map((c) => (c.id === updated.id ? updated : c)) } : current,
+    );
+  };
+
+  const handleCreated = (created: CustomerView) => {
+    setPage((current) =>
+      current ? { ...current, items: [created, ...current.items].slice(0, PAGE_SIZE), total: current.total + 1 } : current,
+    );
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      await customersApi.remove(deleteTarget.id);
+      toast(`${deleteTarget.name} deleted`, 'success');
+      setDeleteTarget(null);
+      void fetchPage();
+      fetchOutstanding();
+    } catch (err) {
+      if (getApiErrorCode(err) === 'CUSTOMER_HAS_BALANCE') {
+        toast(
+          `${deleteTarget.name} still has a balance of ${formatMoney(deleteTarget.outstandingBalance)}. Settle it (record a payment or adjust) before deleting.`,
+          'warning',
+        );
+      } else {
+        toast(describeApiError(err, 'Deleting customer (DELETE /customers/:id)'), 'error');
+      }
+    } finally {
+      setDeleting(false);
     }
   };
 
-  const handleAction = (action: string, customer: Customer, e: React.MouseEvent) => {
-    e.stopPropagation();
-    setOpenActionMenuId(null);
-    setSelectedCustomer(customer);
-    
-    switch (action) {
-      case 'View Details': 
-        router.push(`/customers/${customer.id}`);
-        break;
-      case 'Record Payment':
-        setIsPaymentModalOpen(true);
-        break;
-      case 'Send Reminder':
-        toast(`Payment reminder sent to ${customer.name} via WhatsApp`, 'success');
-        break;
-      case 'Edit Customer':
-        toast('Edit customer coming soon', 'info');
-        break;
-      case 'Delete':
-        toast(`Customer ${customer.name} deleted`, 'success');
-        break;
-    }
-  };
+  const items = page?.items ?? [];
+  const total = page?.total ?? 0;
 
   return (
     <div className="space-y-6">
-      
-      {/* Header Section */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      {/* Header */}
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Customers (Udhar)</h1>
-          <p className="text-sm text-gray-500 mt-1">Manage your regular customers and track pending payments.</p>
+          <p className="mt-1 text-sm text-gray-500">Credit customers, balances and repayments.</p>
         </div>
-        <button 
-          onClick={() => setIsAddModalOpen(true)}
-          className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
+        <button
+          type="button"
+          onClick={() => setIsAddOpen(true)}
+          className="flex items-center gap-2 rounded-xl bg-[#8B5CF6] px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition-all hover:bg-[#7C3AED]"
         >
           <UserPlus size={18} />
-          Add New Customer
+          Add customer
         </button>
       </div>
 
-      {/* Stats Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="p-5 flex items-center gap-4 hoverable">
-          <div className="w-12 h-12 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-500">
+      {/* Stats (server numbers only) */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Card className="flex items-center gap-4 p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-orange-500/10 text-orange-500">
             <IndianRupee size={24} />
           </div>
           <div>
-            <p className="text-xs text-gray-500 font-medium">Total Pending Udhar</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{totalUdhar.toLocaleString('en-IN')}</h3>
+            <p className="text-xs font-medium text-gray-500">Outstanding udhar (all customers)</p>
+            {outstandingUdhar === null ? (
+              <SkeletonBox className="mt-1 h-6 w-28" />
+            ) : outstandingUdhar === 'error' ? (
+              <h3 className="text-xl font-bold tracking-tight text-gray-400" title="Could not load the dashboard summary">—</h3>
+            ) : (
+              <h3 className="text-xl font-bold tracking-tight text-gray-800">{formatMoney(outstandingUdhar)}</h3>
+            )}
           </div>
         </Card>
-        <Card className="p-5 flex items-center gap-4 hoverable">
-          <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center text-red-500">
-            <CalendarIcon size={24} />
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Overdue Accounts</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{overdueCount} Customers</h3>
-          </div>
-        </Card>
-        <Card className="p-5 flex items-center gap-4 hoverable">
-          <div className="w-12 h-12 rounded-xl bg-[#8B5CF6]/10 flex items-center justify-center text-[#8B5CF6]">
+        <Card className="flex items-center gap-4 p-5">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#8B5CF6]/10 text-[#8B5CF6]">
             <Users size={24} />
           </div>
           <div>
-            <p className="text-xs text-gray-500 font-medium">Total Customers</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{totalCustomers}</h3>
+            <p className="text-xs font-medium text-gray-500">{debouncedQuery ? 'Matching customers' : 'Total customers'}</p>
+            {isLoading && !page ? (
+              <SkeletonBox className="mt-1 h-6 w-16" />
+            ) : (
+              <h3 className="text-xl font-bold tracking-tight text-gray-800">{total.toLocaleString('en-IN')}</h3>
+            )}
           </div>
         </Card>
       </div>
 
-      {/* Main Content Card */}
-      <Card className="p-0 overflow-visible">
-        {/* Toolbar */}
-        <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row gap-4 justify-between items-center bg-gray-50/50">
+      {/* Table */}
+      <Card className="overflow-visible p-0">
+        <div className="flex flex-col gap-4 border-b border-gray-100 bg-gray-50/50 p-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="relative w-full sm:w-96">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-            <input 
-              type="text" 
-              placeholder="Search by name or phone..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-white border border-gray-200 rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B5CF6]/20 focus:border-[#8B5CF6] transition-all"
+            <input
+              type="search"
+              aria-label="Search customers"
+              placeholder="Search by name or phone…"
+              value={query}
+              onChange={(e) => handleQueryChange(e.target.value)}
+              className="w-full rounded-xl border border-gray-200 bg-white py-2 pl-10 pr-9 text-sm transition-all focus:border-[#8B5CF6] focus:outline-none focus:ring-2 focus:ring-[#8B5CF6]/20"
             />
+            {query && (
+              <button
+                type="button"
+                onClick={() => handleQueryChange('')}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
-          <div className="relative" ref={filterRef}>
-            <button 
-              onClick={() => setIsFilterOpen(!isFilterOpen)}
-              className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors w-full sm:w-auto justify-center"
-            >
-              <Filter size={16} />
-              Filter & Sort <ChevronDown size={14} />
-            </button>
-
-            <AnimatePresence>
-              {isFilterOpen && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 10 }}
-                  className="absolute right-0 top-full mt-2 w-64 bg-white border border-gray-100 shadow-xl rounded-xl z-20 p-4"
-                >
-                  <div className="space-y-4">
-                    <div>
-                      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Status</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {['All', 'Clear', 'Pending', 'Overdue'].map(s => (
-                          <button 
-                            key={s} 
-                            onClick={() => setStatusFilter(s)}
-                            className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${statusFilter === s ? 'bg-[#8B5CF6] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-                          >
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Sort By</h4>
-                      <select 
-                        value={sortBy}
-                        onChange={(e) => setSortBy(e.target.value)}
-                        className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-sm text-gray-700 outline-none focus:border-[#8B5CF6]"
-                      >
-                        <option>Name</option>
-                        <option>Pending Amount</option>
-                        <option>Last Payment</option>
-                      </select>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+          {isLoading && page && <span className="text-xs font-medium text-gray-400">Refreshing…</span>}
         </div>
 
-        {/* Table */}
-        <div className="overflow-x-auto min-h-[400px]">
-          {isLoading ? (
-            <div className="flex min-h-[400px] items-center justify-center">
-              <div className="flex flex-col items-center gap-3 text-gray-500">
-                <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-[#8B5CF6]" />
-                <p className="text-sm font-medium">Loading customers...</p>
-              </div>
-            </div>
+        <div className="min-h-[320px]">
+          {isLoading && !page ? (
+            <TableSkeleton rows={8} cols={7} />
           ) : error ? (
-            <div className="flex min-h-[400px] items-center justify-center px-6">
-              <div className="text-center">
-                <p className="font-medium text-gray-800">Unable to load customers</p>
-                <p className="mt-1 text-xs text-gray-500">{error}</p>
-                <button
-                  onClick={() => void fetchCustomers()}
-                  className="mt-4 rounded-xl bg-[#8B5CF6] px-4 py-2 text-sm font-bold text-white shadow-lg shadow-purple-500/30 transition-all hover:bg-[#7C3AED]"
-                >
-                  Retry
-                </button>
-              </div>
+            <div className="p-6">
+              <ErrorState title="Unable to load customers" message={error} onRetry={() => void fetchPage()} retrying={isLoading} />
             </div>
+          ) : items.length === 0 ? (
+            <EmptyState
+              icon={<Users size={44} />}
+              title={debouncedQuery ? 'No customers match your search' : 'No customers yet'}
+              hint={debouncedQuery ? 'Try a different name or phone number.' : 'Add your first credit customer to start tracking udhar.'}
+              action={
+                !debouncedQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setIsAddOpen(true)}
+                    className="rounded-xl bg-[#8B5CF6] px-4 py-2 text-xs font-bold text-white shadow-lg shadow-purple-500/30 hover:bg-[#7C3AED]"
+                  >
+                    Add customer
+                  </button>
+                )
+              }
+            />
           ) : (
-            <table className="w-full text-left text-sm text-gray-600">
-              <thead className="bg-gray-50/80 text-gray-500 text-xs uppercase font-semibold border-b border-gray-100">
-                <tr>
-                  <th className="px-6 py-4">Customer Details</th>
-                  <th className="px-6 py-4">Phone Number</th>
-                  <th className="px-6 py-4">Pending Udhar</th>
-                  <th className="px-6 py-4">Last Payment</th>
-                  <th className="px-6 py-4">Status</th>
-                  <th className="px-6 py-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {processedCustomers.map((customer) => {
-                  const status = customer.udharAmount === 0 ? 'Clear' : customer.udharAmount > 5000 ? 'Overdue' : 'Pending';
-                  
-                  return (
-                    <tr 
-                      key={customer.id} 
-                      onClick={() => router.push(`/customers/${customer.id}`)}
-                      className="hover:bg-gray-50/50 transition-colors cursor-pointer group"
-                    >
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <img 
-                            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${customer.name}`} 
-                            alt={customer.name} 
-                            className="w-9 h-9 rounded-full bg-gray-100"
-                          />
-                          <span className="font-bold text-gray-800">{customer.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 font-medium text-gray-600">{customer.phone}</td>
-                      <td className="px-6 py-4">
-                        <span className={`font-bold ${customer.udharAmount > 0 ? 'text-orange-500' : 'text-green-500'}`}>
-                          ₹{customer.udharAmount.toLocaleString('en-IN')}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-gray-500">{customer.lastPurchase ? new Date(customer.lastPurchase).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'N/A'}</td>
-                      <td className="px-6 py-4">
-                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                          status === 'Overdue' ? 'bg-red-50 text-red-600' :
-                          status === 'Clear' ? 'bg-green-50 text-green-600' :
-                          'bg-orange-50 text-orange-600'
-                        }`}>
-                          {status}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right relative">
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); setOpenActionMenuId(openActionMenuId === customer.id ? null : customer.id); }}
-                          className="p-2 text-gray-400 hover:text-[#8B5CF6] transition-colors rounded-lg hover:bg-[#8B5CF6]/10"
-                        >
-                          <MoreVertical size={18} />
-                        </button>
-
-                        <AnimatePresence>
-                          {openActionMenuId === customer.id && (
-                            <motion.div 
-                              initial={{ opacity: 0, scale: 0.95 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              exit={{ opacity: 0, scale: 0.95 }}
-                              className="absolute right-8 top-10 w-48 bg-white border border-gray-100 shadow-xl rounded-xl z-50 overflow-hidden text-left"
-                            >
-                              {['View Details', 'Record Payment', 'Send Reminder', 'Edit Customer'].map(action => (
-                                <button 
-                                  key={action}
-                                  onClick={(e) => handleAction(action, customer, e)}
-                                  className="w-full text-left px-4 py-2.5 text-xs text-gray-700 hover:bg-gray-50 font-medium transition-colors"
-                                >
-                                  {action}
-                                </button>
-                              ))}
-                              <div className="h-px bg-gray-100 w-full" />
-                              <button 
-                                onClick={(e) => handleAction('Delete', customer, e)}
-                                className="w-full text-left px-4 py-2.5 text-xs text-red-600 hover:bg-red-50 font-bold transition-colors"
-                              >
-                                Delete
-                              </button>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {processedCustomers.length === 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm text-gray-600">
+                <thead className="border-b border-gray-100 bg-gray-50/80 text-xs font-semibold uppercase text-gray-500">
                   <tr>
-                    <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
-                      <Users className="mx-auto h-12 w-12 text-gray-300 mb-3" />
-                      <p className="font-medium text-gray-800">No customers found</p>
-                      <p className="text-xs mt-1">Try adjusting your search terms.</p>
-                    </td>
+                    <th className="px-6 py-4">Name</th>
+                    <th className="px-6 py-4">Phone</th>
+                    <th className="px-6 py-4">City</th>
+                    <th className="px-6 py-4 text-right">Outstanding</th>
+                    <th className="px-6 py-4 text-right">Credit limit</th>
+                    <th className="px-6 py-4 text-right">Available</th>
+                    <th className="px-6 py-4">Last purchase</th>
+                    <th className="px-6 py-4 text-right">Actions</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {items.map((customer) => {
+                    const overLimit = isOverLimit(customer);
+                    const available = availableCredit(customer);
+                    return (
+                      <tr
+                        key={customer.id}
+                        onClick={() => router.push(`/customers/${customer.id}`)}
+                        className="group cursor-pointer transition-colors hover:bg-gray-50/50"
+                      >
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-100 text-sm font-bold text-violet-700">
+                              {customer.name.slice(0, 1).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <Link
+                                href={`/customers/${customer.id}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="block truncate font-bold text-gray-800 hover:text-[#8B5CF6]"
+                              >
+                                {customer.name}
+                              </Link>
+                              <div className="mt-0.5 flex flex-wrap gap-1">
+                                {overLimit && (
+                                  <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-bold text-red-600">Over limit</span>
+                                )}
+                                {!customer.isActive && (
+                                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold text-gray-600">Inactive</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 font-medium text-gray-600">{customer.phone || '—'}</td>
+                        <td className="px-6 py-4 text-gray-600">
+                          {customer.city || '—'}
+                          {customer.state && <span className="block text-[11px] text-gray-400">{customer.state}</span>}
+                        </td>
+                        <td className={`whitespace-nowrap px-6 py-4 text-right font-bold ${customer.outstandingBalance > 0 ? 'text-orange-500' : customer.outstandingBalance < 0 ? 'text-blue-600' : 'text-green-500'}`}>
+                          {customer.outstandingBalance < 0
+                            ? `Advance ${formatMoney(Math.abs(customer.outstandingBalance))}`
+                            : formatMoney(customer.outstandingBalance)}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-right text-gray-700">{formatMoney(customer.creditLimit)}</td>
+                        <td className={`whitespace-nowrap px-6 py-4 text-right font-semibold ${available < 0 ? 'text-red-600' : 'text-gray-800'}`}>
+                          {formatMoney(available)}
+                        </td>
+                        <td className="whitespace-nowrap px-6 py-4 text-gray-500">{formatDate(customer.lastPurchaseAt)}</td>
+                        <td className="relative px-6 py-4 text-right">
+                          <button
+                            type="button"
+                            aria-label={`Actions for ${customer.name}`}
+                            aria-haspopup="menu"
+                            aria-expanded={openMenuId === customer.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setOpenMenuId(openMenuId === customer.id ? null : customer.id);
+                            }}
+                            className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-[#8B5CF6]/10 hover:text-[#8B5CF6]"
+                          >
+                            <MoreVertical size={18} />
+                          </button>
+                          <AnimatePresence>
+                            {openMenuId === customer.id && (
+                              <motion.div
+                                role="menu"
+                                initial={{ opacity: 0, scale: 0.95 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.95 }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute right-8 top-10 z-50 w-48 overflow-hidden rounded-xl border border-gray-100 bg-white text-left shadow-xl"
+                              >
+                                <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); router.push(`/customers/${customer.id}`); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                                  View details
+                                </button>
+                                <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setPaymentTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                                  Record payment
+                                </button>
+                                <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setEditTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50">
+                                  Edit customer
+                                </button>
+                                {allowDelete && (
+                                  <>
+                                    <div className="h-px w-full bg-gray-100" />
+                                    <button role="menuitem" type="button" onClick={() => { setOpenMenuId(null); setDeleteTarget(customer); }} className="w-full px-4 py-2.5 text-left text-xs font-bold text-red-600 transition-colors hover:bg-red-50">
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
+
+        {page && !error && (
+          <PaginationControls skip={skip} take={PAGE_SIZE} total={total} onChange={setSkip} disabled={isLoading} itemLabel="customers" />
+        )}
       </Card>
 
-      {/* Modals & Panels */}
-      
-      <Modal isOpen={isAddModalOpen} onClose={() => setIsAddModalOpen(false)} title="Add New Customer" size="md">
-        <form onSubmit={handleSaveCustomer} className="space-y-4">
-          <div><label className="text-sm font-medium">Name *</label><input value={newName} onChange={e=>setNewName(e.target.value)} required className="w-full mt-1 border rounded-lg p-2" /></div>
-          <div><label className="text-sm font-medium">Phone *</label><input value={newPhone} onChange={e=>setNewPhone(e.target.value)} required className="w-full mt-1 border rounded-lg p-2" /></div>
-          <div><label className="text-sm font-medium">Email (Optional)</label><input value={newEmail} onChange={e=>setNewEmail(e.target.value)} type="email" className="w-full mt-1 border rounded-lg p-2" /></div>
-          <div><label className="text-sm font-medium">Address (Optional)</label><textarea value={newAddress} onChange={e=>setNewAddress(e.target.value)} className="w-full mt-1 border rounded-lg p-2" /></div>
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className="text-sm font-medium">Credit Limit (₹)</label><input value={newCreditLimit} onChange={e=>setNewCreditLimit(e.target.value)} type="number" className="w-full mt-1 border rounded-lg p-2" /></div>
-            <div><label className="text-sm font-medium">Opening Udhar</label><input value={newUdhar} onChange={e=>setNewUdhar(e.target.value)} type="number" className="w-full mt-1 border rounded-lg p-2" /></div>
-          </div>
-          <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">Save Customer</button>
-          </div>
-        </form>
-      </Modal>
+      {/* Modals */}
+      <CustomerFormModal isOpen={isAddOpen} mode="create" onClose={() => setIsAddOpen(false)} onSaved={handleCreated} />
 
-      <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title={`Record Payment - ${selectedCustomer?.name}`} size="sm">
-        <form onSubmit={handleRecordPayment} className="space-y-4">
-          <div>
-            <label className="text-sm font-medium">Amount Received (₹) *</label>
-            <input required type="number" min="1" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} className="w-full mt-1 border rounded-lg p-2 text-lg font-bold" placeholder="0.00" />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Payment Mode</label>
-            <select value={paymentMode} onChange={(e) => setPaymentMode(e.target.value)} className="w-full mt-1 border rounded-lg p-2">
-              <option>Cash</option>
-              <option>UPI</option>
-              <option>Card</option>
-              <option>Bank Transfer</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Notes (Optional)</label>
-            <textarea value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Paid for last week's bill" rows={2} />
-          </div>
-          <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm font-bold shadow-lg shadow-green-500/30">Record Payment</button>
-          </div>
-        </form>
-      </Modal>
+      <CustomerFormModal
+        isOpen={editTarget !== null}
+        mode="edit"
+        customer={editTarget}
+        onClose={() => setEditTarget(null)}
+        onSaved={replaceRow}
+      />
 
-      <SlidingPanel isOpen={isSidePanelOpen} onClose={() => setIsSidePanelOpen(false)} title={selectedCustomer?.name || 'Customer Details'}>
-        {selectedCustomer && (
-          <div className="p-6">
-            <div className="flex items-center gap-4 mb-8">
-              <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${selectedCustomer.name}`} className="w-16 h-16 rounded-full bg-gray-100 border-2 border-white shadow-md" alt="avatar" />
-              <div>
-                <h2 className="text-xl font-bold text-gray-800">{selectedCustomer.name}</h2>
-                <p className="text-sm text-gray-500">{selectedCustomer.phone}</p>
-                <div className="flex gap-2 mt-2">
-                  <span className="px-2 py-0.5 bg-purple-100 text-purple-600 rounded text-xs font-bold">Total Spent: ₹{selectedCustomer.totalSpent.toLocaleString('en-IN')}</span>
-                  {selectedCustomer.udharAmount > 0 && <span className="px-2 py-0.5 bg-orange-100 text-orange-600 rounded text-xs font-bold">Udhar: ₹{selectedCustomer.udharAmount.toLocaleString('en-IN')}</span>}
-                </div>
-              </div>
-            </div>
+      <RecordPaymentModal
+        isOpen={paymentTarget !== null}
+        customer={paymentTarget}
+        onClose={() => setPaymentTarget(null)}
+        onRecorded={({ customer }) => {
+          replaceRow(customer);
+          fetchOutstanding();
+        }}
+      />
 
-            <div className="flex gap-4 border-b border-gray-100 mb-6">
-              {['Details', 'Transaction History', 'Invoices'].map(tab => (
-                <button 
-                  key={tab} 
-                  onClick={() => setActiveTab(tab)}
-                  className={`pb-2 text-sm font-bold border-b-2 transition-colors ${activeTab === tab ? 'border-[#8B5CF6] text-[#8B5CF6]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
-                >
-                  {tab}
-                </button>
-              ))}
-            </div>
-
-            {activeTab === 'Details' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Email</p>
-                    <p className="font-semibold text-gray-800 text-sm">{selectedCustomer.email || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Address</p>
-                    <p className="font-semibold text-gray-800 text-sm">{selectedCustomer.address || 'N/A'}</p>
-                  </div>
-                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Credit Limit</p>
-                    <p className="font-semibold text-gray-800 text-sm">₹{Number(selectedCustomer.creditLimit ?? 0).toLocaleString('en-IN')}</p>
-                  </div>
-                  <div className="bg-gray-50 p-3 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Joined Date</p>
-                    <p className="font-semibold text-gray-800 text-sm">{selectedCustomer.joinedAt ? new Date(selectedCustomer.joinedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}</p>
-                  </div>
-                </div>
-                
-                <button 
-                  onClick={() => { setIsSidePanelOpen(false); setIsPaymentModalOpen(true); }}
-                  className="w-full mt-4 bg-green-50 text-green-600 hover:bg-green-100 py-3 rounded-xl text-sm font-bold transition-colors border border-green-200"
-                >
-                  Record Payment
-                </button>
-              </div>
-            )}
-
-            {activeTab === 'Transaction History' && (
-              <div className="p-6 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">
-                <p className="mb-3">Full transaction history is on the customer profile.</p>
-                <button
-                  onClick={() => router.push(`/customers/${selectedCustomer.id}`)}
-                  className="text-[#8B5CF6] text-sm font-bold hover:underline"
-                >
-                  Open full profile
-                </button>
-              </div>
-            )}
-
-            {activeTab === 'Invoices' && (
-              <div className="p-6 text-center text-sm text-gray-500 border border-dashed border-gray-200 rounded-xl">
-                <p className="mb-3 flex items-center justify-center gap-2"><Receipt size={14} /> Recent invoices are on the customer profile.</p>
-                <button
-                  onClick={() => router.push(`/customers/${selectedCustomer.id}`)}
-                  className="text-[#8B5CF6] text-sm font-bold hover:underline"
-                >
-                  Open full profile
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </SlidingPanel>
-
+      <ConfirmDialog
+        isOpen={deleteTarget !== null}
+        title={deleteTarget ? `Delete ${deleteTarget.name}?` : 'Delete customer?'}
+        message={
+          deleteTarget && deleteTarget.outstandingBalance !== 0
+            ? `This customer has a balance of ${formatMoney(deleteTarget.outstandingBalance)}. The server will refuse the delete until it is settled.`
+            : 'The customer is archived and disappears from lists. Invoices and ledger history are kept.'
+        }
+        confirmLabel={deleting ? 'Deleting…' : 'Delete'}
+        onConfirm={() => void handleDelete()}
+        onCancel={() => { if (!deleting) setDeleteTarget(null); }}
+      />
     </div>
+  );
+}
+
+export default function CustomersPage() {
+  return (
+    <Suspense fallback={<div className="min-h-[320px]" />}>
+      <CustomersPageContent />
+    </Suspense>
   );
 }

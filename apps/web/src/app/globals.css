@@ -89,3 +89,48 @@
     background-color: #111122; /* Very dark navy/indigo */
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Receipt printing (EXEC-006C). The receipt page renders into a body-level
+   `.receipt-print-root` portal; in print only that element is shown, sized for
+   an 80 mm thermal roll. Everything marked `.print-hidden` is dropped.
+   --------------------------------------------------------------------------- */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 4mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  body > *:not(.receipt-print-root) {
+    display: none !important;
+  }
+
+  .receipt-print-root {
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    z-index: auto !important;
+  }
+
+  .receipt-paper {
+    width: auto !important;
+    max-width: 72mm;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: 0 !important;
+  }
+
+  .print-hidden {
+    display: none !important;
+  }
+}

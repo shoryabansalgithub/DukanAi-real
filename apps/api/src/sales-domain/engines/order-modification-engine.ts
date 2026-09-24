@@ -3,6 +3,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { OrderCalculationEngine } from './order-calculation-engine';
 import { OrderValidationEngine } from '../services/order-validation-engine';
 import { CreateSalesOrderDto, CreateSalesOrderLineDto } from '../dto/create-sales-order.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class OrderModificationEngine {
@@ -93,11 +94,17 @@ export class OrderModificationEngine {
         data: linesData
       });
 
-      let newOutstanding = financials.grandTotal - Number(order.paidAmount);
-      let diff = 0;
-      if (newOutstanding < 0) {
-        diff = Math.abs(newOutstanding);
-        newOutstanding = 0;
+      // Money math stays in Decimal. The order's own outstandingAmount is clamped at
+      // zero; an overpayment is NOT pushed onto Customer.outstandingBalance here:
+      // that column is the POS udhar balance and only moves with a UdharTransaction
+      // (customers/billing). The overpayment is recorded on the order timeline.
+      const grandTotal = new Prisma.Decimal(financials.grandTotal);
+      const paidAmount = new Prisma.Decimal(order.paidAmount);
+      let newOutstanding = grandTotal.minus(paidAmount);
+      let overpayment = new Prisma.Decimal(0);
+      if (newOutstanding.lt(0)) {
+        overpayment = newOutstanding.abs();
+        newOutstanding = new Prisma.Decimal(0);
       }
 
       // 3. Update Order Totals and Bump Version atomically
@@ -117,20 +124,23 @@ export class OrderModificationEngine {
         }
       });
 
-      // Credit customer for overpayment
-      if (diff > 0 && order.customerId) {
-        await tx.customer.update({
-          where: { id: order.customerId },
-          data: { outstandingBalance: { decrement: diff } }
-        });
-      }
-
-      // 4. Record Timeline Event
+      // 4. Record Timeline Event (with an overpayment note when the new total is below what was paid)
       await tx.salesOrderTimeline.create({
         data: {
           orderId,
           shopId,
           action: 'Lines Modified',
+          ...(overpayment.gt(0)
+            ? {
+                metadata: {
+                  overpayment: overpayment.toFixed(2),
+                  paidAmount: paidAmount.toFixed(2),
+                  grandTotal: grandTotal.toFixed(2),
+                  customerId: order.customerId ?? null,
+                  note: 'Paid amount exceeds the modified order total; settle the difference through a UdharTransaction or refund. Customer.outstandingBalance was not changed.',
+                },
+              }
+            : {}),
         }
       });
 

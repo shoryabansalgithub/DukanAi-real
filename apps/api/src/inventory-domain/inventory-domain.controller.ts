@@ -39,7 +39,7 @@ export class InventoryDomainController {
   }
 
   @Post()
-  async create(@Body() dto: CreateInventoryItemDto, @Req() req: any) {
+  async create(@Body() dto: CreateInventoryItemDto) {
     await this.inventoryValidation.validateProductOwnership(dto.productId);
     return this.inventoryDomain.ensureInventoryItem(dto.productId, dto.variantId, dto.locationId);
   }

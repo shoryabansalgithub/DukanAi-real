@@ -1,12 +1,14 @@
 import { Injectable, Logger, BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
-import { AdjustmentReason, InventoryStockState, Prisma, StockMovementType } from '@prisma/client';
+import { AdjustmentReason, LedgerAccount, LedgerEntryType, Prisma } from '@prisma/client';
+import { LedgerPostingService } from '../../ledger/ledger-posting.service';
 import { ProductEventPublisher } from '../../product-events/services/product-event-publisher.service';
-import { StockLedgerService } from '../../stock-ledger-domain/services/stock-ledger.service';
 import { InventoryFeatureConfig } from '../../config/domains/features/inventory-feature.config';
 import { InventoryMutationEngine, MutationType } from './inventory-mutation.engine';
 import { OptimisticLockConflictError, InsufficientStockError } from '../errors/inventory.errors';
+import { InventoryLocationService } from './inventory-location.service';
+import { InventoryCacheService } from '../../inventory/inventory-cache.service';
 
 @Injectable()
 export class InventoryDomainService {
@@ -16,77 +18,42 @@ export class InventoryDomainService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly eventPublisher: ProductEventPublisher,
-    private readonly stockLedger: StockLedgerService,
     private readonly inventoryFeatureConfig: InventoryFeatureConfig,
     private readonly inventoryMutationEngine: InventoryMutationEngine,
+    private readonly locationService: InventoryLocationService,
+    private readonly inventoryCache: InventoryCacheService,
+    private readonly ledger: LedgerPostingService,
   ) {}
 
   async ensureInventoryItem(productId: string, variantId?: string, explicitLocationId?: string) {
     const shopId = this.tenantContext.getShopId();
 
-    // 1. Resolve Location (Lazy init default if needed)
-    let locationId = explicitLocationId;
-    if (!locationId) {
-      locationId = await this.ensureDefaultLocation(shopId);
+    // 1. Resolve Location: explicit ids must belong to this shop; otherwise use the sale location.
+    let locationId: string;
+    if (explicitLocationId) {
+      const valid = await this.locationService.isValidLocation(this.prisma, shopId, explicitLocationId);
+      if (!valid) throw new BadRequestException({ message: 'Location does not belong to this shop', code: 'LOCATION_INVALID' });
+      locationId = explicitLocationId;
+    } else {
+      locationId = await this.locationService.resolveSaleLocation(this.prisma, shopId);
     }
 
-    const existing = await this.prisma.inventoryItem.findFirst({
-      where: {
-        shopId,
-        productId,
-        variantId: variantId || null,
-        locationId,
-      },
-    });
-
+    const existing = await this.prisma.inventoryItem.findFirst({ where: { shopId, productId, variantId: variantId || null, locationId, isDeleted: false } });
     if (existing) return existing;
 
-    return this.prisma.inventoryItem.create({
-      data: {
-        shopId,
-        productId,
-        variantId: variantId || undefined,
-        locationId,
-      },
-    });
+    // Same authority as every stock mutation: Product row lock, unique-index
+    // guard and the legacy `Product.currentStock` bootstrap, so the row this
+    // creates is the row the POS sells from with the stock it already had.
+    const created = await this.prisma.$transaction(
+      (tx) => this.inventoryMutationEngine.ensureInventoryItem(tx, { shopId, productId, locationId, variantId: variantId || null, performedBy: this.tenantContext.getUserId() }),
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+    );
+    return this.prisma.inventoryItem.findUniqueOrThrow({ where: { id: created.id } });
   }
 
-  private async ensureDefaultLocation(shopId: string): Promise<string> {
-    // Check if DEFAULT warehouse exists
-    let warehouse = await this.prisma.warehouse.findFirst({
-      where: { shopId, code: 'DEFAULT' }
-    });
-
-    if (!warehouse) {
-      warehouse = await this.prisma.warehouse.create({
-        data: {
-          shopId,
-          code: 'DEFAULT',
-          name: 'Main Warehouse',
-          type: 'MAIN'
-        }
-      });
-    }
-
-    // Check if DEFAULT location exists
-    let location = await this.prisma.location.findFirst({
-      where: { shopId, warehouseId: warehouse.id, code: 'DEFAULT_BIN' }
-    });
-
-    if (!location) {
-      location = await this.prisma.location.create({
-        data: {
-          shopId,
-          warehouseId: warehouse.id,
-          type: 'BIN',
-          code: 'DEFAULT_BIN',
-          path: `/${warehouse.id}/DEFAULT_BIN`,
-          depth: 0
-        }
-      });
-    }
-
-    return location.id;
+  /** The shop's POS sale location (default warehouse, default bin). */
+  async getSaleLocationId(): Promise<string> {
+    return this.locationService.resolveSaleLocation(this.prisma, this.tenantContext.getShopId());
   }
 
   /**
@@ -132,7 +99,11 @@ export class InventoryDomainService {
   ) {
     const shopId = this.tenantContext.getShopId();
 
-    return this.prisma.$transaction(async (tx) => {
+    if (!Number.isFinite(quantityChange) || quantityChange === 0) {
+      throw new BadRequestException({ message: 'quantityChange must be a non-zero number', code: 'INVALID_QUANTITY' });
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       // 1. Fetch item to get ProductId
       const item = await tx.inventoryItem.findFirst({
         where: { id: inventoryItemId, shopId, isDeleted: false },
@@ -141,29 +112,27 @@ export class InventoryDomainService {
       if (!item) throw new NotFoundException('Inventory item not found');
 
       // 2. Delegate to Engine
-      let mutationType = MutationType.ADJUSTMENT;
-      if (reason === AdjustmentReason.DAMAGE) mutationType = MutationType.DAMAGE;
-      if (reason === AdjustmentReason.EXPIRY) mutationType = MutationType.EXPIRED;
-      
       const isDeduction = quantityChange < 0;
+      let mutationType = MutationType.ADJUSTMENT;
+      if (isDeduction && reason === AdjustmentReason.DAMAGE) mutationType = MutationType.DAMAGE;
+      if (isDeduction && reason === AdjustmentReason.EXPIRY) mutationType = MutationType.EXPIRED;
+      if (isDeduction && reason === AdjustmentReason.LOSS) mutationType = MutationType.LOSS;
+      if (!isDeduction && reason === AdjustmentReason.OPENING_BALANCE) mutationType = MutationType.OPENING;
 
       let engineResult;
       try {
         engineResult = await this.inventoryMutationEngine.mutateStock(tx, {
           shopId,
-          locationId: item.locationId || 'DEFAULT',
+          locationId: item.locationId,
           productId: item.productId,
           quantity: Math.abs(quantityChange),
-          mutationType: isDeduction ? mutationType : MutationType.ADJUSTMENT,
+          mutationType,
           metadata: { direction: isDeduction ? -1 : 1 },
           reason: opts?.notes ? `${reason} - ${opts.notes}` : reason,
           referenceId: opts?.correlationId || `ADJ-${new Date().getTime()}`,
           performedBy: createdBy,
           occurredAt: new Date(),
           allowNegative: item.isNegativeAllowed,
-          occ: {
-            expectedInventoryItemVersion: item.version
-          }
         });
       } catch (e: any) {
         if (e instanceof OptimisticLockConflictError) {
@@ -177,10 +146,11 @@ export class InventoryDomainService {
         throw e;
       }
 
-      const oldOnHand = item.onHand.toNumber();
-      const newOnHand = engineResult.balanceAfter ? engineResult.balanceAfter.toNumber() : oldOnHand;
+      // Authoritative values come from the engine (post-update row), never from the pre-lock read.
+      const newOnHand = engineResult.balanceAfter.toNumber();
+      const oldOnHand = engineResult.balanceAfter.minus(isDeduction ? -Math.abs(quantityChange) : Math.abs(quantityChange)).toNumber();
 
-      await tx.inventoryAdjustment.create({
+      const adjustment = await tx.inventoryAdjustment.create({
         data: {
           shopId,
           inventoryItemId,
@@ -193,6 +163,30 @@ export class InventoryDomainService {
           correlationId: opts?.correlationId,
         },
       });
+
+      // Accounting effect of a manual adjustment: stock value moves between
+      // INVENTORY (asset) and INVENTORY_ADJUSTMENT (expense) at cost price.
+      if (!engineResult.bypassed) {
+        const product = await tx.product.findUnique({ where: { id: item.productId }, select: { costPrice: true } });
+        const value = new Prisma.Decimal(product?.costPrice ?? 0).mul(Math.abs(quantityChange)).toDecimalPlaces(2);
+        if (value.greaterThan(0)) {
+          await this.ledger.post(tx, {
+            shopId,
+            source: { type: 'STOCK_ADJUSTMENT', id: adjustment.id },
+            description: `Stock adjustment ${inventoryItemId} (${reason})`,
+            entries: isDeduction
+              ? [
+                  { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.DEBIT, amount: value },
+                  { account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: value },
+                ]
+              : [
+                  { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: value },
+                  { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.CREDIT, amount: value },
+                ],
+          });
+        }
+      }
+
 
       // 7. Emit event to Outbox
       await this.eventPublisher.publish(tx as any, {
@@ -236,16 +230,35 @@ export class InventoryDomainService {
         });
       }
 
+      // 9. Audit trail for the operator action
+      await tx.auditLog.create({
+        data: {
+          shopId,
+          userId: createdBy,
+          action: 'STOCK_ADJUSTED',
+          entity: 'InventoryItem',
+          entityId: inventoryItemId,
+          beforeData: { onHand: oldOnHand },
+          afterData: { onHand: newOnHand, quantityChange, reason, notes: opts?.notes ?? null, productId: item.productId },
+        },
+      });
+
       this.logger.log(`Stock adjusted: ${inventoryItemId} ${oldOnHand} → ${newOnHand} (${reason})`);
 
       return {
         inventoryItemId,
+        productId: item.productId,
         quantityBefore: oldOnHand,
         quantityChange,
         quantityAfter: newOnHand,
+        productStockAfter: engineResult.productStockAfter.toNumber(),
         reason,
       };
     });
+
+    // Keep the Redis fast-path in step with the authoritative aggregate.
+    await this.inventoryCache.syncStock(result.productId, result.productStockAfter);
+    return result;
   }
 
   /**

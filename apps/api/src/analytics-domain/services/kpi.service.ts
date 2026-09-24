@@ -1,76 +1,96 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { PrismaService } from '../../prisma/prisma.service';
+import { businessDateString } from '../../common/time/business-day';
+import { trailingBusinessDays, utcMidnightOfBusinessDate } from '../analytics-range';
+import { completedInvoiceFilter, INVOICE_SIGN, toDecimal } from '../engines/invoice-sql';
+import { ShopTimezoneService } from './shop-timezone.service';
+
+const SALES_WINDOW_DAYS = 30;
+const MAX_DAYS_OF_INVENTORY = new Prisma.Decimal(999);
+const MIN_AVG_DAILY_UNITS = new Prisma.Decimal('0.01');
+const ONE = new Prisma.Decimal(1);
+
+function maxDecimal(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
+  return a.greaterThan(b) ? a : b;
+}
+
+function minDecimal(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
+  return a.lessThan(b) ? a : b;
+}
+
+/** 0-100 stockout risk from days of inventory: <3 -> 90, <7 -> 60, <14 -> 30, else 10. */
+export function stockoutRiskScore(daysOfInventory: Prisma.Decimal): number {
+  if (daysOfInventory.lessThan(3)) return 90;
+  if (daysOfInventory.lessThan(7)) return 60;
+  if (daysOfInventory.lessThan(14)) return 30;
+  return 10;
+}
+
+/** The `@db.Date` value every nightly KPI/recommendation row uses for "today" in the shop timezone. */
+export function kpiDateFor(now: Date, timeZone: string): Date {
+  return utcMidnightOfBusinessDate(businessDateString(now, timeZone));
+}
 
 @Injectable()
 export class KpiService {
   private readonly logger = new Logger(KpiService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly shopTimezone: ShopTimezoneService,
+  ) {}
 
   /**
-   * Calculates KPI snapshots for all products in a shop.
-   * Runs totally asynchronously and decoupled from the transactional flow.
+   * Calculates the daily inventory KPI snapshot for every product in a shop:
+   * stock value at cost, 30-day turnover, days of inventory and stockout risk.
+   * Runs from the nightly job (inside `runAsSuperAdmin`), never in a request.
    */
-  async calculateDailyKpis(shopId: string) {
+  async calculateDailyKpis(shopId: string, now: Date = new Date()) {
     this.logger.log(`Starting Daily KPI Calculation for shop ${shopId}...`);
-    
-    // We only process active products
-    const products = await this.prisma.product.findMany({
-      where: { shopId, isDeleted: false },
-      select: { id: true, priceTiers: true }
-    });
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const timeZone = await this.shopTimezone.resolve(shopId);
+    const date = kpiDateFor(now, timeZone);
+    const { start, end } = trailingBusinessDays(SALES_WINDOW_DAYS, timeZone, now);
+
+    const [products, onHandRows, soldRows] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { shopId, isDeleted: false },
+        select: { id: true, costPrice: true },
+      }),
+      // InventoryItem is not tenant-scoped by the Prisma extension: explicit shopId.
+      this.prisma.inventoryItem.groupBy({
+        by: ['productId'],
+        where: { shopId, isDeleted: false },
+        _sum: { onHand: true },
+      }),
+      this.prisma.$queryRaw<Array<{ productId: string; units: unknown }>>`
+        SELECT ii.productId AS productId, COALESCE(SUM(${INVOICE_SIGN} * ii.quantity), 0) AS units
+        FROM InvoiceItem ii
+        INNER JOIN Invoice i ON i.id = ii.invoiceId
+        WHERE ${completedInvoiceFilter(shopId, start, end)}
+          AND ii.isDeleted = false
+        GROUP BY ii.productId
+      `,
+    ]);
+
+    const onHandByProduct = new Map(onHandRows.map((row) => [row.productId, row._sum.onHand ?? new Prisma.Decimal(0)]));
+    const unitsByProduct = new Map(soldRows.map((row) => [row.productId, toDecimal(row.units)]));
 
     for (const product of products) {
-      // 1. Calculate Total Value (On Hand * Price)
-      // For simplicity in this engine, we grab total onHand across all bins
-      const inventoryItems = await this.prisma.inventoryItem.findMany({
-        where: { shopId, productId: product.id }
-      });
+      const onHand = maxDecimal(onHandByProduct.get(product.id) ?? new Prisma.Decimal(0), new Prisma.Decimal(0));
+      const unitsSold = maxDecimal(unitsByProduct.get(product.id) ?? new Prisma.Decimal(0), new Prisma.Decimal(0));
 
-      const totalOnHand = inventoryItems.reduce((acc, item) => acc + item.onHand.toNumber(), 0);
-      
-      // Determine base price (assume first price tier is standard)
-      const basePrice = product.priceTiers.length > 0 ? product.priceTiers[0].price.toNumber() : 0;
-      const totalValue = totalOnHand * basePrice;
+      const totalValue = onHand.mul(product.costPrice).toDecimalPlaces(4);
+      const turnoverRate = unitsSold.div(maxDecimal(onHand, ONE)).toDecimalPlaces(4);
+      const avgDailyUnits = unitsSold.div(SALES_WINDOW_DAYS);
+      const daysOfInventory = minDecimal(onHand.div(maxDecimal(avgDailyUnits, MIN_AVG_DAILY_UNITS)), MAX_DAYS_OF_INVENTORY).toDecimalPlaces(2);
+      const risk = stockoutRiskScore(daysOfInventory);
 
-      // 2. Turnover Rate (Dummy calc for architecture: usually Sales / Avg Inventory)
-      // Here we assume turnover is dynamically derived from outbound movements in ledger
-      const turnoverRate = 0; // Replace with actual outbound sum calculation
-
-      // 3. Days of Inventory (Total On Hand / Avg Daily Sales)
-      const daysOfInventory = totalOnHand > 0 ? 30 : 0; // Placeholder for architecture
-
-      // 4. Stockout Risk Score (0-100)
-      const stockoutRiskScore = totalOnHand < 10 ? 90 : 10;
-
-      // Upsert the KPI snapshot for today
       await this.prisma.inventoryKpi.upsert({
-        where: {
-          shopId_productId_date: {
-            shopId,
-            productId: product.id,
-            date: today
-          }
-        },
-        update: {
-          totalValue,
-          turnoverRate,
-          daysOfInventory,
-          stockoutRiskScore
-        },
-        create: {
-          shopId,
-          productId: product.id,
-          date: today,
-          totalValue,
-          turnoverRate,
-          daysOfInventory,
-          stockoutRiskScore
-        }
+        where: { shopId_productId_date: { shopId, productId: product.id, date } },
+        update: { totalValue, turnoverRate, daysOfInventory, stockoutRiskScore: risk },
+        create: { shopId, productId: product.id, date, totalValue, turnoverRate, daysOfInventory, stockoutRiskScore: risk },
       });
     }
 

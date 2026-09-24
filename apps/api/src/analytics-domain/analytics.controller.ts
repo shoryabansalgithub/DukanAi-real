@@ -1,179 +1,165 @@
-import { Controller, Get, Post, Query, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Logger, Query, Res, UseGuards } from '@nestjs/common';
+import type { Response } from 'express';
+import { Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
+import { Roles } from '../auth/roles.decorator';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
-import { RevenueEngine } from './engines/revenue-engine';
-import { ProfitMarginEngine } from './engines/profit-margin-engine';
-import { TrendEngine } from './engines/trend-engine';
-import { ForecastEngine } from './engines/forecast-engine';
-import { AnalyticsCacheService } from './services/analytics-cache.service';
 import { AnalyticsPageService } from './services/analytics-page.service';
-import type { AnalyticsRange } from './services/analytics-page.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { InvoiceStatus } from '@prisma/client';
+import { DashboardService } from './services/dashboard.service';
+import { CsvSink, ReportExportService } from './services/report-export.service';
+
+const READ_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER, Role.VIEWER];
+const EXPORT_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER];
+
+function parseIntQuery(value: string | undefined, fallback: number): number {
+  const parsed = parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * Writes chunks to the Express response honouring backpressure, and fails
+ * fast when the client goes away so a disconnected download cannot keep the
+ * DB pagination running.
+ */
+function responseSink(res: Response): CsvSink {
+  return (chunk: string) =>
+    new Promise<void>((resolve, reject) => {
+      if (res.destroyed || res.writableEnded) {
+        reject(new Error('Client disconnected'));
+        return;
+      }
+      const onClose = () => {
+        res.off('drain', onDrain);
+        reject(new Error('Client disconnected'));
+      };
+      const onDrain = () => {
+        res.off('close', onClose);
+        resolve();
+      };
+      if (res.write(chunk)) {
+        resolve();
+      } else {
+        res.once('drain', onDrain);
+        res.once('close', onClose);
+      }
+    });
+}
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('dashboard')
 export class AnalyticsController {
+  private readonly logger = new Logger(AnalyticsController.name);
+
   constructor(
-    private readonly prisma: PrismaService,
-    private readonly revenueEngine: RevenueEngine,
-    private readonly profitMarginEngine: ProfitMarginEngine,
-    private readonly trendEngine: TrendEngine,
-    private readonly forecastEngine: ForecastEngine,
-    private readonly cache: AnalyticsCacheService,
     private readonly analyticsPage: AnalyticsPageService,
+    private readonly dashboard: DashboardService,
+    private readonly exports: ReportExportService,
   ) {}
 
-  /**
-   * Single payload backing the web Reports & Analytics page: KPIs, revenue
-   * trend, payment-mode split, category sales, and top customers — all
-   * computed live from invoices for the requested range.
-   */
+  /** Reports & Analytics page payload for a business-day range (today | week | month | year). */
   @Get('analytics')
-  getAnalyticsPage(
-    @CurrentShop() shopId: string,
-    @Query('range') range: AnalyticsRange = 'week',
-  ) {
+  @Roles(...READ_ROLES)
+  getAnalyticsPage(@CurrentShop() shopId: string, @Query('range') range?: string) {
     return this.analyticsPage.getAnalytics(shopId, range);
   }
 
+  /** Today's headline KPIs, computed live and cached for `analyticsKpiTtlMs`. */
   @Get('kpis')
-  async getDashboardKpis(@CurrentShop() shopId: string) {
-    // Attempt cache hit
-    const cached = await this.cache.getDashboardCache(shopId);
-    if (cached) return cached;
-
-    // Cache miss -> Derive
-    const todayRevenue = await this.revenueEngine.getTodayRevenue(shopId);
-    // Expand to YTD, MTD, etc.
-    
-    const kpiData = {
-      todayRevenue,
-      timestamp: new Date()
-    };
-
-    await this.cache.setDashboardCache(shopId, kpiData);
-    return kpiData;
+  @Roles(...READ_ROLES)
+  getDashboardKpis(@CurrentShop() shopId: string) {
+    return this.dashboard.getKpis(shopId);
   }
 
-  /** Single tenant-scoped source for dashboard cards and recent activity. */
+  /** Single tenant-scoped source for dashboard cards, recent activity and the caller's open shift. */
   @Get('summary')
-  async getDashboardSummary(@CurrentShop() shopId: string) {
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-
-    const completed = { shopId, status: InvoiceStatus.COMPLETED, isDeleted: false };
-    const todayCompleted = { ...completed, createdAt: { gte: startOfToday, lte: endOfToday } };
-
-    const [
-      revenueAllTime,
-      revenueToday,
-      orderCountToday,
-      totalInvoices,
-      customerCount,
-      productCount,
-      recentInvoices,
-      paymentGroups,
-      udharAgg,
-    ] = await Promise.all([
-      this.prisma.invoice.aggregate({ where: completed, _sum: { totalAmount: true } }),
-      this.prisma.invoice.aggregate({ where: todayCompleted, _sum: { totalAmount: true } }),
-      this.prisma.invoice.count({ where: todayCompleted }),
-      this.prisma.invoice.count({ where: completed }),
-      this.prisma.customer.count({ where: { shopId, isDeleted: false } }),
-      this.prisma.product.count({ where: { shopId, isDeleted: false } }),
-      this.prisma.invoice.findMany({
-        where: completed,
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-        select: { id: true, invoiceNumber: true, totalAmount: true, paymentMode: true, createdAt: true, customer: { select: { name: true } } },
-      }),
-      this.prisma.invoice.groupBy({ where: completed, by: ['paymentMode'], _sum: { totalAmount: true } }),
-      this.prisma.customer.aggregate({ where: { shopId, isDeleted: false }, _sum: { outstandingBalance: true } }),
-    ]);
-
-    // Raw queries for profit today
-    const profitTodayStats = await this.prisma.$queryRaw<{ profit: number }[]>`
-      SELECT SUM((ii.sellingPrice * (1 - ii.discountPercent / 100) - ii.costPrice) * ii.quantity) as profit
-      FROM InvoiceItem ii
-      INNER JOIN Invoice iv ON iv.id = ii.invoiceId
-      WHERE iv.shopId = ${shopId}
-        AND iv.status = ${InvoiceStatus.COMPLETED}
-        AND iv.isDeleted = false
-        AND iv.createdAt >= ${startOfToday}
-        AND iv.createdAt <= ${endOfToday}
-        AND ii.isDeleted = false
-    `;
-    const todayProfit = Number(profitTodayStats[0]?.profit ?? 0);
-
-    // Raw queries for inventory
-    const inventoryStats = await this.prisma.$queryRaw<{ lowStock: bigint, outOfStock: bigint, totalValue: number }[]>`
-      SELECT 
-        SUM(CASE WHEN currentStock <= reorderPoint AND currentStock > 0 THEN 1 ELSE 0 END) as lowStock,
-        SUM(CASE WHEN currentStock <= 0 THEN 1 ELSE 0 END) as outOfStock,
-        SUM(currentStock * costPrice) as totalValue
-      FROM Product 
-      WHERE shopId = ${shopId} AND isDeleted = false
-    `;
-
-    const stats = inventoryStats[0] || { lowStock: 0n, outOfStock: 0n, totalValue: 0 };
-
-    return {
-      totalRevenue: Number(revenueAllTime._sum.totalAmount ?? 0),
-      todaySales: Number(revenueToday._sum.totalAmount ?? 0),
-      todayProfit: todayProfit,
-      todayOrders: orderCountToday,
-      totalOrders: totalInvoices,
-      totalCustomers: customerCount,
-      totalProducts: productCount,
-      outstandingUdhar: Number(udharAgg._sum.outstandingBalance ?? 0),
-      lowStockCount: Number(stats.lowStock),
-      outOfStockCount: Number(stats.outOfStock),
-      inventoryValue: Number(stats.totalValue ?? 0),
-      recentInvoices: recentInvoices.map((invoice) => ({ ...invoice, totalAmount: Number(invoice.totalAmount) })),
-      paymentModes: paymentGroups.map((group) => ({ mode: group.paymentMode, amount: Number(group._sum.totalAmount ?? 0) })),
-    };
+  @Roles(...READ_ROLES)
+  getDashboardSummary(@CurrentShop() shopId: string, @CurrentUser() user: SafeUserDto) {
+    return this.dashboard.getSummary(shopId, user.id);
   }
 
-
+  /** Top products by gross profit over the last 30 business days. */
   @Get('products')
-  async getTopProducts(@CurrentShop() shopId: string, @Query('limit') limit: number = 10) {
-    return this.profitMarginEngine.getTopProductsByProfit(shopId, Number(limit));
+  @Roles(...READ_ROLES)
+  getTopProducts(@CurrentShop() shopId: string, @Query('limit') limit?: string) {
+    return this.dashboard.getTopProducts(shopId, limit ? parseIntQuery(limit, 0) : undefined);
   }
 
+  /** Daily net-sales series for the last `days` business days (default 30). */
   @Get('trends')
-  async getRevenueTrends(@CurrentShop() shopId: string, @Query('days') days: number = 30) {
-    // Computed live from invoices (not the background aggregation tables) so
-    // the dashboard chart works without any aggregation job having run.
-    return this.analyticsPage.getTrendSeries(shopId, Number(days));
+  @Roles(...READ_ROLES)
+  getRevenueTrends(@CurrentShop() shopId: string, @Query('days') days?: string) {
+    return this.analyticsPage.getTrendSeries(shopId, parseIntQuery(days, 30));
   }
 
+  /** 7-day moving average of net daily sales. */
   @Get('forecast')
-  async getRevenueForecast(@CurrentShop() shopId: string) {
-    return this.forecastEngine.generateNextDayRevenueForecast(shopId);
+  @Roles(...READ_ROLES)
+  getRevenueForecast(@CurrentShop() shopId: string) {
+    return this.dashboard.getForecast(shopId);
   }
 
-  @Post('export')
-  async triggerExport(
+  @Get('export/invoices.csv')
+  @Roles(...EXPORT_ROLES)
+  async exportInvoices(
     @CurrentShop() shopId: string,
-    @CurrentUser() user: SafeUserDto,
-    @Body() payload: { type: string, reportName: string },
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Res() res: Response,
   ) {
-    // Injects an AnalyticsExportJob and queues it to BullMQ
-    const job = await this.prisma.analyticsExportJob.create({
-      data: {
-        shopId,
-        type: payload.type,
-        reportName: payload.reportName,
-        requestedById: user.id,
-      }
-    });
+    const range = await this.exports.resolveRange(shopId, from, to);
+    await this.streamCsv(res, `invoices_${range.fromDate}_${range.toDate}.csv`, (sink) =>
+      this.exports.streamInvoicesCsv(shopId, range, sink),
+    );
+  }
 
-    // In a full impl, we emit to BullMQ here
-    return { message: 'Export queued successfully.', jobId: job.id };
+  @Get('export/invoice-items.csv')
+  @Roles(...EXPORT_ROLES)
+  async exportInvoiceItems(
+    @CurrentShop() shopId: string,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Res() res: Response,
+  ) {
+    const range = await this.exports.resolveRange(shopId, from, to);
+    await this.streamCsv(res, `invoice-items_${range.fromDate}_${range.toDate}.csv`, (sink) =>
+      this.exports.streamInvoiceItemsCsv(shopId, range, sink),
+    );
+  }
+
+  @Get('export/gst-summary.csv')
+  @Roles(...EXPORT_ROLES)
+  async exportGstSummary(
+    @CurrentShop() shopId: string,
+    @Query('from') from: string | undefined,
+    @Query('to') to: string | undefined,
+    @Res() res: Response,
+  ) {
+    const range = await this.exports.resolveRange(shopId, from, to);
+    await this.streamCsv(res, `gst-summary_${range.fromDate}_${range.toDate}.csv`, (sink) =>
+      this.exports.streamGstSummaryCsv(shopId, range, sink),
+    );
+  }
+
+  /**
+   * Sets the CSV headers and runs the producer. Range validation happens
+   * before this is called so 400s still go through the global exception
+   * filter; a failure after headers are sent can only abort the socket.
+   */
+  private async streamCsv(res: Response, filename: string, produce: (sink: CsvSink) => Promise<void>): Promise<void> {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.flushHeaders();
+
+    try {
+      await produce(responseSink(res));
+      res.end();
+    } catch (error) {
+      this.logger.error(`CSV export ${filename} aborted: ${(error as Error).message}`);
+      res.destroy(error instanceof Error ? error : new Error(String(error)));
+    }
   }
 }

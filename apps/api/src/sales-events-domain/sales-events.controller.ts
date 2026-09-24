@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Body, UseGuards, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { TenantGuard } from '../iam/guards/tenant.guard';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
@@ -6,10 +6,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
+import { SALES_EVENT_JOB_ID_PREFIX } from './workers/sales-outbox-relay.cron';
 
 @UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('sales/events')
 export class SalesEventsController {
+  private readonly logger = new Logger(SalesEventsController.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly salesFeatureConfig: SalesFeatureConfig,
@@ -38,6 +41,12 @@ export class SalesEventsController {
     return event;
   }
 
+  /**
+   * Re-queues an event by flipping the row back to PENDING. The relay cron then
+   * re-enqueues it under its deterministic jobId, so exactly one job exists per
+   * event. A stale BullMQ job under that id (failed, or completed and retained)
+   * would make the relay's addBulk a silent no-op, so it is removed first.
+   */
   @Post('retry')
   async retryEvent(@CurrentShop() shopId: string, @Body('eventId') eventId: string) {
     const event = await this.prisma.outboxEvent.findUnique({
@@ -52,17 +61,23 @@ export class SalesEventsController {
       throw new BadRequestException('Event is already processed successfully.');
     }
 
-    // Force queue injection
-    await this.salesEventsQueue.add(event.type, { eventId: event.id, ...event }, {
-      jobId: `sales-event-retry-${event.id}-${Date.now()}` // Bypass idempotency for forced retry
-    });
+    const jobId = `${SALES_EVENT_JOB_ID_PREFIX}${event.id}`;
+    try {
+      const removed = await this.salesEventsQueue.remove(jobId);
+      if (removed) {
+        this.logger.debug(`Removed stale BullMQ job ${jobId} before retry`);
+      }
+    } catch (error: any) {
+      // Best-effort: an active job cannot be removed; the relay will then skip the duplicate.
+      this.logger.warn(`Could not remove BullMQ job ${jobId} before retry: ${error.message}`);
+    }
 
     await this.prisma.outboxEvent.update({
       where: { id: eventId },
       data: { status: 'PENDING', error: null, retryCount: 0 }
     });
 
-    return { message: 'Event successfully pushed for retry.' };
+    return { message: 'Event reset to PENDING; the relay will re-enqueue it.' };
   }
 
   @Get('status/queue')

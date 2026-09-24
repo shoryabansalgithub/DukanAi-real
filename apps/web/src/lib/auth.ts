@@ -1,7 +1,9 @@
 import type { NextAuthOptions, User, Account, Profile } from 'next-auth';
+import type { JWT } from 'next-auth/jwt';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import GoogleProvider from 'next-auth/providers/google';
 import { clientConfig, serverConfig } from '../config/env';
+import { decodeJwtExpiryMs } from './jwt';
 
 // ---------------------------------------------------------------------------
 // Augmented user payload — what our NestJS backend returns and what we store
@@ -27,6 +29,20 @@ const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
 /** Message surfaced on the login form when the backend cannot be reached. */
 export const API_UNREACHABLE_MESSAGE = `The DukaanAI API at ${API_URL} is unreachable. Make sure the backend server is running, then try again.`;
+
+/** Refresh this long before the access token actually expires. */
+const REFRESH_LEEWAY_MS = 60 * 1000;
+
+/**
+ * Fallback lifetime when the access token carries no readable `exp` claim.
+ * Short on purpose: an unreadable token is refreshed eagerly rather than
+ * trusted for long.
+ */
+const FALLBACK_ACCESS_LIFETIME_MS = 5 * 60 * 1000;
+
+function accessTokenExpiryFor(accessToken: string): number {
+  return decodeJwtExpiryMs(accessToken) ?? Date.now() + FALLBACK_ACCESS_LIFETIME_MS;
+}
 
 type ProvisionResult =
   | { ok: true; user: DukaanUser }
@@ -71,6 +87,69 @@ async function provisionUserFromBackend(
     console.error('Auth backend returned an unreadable response:', error);
     return { ok: false, reason: 'rejected' };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Refresh-token exchange. `POST /api/auth/refresh { refresh_token }` returns a
+// brand new `{ access_token, refresh_token, user }` pair and revokes the old
+// refresh token. Because the old token is single-use, concurrent JWT callbacks
+// (parallel `getSession()` calls) must share one in-flight exchange per token.
+// ---------------------------------------------------------------------------
+type RefreshOutcome =
+  | { ok: true; accessToken: string; refreshToken: string; accessTokenExpires: number }
+  | { ok: false };
+
+const inflightRefreshes = new Map<string, Promise<RefreshOutcome>>();
+
+async function exchangeRefreshToken(refreshToken: string): Promise<RefreshOutcome> {
+  try {
+    const res = await fetch(`${API_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.access_token || !data?.refresh_token) {
+      console.error(`Refresh token exchange rejected (HTTP ${res.status}):`, data);
+      return { ok: false };
+    }
+    return {
+      ok: true,
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      accessTokenExpires: accessTokenExpiryFor(data.access_token),
+    };
+  } catch (error) {
+    console.error('Refresh token exchange failed:', error);
+    return { ok: false };
+  }
+}
+
+function refreshOnce(refreshToken: string): Promise<RefreshOutcome> {
+  const existing = inflightRefreshes.get(refreshToken);
+  if (existing) return existing;
+  const pending = exchangeRefreshToken(refreshToken).finally(() => {
+    inflightRefreshes.delete(refreshToken);
+  });
+  inflightRefreshes.set(refreshToken, pending);
+  return pending;
+}
+
+async function refreshAccessToken(token: JWT): Promise<JWT> {
+  if (!token.refreshToken) {
+    return { ...token, error: 'RefreshAccessTokenError' };
+  }
+  const outcome = await refreshOnce(token.refreshToken);
+  if (!outcome.ok) {
+    return { ...token, error: 'RefreshAccessTokenError' };
+  }
+  return {
+    ...token,
+    accessToken: outcome.accessToken,
+    refreshToken: outcome.refreshToken,
+    accessTokenExpires: outcome.accessTokenExpires,
+    error: undefined,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,20 +233,38 @@ export const authOptions: NextAuthOptions = {
       return false;
     },
 
-    // ---- jwt — persist Dukaan fields into the token ----
-    async jwt({ token, user, trigger }) {
+    // ---- jwt — persist Dukaan fields and keep the access token fresh ----
+    async jwt({ token, user }) {
+      // Initial sign-in: copy the backend tokens into the NextAuth JWT.
       if (user && isDukaanUser(user)) {
-        token.id = user.id;
-        token.role = user.role;
-        token.shopId = user.shopId;
-        token.accessToken = user.accessToken;
+        return {
+          ...token,
+          id: user.id,
+          role: user.role,
+          shopId: user.shopId,
+          accessToken: user.accessToken,
+          refreshToken: user.refreshToken,
+          accessTokenExpires: accessTokenExpiryFor(user.accessToken),
+          error: undefined,
+        };
       }
 
-      // On session update (e.g. profile change), re-fetch from backend.
-      // Not yet implemented — placeholder for future use.
-      void trigger;
+      // Tokens minted before expiry tracking existed: derive it from the JWT.
+      if (token.accessToken && typeof token.accessTokenExpires !== 'number') {
+        token.accessTokenExpires = accessTokenExpiryFor(token.accessToken);
+      }
 
-      return token;
+      // Still comfortably valid: nothing to do.
+      if (
+        token.accessToken &&
+        typeof token.accessTokenExpires === 'number' &&
+        Date.now() < token.accessTokenExpires - REFRESH_LEEWAY_MS
+      ) {
+        return token;
+      }
+
+      // Within 60 s of expiry (or already expired): rotate the pair.
+      return refreshAccessToken(token);
     },
 
     // ---- session — expose Dukaan fields to the client ----
@@ -175,7 +272,9 @@ export const authOptions: NextAuthOptions = {
       session.user.id = token.id as string;
       session.user.role = token.role as string;
       session.user.shopId = token.shopId as string;
-      session.accessToken = token.accessToken as string;
+      session.accessToken = token.accessToken;
+      session.accessTokenExpires = token.accessTokenExpires;
+      session.error = token.error;
       return session;
     },
   },

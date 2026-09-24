@@ -13,7 +13,7 @@ export class SynonymEngineService {
    */
   async expandQuery(shopId: string, query: string): Promise<string> {
     const tokens = query.toLowerCase().split(' ');
-    let expanded = new Set<string>(tokens);
+    const expanded = new Set<string>(tokens);
 
     for (const token of tokens) {
       const syn = await this.prisma.searchSynonym.findUnique({

@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, HttpCode, Query } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/create-product.dto';
@@ -7,6 +7,12 @@ import { TenantGuard } from '../iam/guards/tenant.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
+
+function parseIntParam(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
 
 @Controller('products')
 @UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
@@ -19,10 +25,19 @@ export class ProductsController {
     return this.productsService.create(createProductDto);
   }
 
+  /** `GET /products?q&limit&offset` (limit max 200) — returns an array (contract §5). */
   @Get()
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER, Role.CASHIER, Role.VIEWER)
-  findAll() {
-    return this.productsService.findAll();
+  findAll(
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.productsService.findAll({
+      q,
+      limit: parseIntParam(limit),
+      offset: parseIntParam(offset),
+    });
   }
 
   @Get(':id')

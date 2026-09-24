@@ -1,461 +1,402 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Card } from '@/components/ui/Card';
-import { Modal } from '@/components/ui/Modal';
-import { useToast } from '@/components/ui/Toast';
-import { customersApi, type CustomerDetail } from '@/lib/api-client';
-import { describeApiError } from '@/lib/api-error';
+import { useSession } from 'next-auth/react';
 import {
-  ArrowLeft, Phone, MapPin, Calendar as CalendarIcon, MessageCircle, CreditCard,
-  MoreVertical, ShoppingCart, Banknote, History, FileText, ShieldAlert,
-  Eye, Download, Link as LinkIcon, PhoneCall, AlertCircle,
+  ArrowLeft, Banknote, CalendarDays, CreditCard, FileText, History, MapPin,
+  Pencil, Phone, Receipt, ShoppingCart, Trash2, Wallet,
 } from 'lucide-react';
+import { Card } from '@/components/ui/Card';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { SkeletonBox } from '@/components/ui/Skeleton';
+import { useToast } from '@/components/ui/Toast';
+import {
+  customersApi,
+  type CustomerDetail,
+  type CustomerInvoiceSummary,
+  type CustomerLedgerEntry,
+  type CustomerView,
+  type PaginatedResult,
+} from '@/lib/api-client';
+import { describeApiError, getApiErrorCode } from '@/lib/api-error';
+import { CustomerFormModal } from '@/components/customers/CustomerFormModal';
+import { RecordPaymentModal } from '@/components/customers/RecordPaymentModal';
+import { LedgerTable } from '@/components/customers/LedgerTable';
+import { CustomerInvoicesTable } from '@/components/customers/CustomerInvoicesTable';
+import { PaginationControls } from '@/components/customers/PaginationControls';
+import { EmptyState, ErrorState, TableSkeleton } from '@/components/customers/States';
+import { formatDate, formatMoney } from '@/components/customers/format';
+import { canDeleteCustomers } from '@/components/customers/permissions';
 
-function formatDate(iso: string | null, withTime = false): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    ...(withTime ? { hour: 'numeric', minute: '2-digit' } : {}),
-  });
+const TAB_PAGE_SIZE = 20;
+
+type Tab = 'ledger' | 'invoices';
+
+interface TabState<T> {
+  skip: number;
+  page: PaginatedResult<T> | null;
+  loading: boolean;
+  error: string | null;
 }
 
-function invoiceStatus(invoice: { udharAmount: number; paidAmount: number; totalAmount: number }) {
-  if (invoice.udharAmount <= 0) return { label: 'Paid', className: 'bg-green-50 text-green-500' };
-  if (invoice.paidAmount > 0) return { label: 'Partial', className: 'bg-orange-50 text-orange-500' };
-  return { label: 'Pending', className: 'bg-red-50 text-red-500' };
+const initialTab = <T,>(): TabState<T> => ({ skip: 0, page: null, loading: true, error: null });
+
+/**
+ * Generic paginated fetcher for the ledger / invoices tabs. `version` bumps
+ * force a refetch after a mutation (e.g. a recorded payment).
+ */
+function usePaginatedTab<T>(
+  enabled: boolean,
+  loader: (skip: number) => Promise<PaginatedResult<T>>,
+  version: number,
+) {
+  const [state, setState] = useState<TabState<T>>(initialTab<T>());
+  const seq = useRef(0);
+  const [skip, setSkip] = useState(0);
+
+  const load = useCallback(async () => {
+    if (!enabled) return;
+    const mySeq = ++seq.current;
+    setState((current) => ({ ...current, loading: true, error: null }));
+    try {
+      const page = await loader(skip);
+      if (mySeq !== seq.current) return;
+      setState({ skip, page, loading: false, error: null });
+    } catch (err) {
+      if (mySeq !== seq.current) return;
+      setState((current) => ({ ...current, skip, loading: false, error: describeApiError(err, 'Loading customer history') }));
+    }
+  }, [enabled, loader, skip]);
+
+  useEffect(() => {
+    void load();
+  }, [load, version]);
+
+  return { ...state, skip, setSkip, reload: load };
+}
+
+function StatTile({ icon, label, value, hint, tone = 'default' }: {
+  icon: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+  hint?: string;
+  tone?: 'default' | 'orange' | 'green' | 'red' | 'blue';
+}) {
+  const tones: Record<string, string> = {
+    default: 'bg-purple-50 text-[#8B5CF6]',
+    orange: 'bg-orange-100 text-orange-500',
+    green: 'bg-green-50 text-green-500',
+    red: 'bg-red-50 text-red-500',
+    blue: 'bg-blue-50 text-blue-500',
+  };
+  return (
+    <Card className="flex flex-col justify-between border border-gray-100 p-4 shadow-sm">
+      <div className={`mb-2 flex h-8 w-8 items-center justify-center rounded-lg ${tones[tone]}`}>{icon}</div>
+      <div>
+        <p className="text-xs font-medium text-gray-500">{label}</p>
+        <h3 className="text-lg font-bold text-gray-800">{value}</h3>
+        {hint && <p className="mt-1 text-[10px] text-gray-400">{hint}</p>}
+      </div>
+    </Card>
+  );
+}
+
+function HeaderSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true">
+      <SkeletonBox className="h-5 w-40" />
+      <div className="rounded-2xl border border-gray-100 bg-white p-6">
+        <div className="flex gap-6">
+          <SkeletonBox className="h-20 w-20 rounded-full" />
+          <div className="flex-1 space-y-3">
+            <SkeletonBox className="h-6 w-1/3" />
+            <SkeletonBox className="h-4 w-1/2" />
+            <SkeletonBox className="h-4 w-2/5" />
+          </div>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <SkeletonBox key={i} className="h-24 w-full rounded-xl" />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export default function CustomerDetailsPage() {
   const params = useParams();
   const router = useRouter();
+  const { data: session } = useSession();
   const { toast } = useToast();
+  const customerId = Array.isArray(params.id) ? params.id[0] : (params.id as string | undefined);
+
   const [customer, setCustomer] = useState<CustomerDetail | null>(null);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMode, setPaymentMode] = useState('Cash');
-  const [paymentNotes, setPaymentNotes] = useState('');
-  const [savingPayment, setSavingPayment] = useState(false);
+  const [tab, setTab] = useState<Tab>('ledger');
+  const [historyVersion, setHistoryVersion] = useState(0);
 
-  const customerId = Array.isArray(params.id) ? params.id[0] : params.id;
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  const fetchCustomer = useCallback(() => {
+  const allowDelete = canDeleteCustomers(session?.user?.role);
+
+  const fetchCustomer = useCallback(async () => {
     if (!customerId) return;
+    setLoading(true);
     setLoadError(null);
-    customersApi
-      .getDetail(customerId)
-      .then(setCustomer)
-      .catch((error) => {
-        setLoadError(describeApiError(error, 'Loading customer (GET /customers/:id)'));
-      });
+    try {
+      setCustomer(await customersApi.getDetail(customerId));
+    } catch (err) {
+      setCustomer(null);
+      setLoadError(describeApiError(err, 'Loading customer (GET /customers/:id)'));
+    } finally {
+      setLoading(false);
+    }
   }, [customerId]);
 
   useEffect(() => {
-    fetchCustomer();
+    void fetchCustomer();
   }, [fetchCustomer]);
 
-  const handleRecordPayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!customer || !paymentAmount || Number(paymentAmount) <= 0) return;
+  const ledgerLoader = useCallback(
+    (skip: number) => customersApi.ledger(customerId ?? '', { skip, take: TAB_PAGE_SIZE }),
+    [customerId],
+  );
+  const invoicesLoader = useCallback(
+    (skip: number) => customersApi.invoices(customerId ?? '', { skip, take: TAB_PAGE_SIZE }),
+    [customerId],
+  );
+  const ledger = usePaginatedTab<CustomerLedgerEntry>(!!customerId && !!customer, ledgerLoader, historyVersion);
+  const invoices = usePaginatedTab<CustomerInvoiceSummary>(!!customerId && !!customer && tab === 'invoices', invoicesLoader, historyVersion);
+
+  const applyCustomer = (updated: CustomerView) => {
+    setCustomer((current) => (current ? { ...current, ...updated } : current));
+  };
+
+  const handlePaymentRecorded = ({ customer: updated }: { customer: CustomerView }) => {
+    applyCustomer(updated);
+    setHistoryVersion((v) => v + 1);
+  };
+
+  const handleDelete = async () => {
+    if (!customer || deleting) return;
+    setDeleting(true);
     try {
-      setSavingPayment(true);
-      await customersApi.recordPayment(customer.id, {
-        amount: Number(paymentAmount),
-        mode: paymentMode,
-        notes: paymentNotes || undefined,
-      });
-      toast(`₹${paymentAmount} payment recorded for ${customer.name}`, 'success');
-      setIsPaymentModalOpen(false);
-      setPaymentAmount('');
-      setPaymentNotes('');
-      fetchCustomer();
+      await customersApi.remove(customer.id);
+      toast(`${customer.name} deleted`, 'success');
+      router.push('/customers');
     } catch (err) {
-      toast(describeApiError(err, 'Recording payment (POST /customers/:id/payments)'), 'error');
+      if (getApiErrorCode(err) === 'CUSTOMER_HAS_BALANCE') {
+        toast(
+          `${customer.name} still has a balance of ${formatMoney(customer.outstandingBalance)}. Settle it before deleting.`,
+          'warning',
+        );
+      } else {
+        toast(describeApiError(err, 'Deleting customer (DELETE /customers/:id)'), 'error');
+      }
+      setIsDeleteOpen(false);
     } finally {
-      setSavingPayment(false);
+      setDeleting(false);
     }
   };
 
-  if (loadError) return <div className="p-10 text-center text-sm font-medium text-red-600">{loadError}</div>;
-  if (!customer) return <div className="p-10 flex justify-center items-center h-screen"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8B5CF6]"></div></div>;
+  if (loading && !customer) return <HeaderSkeleton />;
 
-  const creditRatio = customer.creditLimit > 0 ? customer.udharAmount / customer.creditLimit : 0;
-  const creditStatus =
-    customer.udharAmount <= 0
-      ? { label: 'Clear', className: 'text-green-600', hint: 'No pending udhaar' }
-      : creditRatio < 0.5
-        ? { label: 'Low Risk', className: 'text-green-600', hint: 'Well within credit limit' }
-        : creditRatio < 1
-          ? { label: 'Medium Risk', className: 'text-yellow-600', hint: 'Approaching credit limit' }
-          : { label: 'High Risk', className: 'text-red-600', hint: 'Over credit limit' };
+  if (loadError || !customer) {
+    return (
+      <div className="space-y-6">
+        <Link href="/customers" className="flex items-center gap-2 text-sm font-bold text-gray-800 transition-colors hover:text-[#8B5CF6]">
+          <ArrowLeft size={16} /> Back to customers
+        </Link>
+        <ErrorState title="Unable to load this customer" message={loadError ?? 'Customer not found.'} onRetry={() => void fetchCustomer()} retrying={loading} />
+      </div>
+    );
+  }
 
-  const payments = customer.udharTransactions.filter((txn) => txn.type === 'PAYMENT');
+  const outstanding = customer.outstandingBalance;
+  const available = customer.creditLimit - outstanding;
+  const overLimit = outstanding > customer.creditLimit;
 
   return (
-    <div className="space-y-6 max-w-[1400px] mx-auto pb-10">
+    <div className="mx-auto max-w-[1400px] space-y-6 pb-10">
+      <Link href="/customers" className="flex items-center gap-2 text-sm font-bold text-gray-800 transition-colors hover:text-[#8B5CF6]">
+        <ArrowLeft size={16} /> Back to customers
+      </Link>
 
-      {/* Back Button */}
-      <button
-        onClick={() => router.push('/customers')}
-        className="flex items-center gap-2 text-sm font-bold text-gray-800 hover:text-[#8B5CF6] transition-colors"
-      >
-        <ArrowLeft size={16} />
-        Back to Customers
-      </button>
-
-      {/* Header Profile Section */}
-      <div className="flex flex-col xl:flex-row justify-between items-start gap-6 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-        <div className="flex gap-6 items-start">
-          <img
-            src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${customer.name}`}
-            alt={customer.name}
-            className="w-24 h-24 rounded-full bg-gray-100 border-4 border-gray-50"
-          />
+      {/* Header */}
+      <div className="flex flex-col items-start justify-between gap-6 rounded-2xl border border-gray-100 bg-white p-6 shadow-sm xl:flex-row">
+        <div className="flex items-start gap-6">
+          <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full bg-violet-100 text-3xl font-bold text-violet-700">
+            {customer.name.slice(0, 1).toUpperCase()}
+          </div>
           <div className="space-y-2">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-bold text-gray-800">{customer.name}</h1>
-              <span className="bg-purple-50 text-[#8B5CF6] px-3 py-1 rounded-full text-xs font-bold border border-purple-100">
-                {customer.totalSpent > 0 ? 'Regular Customer' : 'New Customer'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm text-gray-500 mt-2">
-              <div className="flex items-center gap-2">
-                <Phone size={14} className="text-gray-400" />
-                {customer.phone || 'No phone recorded'}
-              </div>
-              <div className="flex items-center gap-2">
-                <FileText size={14} className="text-gray-400" />
-                Customer ID: {customer.id.slice(-8).toUpperCase()}
-              </div>
-              <div className="flex items-center gap-2">
-                <CalendarIcon size={14} className="text-gray-400" />
-                Joined on: {formatDate(customer.createdAt)}
-              </div>
-              <div className="flex items-center gap-2">
-                <MapPin size={14} className="text-gray-400" />
-                Address: {customer.address || 'Not recorded'}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 w-full xl:w-auto">
-          <button onClick={() => toast(`WhatsApp Message opened for ${customer.phone}`, 'success')} className="flex-1 xl:flex-none flex items-center justify-center gap-2 px-4 py-2.5 border border-green-500 text-green-600 rounded-xl text-sm font-bold hover:bg-green-50 transition-colors">
-            <MessageCircle size={16} />
-            Send WhatsApp
-          </button>
-          <button onClick={() => setIsPaymentModalOpen(true)} className="flex-1 xl:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-purple-50 text-[#8B5CF6] border border-purple-200 rounded-xl text-sm font-bold hover:bg-purple-100 transition-colors">
-            <CreditCard size={16} />
-            Add Payment
-          </button>
-          <button onClick={() => toast('Showing more actions', 'info')} className="flex items-center justify-center gap-2 px-3 py-2.5 border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:bg-gray-50 transition-colors">
-            More Actions <MoreVertical size={16} />
-          </button>
-        </div>
-      </div>
-
-      {/* Stats Row */}
-      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4">
-        <Card className="p-4 border border-gray-100 shadow-sm flex flex-col justify-between hover:border-purple-200 transition-colors">
-          <div className="flex justify-between items-start mb-2">
-            <div className="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center text-[#8B5CF6]">
-              <ShoppingCart size={16} />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Total Purchases</p>
-            <h3 className="text-xl font-bold text-gray-800">₹{customer.totalSpent.toLocaleString('en-IN')}</h3>
-            <p className="text-[10px] text-gray-400 mt-1">All time</p>
-          </div>
-        </Card>
-
-        <Card className="p-4 border border-gray-100 shadow-sm flex flex-col justify-between hover:border-green-200 transition-colors">
-          <div className="flex justify-between items-start mb-2">
-            <div className="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center text-green-500">
-              <Banknote size={16} />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Total Paid</p>
-            <h3 className="text-xl font-bold text-gray-800">₹{customer.totalPaid.toLocaleString('en-IN')}</h3>
-            <p className="text-[10px] text-gray-400 mt-1">All time</p>
-          </div>
-        </Card>
-
-        <Card className="p-4 border border-orange-100 shadow-sm flex flex-col justify-between bg-orange-50/30">
-          <div className="flex justify-between items-start mb-2">
-            <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-500">
-              <History size={16} />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Total Pending</p>
-            <h3 className="text-xl font-bold text-gray-800">₹{customer.udharAmount.toLocaleString('en-IN')}</h3>
-            <p className="text-[10px] text-gray-400 mt-1">Current udhaar</p>
-          </div>
-        </Card>
-
-        <Card className="p-4 border border-gray-100 shadow-sm flex flex-col justify-between">
-          <div className="flex justify-between items-start mb-2">
-            <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center text-red-500">
-              <CreditCard size={16} />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Credit Limit</p>
-            <h3 className="text-xl font-bold text-gray-800">₹{customer.creditLimit.toLocaleString('en-IN')}</h3>
-            <p className="text-[10px] text-gray-400 mt-1">Allowed udhaar</p>
-          </div>
-        </Card>
-
-        <Card className="p-4 border border-gray-100 shadow-sm flex flex-col justify-between">
-          <div className="flex justify-between items-start mb-2">
-            <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center text-blue-500">
-              <CalendarIcon size={16} />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Last Payment</p>
-            <h3 className="text-[15px] font-bold text-gray-800 whitespace-nowrap">{formatDate(customer.lastPaymentAt)}</h3>
-            <p className="text-[10px] text-gray-400 mt-1">{customer.lastPaymentAt ? 'Most recent' : 'No payments yet'}</p>
-          </div>
-        </Card>
-
-        <Card className="p-4 border border-gray-100 shadow-sm flex flex-col justify-between">
-          <div className="flex justify-between items-start mb-2">
-            <div className="w-8 h-8 rounded-lg bg-yellow-50 flex items-center justify-center text-yellow-500">
-              <ShieldAlert size={16} />
-            </div>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 font-medium">Credit Status</p>
-            <h3 className={`text-[15px] font-bold whitespace-nowrap ${creditStatus.className}`}>{creditStatus.label}</h3>
-            <p className="text-[10px] text-gray-400 mt-1">{creditStatus.hint}</p>
-          </div>
-        </Card>
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-8 border-b border-gray-200">
-        <button className="pb-3 text-sm font-bold text-[#8B5CF6] border-b-2 border-[#8B5CF6]">Overview</button>
-        <button className="pb-3 text-sm font-bold text-gray-500 hover:text-gray-800">Invoices</button>
-        <button className="pb-3 text-sm font-bold text-gray-500 hover:text-gray-800">Payments</button>
-        <button className="pb-3 text-sm font-bold text-gray-500 hover:text-gray-800">Ledger</button>
-        <button className="pb-3 text-sm font-bold text-gray-500 hover:text-gray-800">Notes & Reminders</button>
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-
-        {/* Left Content Column */}
-        <div className="xl:col-span-2 space-y-6">
-
-          {/* Recent Orders / Invoices */}
-          <Card className="p-0 overflow-hidden border border-gray-100 shadow-sm">
-            <div className="p-5 border-b border-gray-100">
-              <h2 className="font-bold text-gray-800">Recent Orders / Invoices</h2>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-gray-600">
-                <thead className="bg-gray-50/50 text-gray-500 text-xs font-semibold border-b border-gray-100">
-                  <tr>
-                    <th className="px-5 py-3">Date</th>
-                    <th className="px-5 py-3">Invoice ID</th>
-                    <th className="px-5 py-3">Total Amount</th>
-                    <th className="px-5 py-3">Paid Amount</th>
-                    <th className="px-5 py-3">Pending Amount</th>
-                    <th className="px-5 py-3">Status</th>
-                    <th className="px-5 py-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-50">
-                  {customer.invoices.map((invoice) => {
-                    const status = invoiceStatus(invoice);
-                    return (
-                      <tr key={invoice.id} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-5 py-4">{formatDate(invoice.createdAt)}</td>
-                        <td className="px-5 py-4 font-medium">{invoice.invoiceNumber}</td>
-                        <td className="px-5 py-4">₹{invoice.totalAmount.toLocaleString('en-IN')}</td>
-                        <td className="px-5 py-4">₹{invoice.paidAmount.toLocaleString('en-IN')}</td>
-                        <td className="px-5 py-4">₹{invoice.udharAmount.toLocaleString('en-IN')}</td>
-                        <td className="px-5 py-4"><span className={`${status.className} px-2.5 py-1 rounded-full text-[10px] font-bold`}>{status.label}</span></td>
-                        <td className="px-5 py-4 flex gap-2">
-                          <button className="text-[#8B5CF6] hover:bg-purple-50 p-1 rounded"><Eye size={16}/></button>
-                          <button className="text-[#8B5CF6] hover:bg-purple-50 p-1 rounded"><Download size={16}/></button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {customer.invoices.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="px-5 py-10 text-center text-gray-500">
-                        No invoices billed to this customer yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="p-3 border-t border-gray-100 flex justify-center">
-              <button className="text-[#8B5CF6] text-sm font-bold hover:underline">View All Invoices</button>
-            </div>
-          </Card>
-
-          {/* Payment History */}
-          <Card className="p-0 overflow-hidden border border-gray-100 shadow-sm">
-            <div className="p-5 border-b border-gray-100">
-              <h2 className="font-bold text-gray-800">Payment History</h2>
-            </div>
-            <div className="divide-y divide-gray-50">
-              {payments.map((txn) => (
-                <div key={txn.id} className="p-5 flex items-center justify-between hover:bg-gray-50 transition-colors">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center text-green-600">
-                      <Banknote size={16}/>
-                    </div>
-                    <div>
-                      <p className="font-bold text-gray-800 text-sm">{formatDate(txn.createdAt, true)}</p>
-                      <p className="text-xs text-gray-500">{txn.notes ?? 'Udhaar payment'}</p>
-                    </div>
-                  </div>
-                  <div className="text-green-500 font-bold">₹{txn.amount.toLocaleString('en-IN')}</div>
-                  <div className="text-xs text-gray-500 hidden sm:block">Balance after: ₹{txn.balanceAfter.toLocaleString('en-IN')}</div>
-                  <div className="text-xs text-gray-500 hidden md:block">By: {txn.recordedBy?.name ?? '—'}</div>
-                  <button className="text-gray-400 hover:text-gray-800"><MoreVertical size={16}/></button>
-                </div>
-              ))}
-              {payments.length === 0 && (
-                <div className="p-8 text-center text-sm text-gray-500">
-                  No udhaar payments recorded yet.
-                </div>
+              {!customer.isActive && (
+                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-bold text-gray-600">Inactive</span>
+              )}
+              {overLimit && (
+                <span className="rounded-full border border-red-100 bg-red-50 px-3 py-1 text-xs font-bold text-red-600">Over limit</span>
+              )}
+              {outstanding < 0 && (
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-bold text-blue-600">Has advance</span>
               )}
             </div>
-            <div className="p-3 border-t border-gray-100 flex justify-center">
-              <button className="text-[#8B5CF6] text-sm font-bold hover:underline">View All Payments</button>
+            <div className="mt-2 grid grid-cols-1 gap-x-8 gap-y-2 text-sm text-gray-500 sm:grid-cols-2">
+              <div className="flex items-center gap-2"><Phone size={14} className="text-gray-400" />{customer.phone || 'No phone recorded'}</div>
+              <div className="flex items-center gap-2"><CalendarDays size={14} className="text-gray-400" />Customer since {formatDate(customer.createdAt)}</div>
+              <div className="flex items-center gap-2 sm:col-span-2">
+                <MapPin size={14} className="shrink-0 text-gray-400" />
+                <span>
+                  {[customer.address, customer.city, customer.state].filter(Boolean).join(', ') || 'No address recorded'}
+                </span>
+              </div>
+              {customer.email && <div className="flex items-center gap-2 sm:col-span-2"><FileText size={14} className="text-gray-400" />{customer.email}</div>}
             </div>
-          </Card>
-
+          </div>
         </div>
 
-        {/* Right Content Column */}
-        <div className="xl:col-span-1 space-y-6">
-
-          {/* Latest Invoices Thumbnail Grid */}
-          <Card className="p-5 border border-gray-100 shadow-sm">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="font-bold text-gray-800">Latest Invoices</h2>
-              <button className="text-[#8B5CF6] text-xs font-bold hover:underline">View All</button>
-            </div>
-
-            {customer.invoices.length > 0 ? (
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                {customer.invoices.slice(0, 3).map((invoice) => {
-                  const status = invoiceStatus(invoice);
-                  return (
-                    <div key={invoice.id} className="border border-gray-200 rounded-lg p-2 hover:border-[#8B5CF6] transition-colors cursor-pointer group">
-                      <div className="bg-gray-50 h-24 mb-2 flex items-center justify-center rounded border border-gray-100 overflow-hidden relative">
-                        <FileText size={22} className="text-gray-300" />
-                      </div>
-                      <p className="text-[10px] font-bold text-gray-800 truncate">{invoice.invoiceNumber}</p>
-                      <p className="text-[9px] text-gray-500">{formatDate(invoice.createdAt)}</p>
-                      <p className="text-[11px] font-bold text-gray-800">₹{invoice.totalAmount.toLocaleString('en-IN')}</p>
-                      <span className={`${status.className} px-1.5 py-0.5 rounded text-[8px] font-bold inline-block mt-1`}>{status.label}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="p-6 text-center text-xs text-gray-500 border border-dashed border-gray-200 rounded-lg mb-4">
-                Invoices will appear here after the first bill.
-              </div>
-            )}
-
-            <button onClick={() => toast('Downloaded all invoices as PDF', 'success')} className="w-full flex items-center justify-center gap-2 py-2 border border-gray-200 rounded-lg text-sm font-bold text-[#8B5CF6] hover:bg-purple-50 transition-colors">
-              <Download size={16} /> Download All Invoices (PDF)
+        <div className="flex w-full flex-wrap items-center gap-3 xl:w-auto">
+          <button
+            type="button"
+            onClick={() => setIsPaymentOpen(true)}
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-green-500 px-4 py-2.5 text-sm font-bold text-white shadow-lg shadow-green-500/30 transition-colors hover:bg-green-600 xl:flex-none"
+          >
+            <CreditCard size={16} /> Record payment
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsEditOpen(true)}
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-purple-200 bg-purple-50 px-4 py-2.5 text-sm font-bold text-[#8B5CF6] transition-colors hover:bg-purple-100 xl:flex-none"
+          >
+            <Pencil size={16} /> Edit
+          </button>
+          {allowDelete && (
+            <button
+              type="button"
+              onClick={() => setIsDeleteOpen(true)}
+              aria-label="Delete customer"
+              className="flex items-center justify-center gap-2 rounded-xl border border-gray-200 px-3 py-2.5 text-sm font-bold text-gray-500 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+            >
+              <Trash2 size={16} />
             </button>
-          </Card>
-
-          {/* Notes Block */}
-          <div className="bg-[#FFFDF0] border border-yellow-200 rounded-2xl p-5 shadow-sm relative">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="font-bold text-gray-800 flex items-center gap-2">
-                <FileText size={16} className="text-yellow-600" />
-                Notes
-              </h2>
-            </div>
-            {customer.notes ? (
-              <p className="text-sm text-gray-700 whitespace-pre-line">{customer.notes}</p>
-            ) : (
-              <p className="text-sm text-gray-500">No notes recorded for this customer.</p>
-            )}
-          </div>
-
-          {/* Quick Actions */}
-          <Card className="p-5 border border-gray-100 shadow-sm">
-            <h2 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
-              <AlertCircle size={16} className="text-[#8B5CF6]" />
-              Quick Actions
-            </h2>
-            <div className="grid grid-cols-2 gap-3">
-              <button onClick={() => toast('WhatsApp reminder sent!', 'success')} className="flex items-center justify-center gap-2 py-2.5 border border-green-500 text-green-600 rounded-lg text-xs font-bold hover:bg-green-50 transition-colors">
-                <MessageCircle size={14} /> Send WhatsApp Reminder
-              </button>
-              <button onClick={() => toast(`Calling ${customer.phone}...`, 'info')} className="flex items-center justify-center gap-2 py-2.5 border border-purple-200 text-[#8B5CF6] rounded-lg text-xs font-bold hover:bg-purple-50 transition-colors">
-                <PhoneCall size={14} /> Call Customer
-              </button>
-              <button onClick={() => toast('Payment link sent via SMS', 'success')} className="flex items-center justify-center gap-2 py-2.5 border border-purple-200 text-[#8B5CF6] rounded-lg text-xs font-bold hover:bg-purple-50 transition-colors">
-                <LinkIcon size={14} /> Send Payment Link
-              </button>
-              <button onClick={() => toast('Customer marked as High Risk', 'error')} className="flex items-center justify-center gap-2 py-2.5 border border-red-500 text-red-500 rounded-lg text-xs font-bold hover:bg-red-50 transition-colors">
-                <ShieldAlert size={14} /> Mark as High Risk
-              </button>
-            </div>
-          </Card>
-
+          )}
         </div>
       </div>
 
-      {/* Modals */}
-      <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title={`Record Payment - ${customer.name}`} size="sm">
-        <form onSubmit={handleRecordPayment} className="space-y-4">
-          <div>
-            <label className="text-sm font-medium">Amount Received (₹) *</label>
-            <input
-              required
-              type="number"
-              min="1"
-              value={paymentAmount}
-              onChange={(e) => setPaymentAmount(e.target.value)}
-              className="w-full mt-1 border rounded-lg p-2 text-lg font-bold"
-              placeholder="0.00"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium">Payment Mode</label>
-            <select value={paymentMode} onChange={(e) => setPaymentMode(e.target.value)} className="w-full mt-1 border rounded-lg p-2">
-              <option>Cash</option>
-              <option>UPI</option>
-              <option>Card</option>
-              <option>Bank Transfer</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Notes (Optional)</label>
-            <textarea value={paymentNotes} onChange={(e) => setPaymentNotes(e.target.value)} className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Paid for last week's bill" rows={2} />
-          </div>
-          <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" disabled={savingPayment} className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm font-bold shadow-lg shadow-green-500/30 disabled:opacity-60">
-              {savingPayment ? 'Recording...' : 'Record Payment'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      {/* Balances */}
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+        <StatTile
+          icon={<History size={16} />}
+          label="Outstanding"
+          value={outstanding < 0 ? `Advance ${formatMoney(Math.abs(outstanding))}` : formatMoney(outstanding)}
+          hint={outstanding < 0 ? 'Store credit held' : 'Current udhar'}
+          tone={outstanding > 0 ? 'orange' : outstanding < 0 ? 'blue' : 'green'}
+        />
+        <StatTile icon={<CreditCard size={16} />} label="Credit limit" value={formatMoney(customer.creditLimit)} hint="Allowed udhar" tone="red" />
+        <StatTile
+          icon={<Wallet size={16} />}
+          label="Available credit"
+          value={formatMoney(available)}
+          hint={available < 0 ? 'Limit exceeded' : 'Limit minus outstanding'}
+          tone={available < 0 ? 'red' : 'green'}
+        />
+        <StatTile icon={<ShoppingCart size={16} />} label="Total purchases" value={formatMoney(customer.totalPurchases)} hint={`Last: ${formatDate(customer.lastPurchaseAt)}`} />
+        <StatTile icon={<Banknote size={16} />} label="Total paid" value={formatMoney(customer.totalPaid)} hint={`Last: ${formatDate(customer.lastPaymentAt)}`} tone="green" />
+        <StatTile icon={<Receipt size={16} />} label="Recent invoices" value={customer.invoices.length.toLocaleString('en-IN')} hint="Embedded in profile (last 10)" tone="blue" />
+      </div>
 
+      {customer.notes && (
+        <div className="rounded-2xl border border-yellow-200 bg-[#FFFDF0] p-5 shadow-sm">
+          <h2 className="mb-2 flex items-center gap-2 font-bold text-gray-800"><FileText size={16} className="text-yellow-600" /> Notes</h2>
+          <p className="whitespace-pre-line text-sm text-gray-700">{customer.notes}</p>
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-8 border-b border-gray-200" role="tablist">
+        {([
+          { id: 'ledger', label: 'Ledger' },
+          { id: 'invoices', label: 'Invoices' },
+        ] as Array<{ id: Tab; label: string }>).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={`pb-3 text-sm font-bold transition-colors ${tab === t.id ? 'border-b-2 border-[#8B5CF6] text-[#8B5CF6]' : 'text-gray-500 hover:text-gray-800'}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'ledger' && (
+        <Card className="overflow-hidden border border-gray-100 p-0 shadow-sm">
+          <div className="border-b border-gray-100 p-5">
+            <h2 className="font-bold text-gray-800">Ledger</h2>
+            <p className="mt-0.5 text-xs text-gray-500">Every credit, payment and adjustment with the running balance.</p>
+          </div>
+          {ledger.loading && !ledger.page ? (
+            <TableSkeleton rows={6} cols={8} />
+          ) : ledger.error ? (
+            <div className="p-6"><ErrorState title="Unable to load the ledger" message={ledger.error} onRetry={() => void ledger.reload()} retrying={ledger.loading} /></div>
+          ) : !ledger.page || ledger.page.items.length === 0 ? (
+            <EmptyState icon={<History size={40} />} title="No ledger entries yet" hint="Credit sales and payments will appear here." />
+          ) : (
+            <>
+              <LedgerTable entries={ledger.page.items} />
+              <PaginationControls skip={ledger.skip} take={TAB_PAGE_SIZE} total={ledger.page.total} onChange={ledger.setSkip} disabled={ledger.loading} itemLabel="entries" />
+            </>
+          )}
+        </Card>
+      )}
+
+      {tab === 'invoices' && (
+        <Card className="overflow-hidden border border-gray-100 p-0 shadow-sm">
+          <div className="border-b border-gray-100 p-5">
+            <h2 className="font-bold text-gray-800">Invoices</h2>
+            <p className="mt-0.5 text-xs text-gray-500">Sales and returns billed to this customer.</p>
+          </div>
+          {invoices.loading && !invoices.page ? (
+            <TableSkeleton rows={6} cols={7} />
+          ) : invoices.error ? (
+            <div className="p-6"><ErrorState title="Unable to load invoices" message={invoices.error} onRetry={() => void invoices.reload()} retrying={invoices.loading} /></div>
+          ) : !invoices.page || invoices.page.items.length === 0 ? (
+            <EmptyState icon={<Receipt size={40} />} title="No invoices yet" hint="Bills raised for this customer will appear here." />
+          ) : (
+            <>
+              <CustomerInvoicesTable invoices={invoices.page.items} />
+              <PaginationControls skip={invoices.skip} take={TAB_PAGE_SIZE} total={invoices.page.total} onChange={invoices.setSkip} disabled={invoices.loading} itemLabel="invoices" />
+            </>
+          )}
+        </Card>
+      )}
+
+      {/* Modals */}
+      <RecordPaymentModal isOpen={isPaymentOpen} customer={customer} onClose={() => setIsPaymentOpen(false)} onRecorded={handlePaymentRecorded} />
+
+      <CustomerFormModal isOpen={isEditOpen} mode="edit" customer={customer} onClose={() => setIsEditOpen(false)} onSaved={applyCustomer} />
+
+      <ConfirmDialog
+        isOpen={isDeleteOpen}
+        title={`Delete ${customer.name}?`}
+        message={
+          outstanding !== 0
+            ? `This customer has a balance of ${formatMoney(outstanding)}. The server will refuse the delete until it is settled.`
+            : 'The customer is archived and disappears from lists. Invoices and ledger history are kept.'
+        }
+        confirmLabel={deleting ? 'Deleting…' : 'Delete'}
+        onConfirm={() => void handleDelete()}
+        onCancel={() => { if (!deleting) setIsDeleteOpen(false); }}
+      />
     </div>
   );
 }

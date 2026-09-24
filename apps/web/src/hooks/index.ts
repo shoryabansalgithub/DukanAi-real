@@ -47,3 +47,11 @@ export const useMediaQuery = (query: string) => {
 export const useIsMobile = () => {
   return useMediaQuery('(max-width: 768px)');
 };
+
+// POS hooks (EXEC-006C)
+export { useDebounce } from './useDebounce';
+export { useIdempotencyKey } from './useIdempotencyKey';
+export { useBarcodeScanner } from './useBarcodeScanner';
+export type { BarcodeScannerOptions } from './useBarcodeScanner';
+export { useHotkeys } from './useHotkeys';
+export type { HotkeyHandler, HotkeyMap, HotkeysOptions } from './useHotkeys';

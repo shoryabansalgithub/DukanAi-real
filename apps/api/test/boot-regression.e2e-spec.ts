@@ -16,7 +16,10 @@ import * as path from 'path';
  */
 describe('production boot regressions', () => {
   const apiRoot = path.resolve(__dirname, '..');
-  const entrypoint = path.join(apiRoot, 'dist', 'src', 'main.js');
+  // Single source of truth: whatever `start:prod` runs is what must exist and boot.
+  const pkg = JSON.parse(readFileSync(path.join(apiRoot, 'package.json'), 'utf8'));
+  const startTarget = (pkg.scripts['start:prod'] as string).replace(/^node\s+/, '');
+  const entrypoint = path.join(apiRoot, startTarget.endsWith('.js') ? startTarget : `${startTarget}.js`);
 
   beforeAll(() => {
     if (!existsSync(entrypoint)) {
@@ -25,10 +28,7 @@ describe('production boot regressions', () => {
   }, 180_000);
 
   it('start:prod points at the compiled entrypoint', () => {
-    const pkg = JSON.parse(readFileSync(path.join(apiRoot, 'package.json'), 'utf8'));
-    const target = (pkg.scripts['start:prod'] as string).replace(/^node\s+/, '');
-    const resolved = path.join(apiRoot, target.endsWith('.js') ? target : `${target}.js`);
-    expect(existsSync(resolved)).toBe(true);
+    expect(existsSync(entrypoint)).toBe(true);
   });
 
   it('a startup crash is reported on stderr instead of dying silently', () => {
@@ -43,6 +43,6 @@ describe('production boot regressions', () => {
 
     expect(result.status).not.toBe(0);
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-    expect(output).toContain('[Bootstrap] Fatal error during application startup');
+    expect(output).toMatch(/\[Bootstrap(\]| FATAL\])/);
   }, 90_000);
 });

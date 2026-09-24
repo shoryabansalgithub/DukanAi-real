@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { PrismaModule } from '../prisma/prisma.module';
 import { EventPublisherService } from './services/event-publisher.service';
 import { WebhookDispatcherService } from './services/webhook-dispatcher.service';
-import { OutboxRelayWorker } from './workers/outbox-relay.worker';
 import { EventBusService } from './services/event-bus.service';
 import { EventReplayService } from './services/event-replay.service';
 import { IdempotencyService } from './services/idempotency.service';
@@ -18,7 +17,6 @@ import { EventsController } from './events.controller';
     EventPublisherService,
     WebhookDispatcherService,
     WebhookManagementService,
-    OutboxRelayWorker,
     EventBusService,
     EventReplayService,
     IdempotencyService,
