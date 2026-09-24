@@ -9,6 +9,7 @@ import type { InvoiceDetail, TenderType } from '@/types';
 import { extractApiError } from '@/components/pos/api-errors';
 import { calculateReturnPreview } from '@/components/pos/engine';
 import { money, qty } from '@/components/pos/format';
+import { CustomItemBadge } from '@/components/invoices/InvoiceBadges';
 
 interface ReturnDialogProps {
   isOpen: boolean;
@@ -135,13 +136,15 @@ export function ReturnDialog({ isOpen, invoice, onClose, onReturned }: ReturnDia
                 const problem = parsed.problems[item.id];
                 const line = previewTotals?.byLineRef[item.id];
                 return (
-                  <tr key={item.id} className={max === 0 ? 'opacity-50' : ''}>
+                  <tr key={item.id} data-testid="return-item" data-custom={item.isCustom ? 'true' : 'false'} className={max === 0 ? 'opacity-50' : ''}>
                     <td className="px-3 py-2">
-                      <p className="font-bold text-gray-800 truncate max-w-[220px]" title={item.productName}>
-                        {item.productName}
+                      <p className="font-bold text-gray-800 truncate max-w-[220px] flex items-center gap-1.5" title={item.productName}>
+                        <span className="truncate">{item.productName}</span>
+                        {item.isCustom && <CustomItemBadge className="shrink-0" />}
                       </p>
                       <p className="text-[11px] text-gray-400">
                         {money(item.sellingPrice)} / {item.unit}
+                        {item.isCustom ? ' · refund only, no stock restore' : ''}
                       </p>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">{qty(item.quantity)}</td>

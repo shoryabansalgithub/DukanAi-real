@@ -18,7 +18,8 @@ export type InvoiceMathErrorCode =
   | 'ERR_UNKNOWN_TENDER'
   | 'ERR_UNKNOWN_PAYMENT_MODE'
   | 'ERR_RETURN_QTY_EXCEEDS'
-  | 'ERR_INVALID_RETURN_LINE';
+  | 'ERR_INVALID_RETURN_LINE'
+  | 'ERR_AMOUNT_TOO_LARGE';
 
 export class InvoiceMathError extends Error {
   public readonly code: InvoiceMathErrorCode;

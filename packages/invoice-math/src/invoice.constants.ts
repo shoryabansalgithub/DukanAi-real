@@ -30,3 +30,11 @@ export const TENDER_TO_PAYMENT_MODE: Record<TenderType, InvoicePaymentMode> = {
 /** Money is stored with two decimals; quantities with three. */
 export const MONEY_DP = 2;
 export const QUANTITY_DP = 3;
+
+/**
+ * Storage limits of the invoice tables (Prisma `Decimal(10,2)` money and
+ * `Decimal(10,3)` quantities). The engine rejects anything that would not
+ * fit instead of letting the database truncate or fail mid-transaction.
+ */
+export const MONEY_MAX = '99999999.99';
+export const QUANTITY_MAX = '9999999.999';

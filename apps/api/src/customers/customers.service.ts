@@ -10,9 +10,11 @@ import { CreateEnterpriseCustomerDto } from './dto/enterprise-customer.dto';
 import { CreateCustomerDto, PaginationDto, RecordPaymentDto, UpdateCustomerDto } from './dto/create-customer.dto';
 import { CustomerType, CustomerLifecycleStatus, KycStatus } from './domain/enums';
 import { SalesFeatureConfig } from '../config/domains/features/sales-feature.config';
-import { LedgerPostingService } from '../billing/services/ledger-posting.service';
+import { LedgerPostingService } from '../ledger/ledger-posting.service';
 import { BillingHelpers } from '../billing/billing.helpers';
 import { BillingActor, money } from '../billing/billing.types';
+import { BillingCheckpoints } from '../billing/billing-checkpoints';
+import { withSerializationRetry } from '../common/db/serialization-retry';
 
 type CreateInput = CreateCustomerDto & Partial<CreateEnterpriseCustomerDto>;
 
@@ -29,6 +31,7 @@ export class CustomersService {
     private readonly salesFeatureConfig: SalesFeatureConfig,
     private readonly ledger: LedgerPostingService,
     private readonly billingHelpers: BillingHelpers,
+    private readonly checkpoints: BillingCheckpoints,
   ) {}
 
   async create(data: CreateInput, actor?: Pick<BillingActor, 'userId' | 'ipAddress'>) {
@@ -174,11 +177,18 @@ export class CustomersService {
     const replay = await this.replayPayment(id, dto, amount, actor);
     if (replay) return replay;
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<Array<{ id: string; name: string; outstandingBalance: unknown }>>`
-        SELECT id, name, outstandingBalance FROM Customer WHERE id = ${id} AND shopId = ${actor.shopId} AND isDeleted = false FOR UPDATE
+    const result = await withSerializationRetry(() => this.prisma.$transaction(async (tx) => {
+      // Canonical lock order (shared with sales and returns): Shift, then Customer.
+      const shiftRows = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false ORDER BY openedAt DESC LIMIT 1 FOR UPDATE
+      `;
+      const shiftId = shiftRows[0]?.id ?? null;
+
+      const rows = await tx.$queryRaw<Array<{ id: string; name: string; outstandingBalance: unknown; isActive: number | boolean }>>`
+        SELECT id, name, outstandingBalance, isActive FROM Customer WHERE id = ${id} AND shopId = ${actor.shopId} AND isDeleted = false FOR UPDATE
       `;
       if (rows.length === 0) throw new NotFoundException({ message: 'Customer not found', code: 'CUSTOMER_NOT_FOUND' });
+      if (!rows[0].isActive) throw new ConflictException({ message: `${rows[0].name} is inactive; reactivate the customer before recording a payment.`, code: 'CUSTOMER_INACTIVE' });
       const before = new Prisma.Decimal(String(rows[0].outstandingBalance));
 
       if (amount.greaterThan(before) && !dto.allowAdvance) {
@@ -190,11 +200,7 @@ export class CustomersService {
       }
       const after = before.minus(amount);
 
-      const shiftRows = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM Shift WHERE shopId = ${actor.shopId} AND openedById = ${actor.userId} AND status = 'OPEN' AND isDeleted = false ORDER BY openedAt DESC LIMIT 1 FOR UPDATE
-      `;
-      const shiftId = shiftRows[0]?.id ?? null;
-
+      await this.checkpoints.reach('BEFORE_PAYMENT', 'REPAYMENT');
       const transaction = await tx.udharTransaction.create({
         data: {
           shopId: actor.shopId,
@@ -211,11 +217,14 @@ export class CustomersService {
         },
       });
 
+      await this.checkpoints.reach('BEFORE_CUSTOMER', 'REPAYMENT');
       const customer = await tx.customer.update({
         where: { id, shopId: actor.shopId },
         data: { outstandingBalance: after, totalPaid: { increment: amount }, lastPaymentAt: new Date() },
       });
+      await this.checkpoints.reach('AFTER_CUSTOMER', 'REPAYMENT');
 
+      await this.checkpoints.reach('BEFORE_SHIFT', 'REPAYMENT');
       if (shiftId) {
         await tx.shift.update({
           where: { id: shiftId },
@@ -226,8 +235,10 @@ export class CustomersService {
         });
       }
 
+      await this.checkpoints.reach('BEFORE_LEDGER', 'REPAYMENT');
       await this.ledger.post(tx, {
         shopId: actor.shopId,
+        source: { type: 'CUSTOMER_PAYMENT', id: transaction.id },
         description: `Customer payment ${rows[0].name} (${dto.tender})`,
         entries: [
           { account: dto.tender === 'CASH' ? LedgerAccount.CASH : LedgerAccount.BANK, type: LedgerEntryType.DEBIT, amount },
@@ -235,6 +246,9 @@ export class CustomersService {
         ],
       });
 
+      await this.checkpoints.reach('AFTER_LEDGER', 'REPAYMENT');
+
+      await this.checkpoints.reach('BEFORE_AUDIT', 'REPAYMENT');
       await tx.auditLog.create({
         data: {
           shopId: actor.shopId,
@@ -258,6 +272,7 @@ export class CustomersService {
         },
       });
 
+      await this.checkpoints.reach('EVENT_STAGING', 'REPAYMENT');
       await this.billingHelpers.stageEvent(tx, actor, 'CUSTOMER_PAYMENT_RECORDED', id, {
         customerId: id,
         transactionId: transaction.id,
@@ -265,8 +280,9 @@ export class CustomersService {
         tender: dto.tender,
       });
 
+      await this.checkpoints.reach('BEFORE_COMMIT', 'REPAYMENT');
       return { customer, transaction };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }).catch(async (error) => {
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted })).catch(async (error) => {
       // The replay pre-check runs outside this transaction, so two concurrent
       // requests carrying the same key both pass it and serialize on the
       // customer lock; the loser hits the unique (shopId, idempotencyKey)

@@ -11,6 +11,8 @@ export {
   TENDER_TO_PAYMENT_MODE,
   MONEY_DP,
   QUANTITY_DP,
+  MONEY_MAX,
+  QUANTITY_MAX,
 } from './invoice.constants';
 export { TaxCalculator, GST_RATE_MAP } from './tax';
 export type { TaxCalculationInput, TaxCalculationResult, TaxBreakdown, GSTMode } from './tax';

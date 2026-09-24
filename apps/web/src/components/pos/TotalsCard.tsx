@@ -118,7 +118,9 @@ export function TotalsCard({
         <Row label="Round-off" value={signedMoney(totals?.roundOff)} muted />
         <div className="flex items-baseline justify-between border-t border-gray-200 pt-2 mt-1">
           <dt className="text-sm font-bold text-gray-800">Grand total</dt>
-          <dd className="text-2xl font-extrabold text-gray-900 tabular-nums">{engineError ? '—' : money(totals?.finalTotal)}</dd>
+          <dd data-testid="pos-grand-total" className="text-2xl font-extrabold text-gray-900 tabular-nums">
+            {engineError ? '—' : money(totals?.finalTotal)}
+          </dd>
         </div>
       </dl>
       <p className="text-[10px] text-gray-400">

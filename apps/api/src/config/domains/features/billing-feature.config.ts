@@ -8,9 +8,14 @@ import { Transform } from 'class-transformer';
 export class BillingFeatureConfig {
   @IsOptional()
   @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 10000))
+  /**
+   * Interactive transaction budget for a sale/return/repayment. Sales of one
+   * shop queue on the gapless number lock, so a burst of checkouts must fit
+   * inside this window: 30 s covers several hundred queued checkouts.
+   */
+  @Transform(({ value }) => (value ? parseInt(value, 10) : 30000))
   @EnvVariable('BILLING_GATEWAY_TIMEOUT_MS')
-  gatewayTimeoutMs: number = 10000;
+  gatewayTimeoutMs: number = 30000;
 
   @IsOptional()
   @IsNumber()
@@ -26,7 +31,19 @@ export class BillingFeatureConfig {
 
   @IsOptional()
   @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 5000))
+  /** Time to wait for a pool connection before a checkout is rejected. */
+  @Transform(({ value }) => (value ? parseInt(value, 10) : 15000))
   @EnvVariable('BILLING_TRANSACTION_MAX_WAIT_MS')
-  transactionMaxWaitMs: number = 5000;
+  transactionMaxWaitMs: number = 15000;
+
+  /**
+   * Largest discount (line or invoice, in percent of the eligible amount) a
+   * CASHIER may apply on their own. Anything above needs a MANAGER/ADMIN/OWNER
+   * to bill the invoice; the approver is stamped on Invoice.approvedBy.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Transform(({ value }) => (value === undefined || value === '' ? 10 : Number(value)))
+  @EnvVariable('BILLING_CASHIER_MAX_DISCOUNT_PERCENT')
+  cashierMaxDiscountPercent: number = 10;
 }

@@ -175,11 +175,14 @@ export interface BuildInputOptions {
 export function buildEngineInput({ lines, discount, isInterState, payment }: BuildInputOptions): InvoiceMathInput {
   const input: InvoiceMathInput = {
     items: lines.map((line) => ({
+      // Custom lines carry `custom:<lineId>` so each is a distinct engine key.
       productId: line.productId,
       quantity: line.quantity,
       unitPrice: line.unitPrice,
       discountPercent: line.discountPercent || undefined,
       gstRateStr: line.gstRate || 'EIGHTEEN',
+      // Custom lines never carry cess (contract §2); products pass theirs through for parity with the API.
+      cessRate: line.isCustom ? 0 : line.cessRate || 0,
       isInterState,
     })),
   };

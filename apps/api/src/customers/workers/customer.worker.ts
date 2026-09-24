@@ -64,18 +64,23 @@ export class CustomerWorker extends WorkerHost {
         correlationId: job.data.correlationId ?? `customer-analytics-${String(job.id ?? randomUUID())}`,
         requestId: randomUUID(),
       },
-      async () => {
+      async () =>
+        // The recompute overwrites Customer.outstandingBalance, so it takes the
+        // same row lock the billing and repayment transactions take and reads
+        // the ledger inside that lock; a concurrent sale can never be clobbered.
+        this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM Customer WHERE id = ${customerId} AND shopId = ${shopId} FOR UPDATE`;
         const [ledger, sales, returns] = await Promise.all([
-          this.prisma.udharTransaction.groupBy({
+          tx.udharTransaction.groupBy({
             by: ['type'],
             where: { customerId, shopId },
             _sum: { amount: true },
           }),
-          this.prisma.invoice.aggregate({
+          tx.invoice.aggregate({
             where: { customerId, shopId, isDeleted: false, status: InvoiceStatus.COMPLETED, type: InvoiceType.SALE },
             _sum: { totalAmount: true },
           }),
-          this.prisma.invoice.aggregate({
+          tx.invoice.aggregate({
             where: { customerId, shopId, isDeleted: false, status: InvoiceStatus.COMPLETED, type: InvoiceType.SALES_RETURN },
             _sum: { totalAmount: true },
           }),
@@ -93,7 +98,7 @@ export class CustomerWorker extends WorkerHost {
         const totalPaid = payment;
         const totalPurchases = (sales._sum.totalAmount ?? ZERO).minus(returns._sum.totalAmount ?? ZERO);
 
-        const result = await this.prisma.customer.updateMany({
+        const result = await tx.customer.updateMany({
           where: { id: customerId, shopId },
           data: { outstandingBalance, totalPurchases, totalPaid },
         });
@@ -111,7 +116,7 @@ export class CustomerWorker extends WorkerHost {
           totalPurchases: totalPurchases.toFixed(2),
           totalPaid: totalPaid.toFixed(2),
         };
-      },
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted }),
     );
   }
 

@@ -20,6 +20,8 @@ import {
   TENDER_TO_PAYMENT_MODE,
   MONEY_DP,
   QUANTITY_DP,
+  MONEY_MAX,
+  QUANTITY_MAX,
 } from './invoice.constants';
 import { TaxCalculator, GST_RATE_MAP } from './tax';
 import { InvoiceMathError } from './invoice-math.error';
@@ -119,6 +121,9 @@ function settlePayment(payment: PaymentInput, finalTotal: Decimal): PaymentResul
     if (amount.isNegative()) {
       throw new InvoiceMathError('Tender amount cannot be negative.', 'ERR_NEGATIVE_PAYMENT');
     }
+    if (amount.greaterThan(MONEY_MAX)) {
+      throw new InvoiceMathError(`Tender amount exceeds the maximum of ${MONEY_MAX}.`, 'ERR_INVALID_PAYMENT');
+    }
     const tendered = t.tenderedAmount === undefined || t.tenderedAmount === null ? amount : money(toDecimal(t.tenderedAmount));
     if (tendered.lessThan(amount)) {
       throw new InvoiceMathError('Tendered amount cannot be less than the amount applied.', 'ERR_INVALID_PAYMENT');
@@ -184,9 +189,15 @@ export class InvoiceMathEngine {
       if (!qty.greaterThan(0)) {
         throw new InvoiceMathError(`Quantity for ${item.productId} must be greater than 0.`, 'ERR_INVALID_QUANTITY');
       }
+      if (qty.greaterThan(QUANTITY_MAX)) {
+        throw new InvoiceMathError(`Quantity for ${item.productId} exceeds the maximum of ${QUANTITY_MAX}.`, 'ERR_INVALID_QUANTITY');
+      }
       const unitPrice = money(toDecimal(item.unitPrice));
       if (unitPrice.isNegative()) {
         throw new InvoiceMathError(`Unit price for ${item.productId} cannot be negative.`, 'ERR_INVALID_PRICE');
+      }
+      if (unitPrice.greaterThan(MONEY_MAX)) {
+        throw new InvoiceMathError(`Unit price for ${item.productId} exceeds the maximum of ${MONEY_MAX}.`, 'ERR_INVALID_PRICE');
       }
       const discPct = toDecimal(item.discountPercent);
       if (discPct.isNegative() || discPct.greaterThan(100)) {
@@ -196,6 +207,9 @@ export class InvoiceMathEngine {
       const cessRate = toDecimal(item.cessRate);
 
       const lineSubtotal = money(unitPrice.mul(qty));
+      if (lineSubtotal.greaterThan(MONEY_MAX)) {
+        throw new InvoiceMathError(`Line amount for ${item.productId} (${lineSubtotal.toFixed(2)}) exceeds the maximum of ${MONEY_MAX}.`, 'ERR_AMOUNT_TOO_LARGE');
+      }
       const itemDiscount = money(lineSubtotal.mul(discPct).div(100));
       return {
         item,
@@ -330,6 +344,9 @@ export class InvoiceMathEngine {
     const roundedTotal = grandTotal.toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
     const roundOff = money(roundedTotal.minus(grandTotal));
     const finalTotal = grandTotal.plus(roundOff);
+    if (subtotal.greaterThan(MONEY_MAX) || finalTotal.greaterThan(MONEY_MAX)) {
+      throw new InvoiceMathError(`Invoice total ${finalTotal.toFixed(2)} exceeds the maximum of ${MONEY_MAX}.`, 'ERR_AMOUNT_TOO_LARGE');
+    }
 
     const paymentInput = normalisePayment(input);
     const payment = paymentInput ? settlePayment(paymentInput, finalTotal) : null;

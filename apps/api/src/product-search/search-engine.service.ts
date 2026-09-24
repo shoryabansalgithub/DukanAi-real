@@ -17,6 +17,8 @@ export interface LeanProduct {
   sellingPrice: number;
   mrp: number;
   gstRate: GstRate;
+  /** Cess percentage on the taxable amount (0 for most products). */
+  cessRate: number;
   unit: ProductUnit;
   currentStock: number;
   type: ProductType;
@@ -25,6 +27,13 @@ export interface LeanProduct {
   categoryName: string | null;
   /** Present when the match came from a variant barcode. */
   variantId?: string;
+}
+
+/** Name-prefix suggestion row from `GET /search/suggestions`. */
+export interface SuggestionRow {
+  id: string;
+  name: string;
+  cessRate: number;
 }
 
 export interface SearchOptions {
@@ -42,6 +51,7 @@ const LEAN_PRODUCT_SELECT = {
   sellingPrice: true,
   mrp: true,
   gstRate: true,
+  cessRate: true,
   unit: true,
   currentStock: true,
   type: true,
@@ -80,6 +90,7 @@ export function toLeanProduct(row: LeanProductRow, variantId?: string): LeanProd
     sellingPrice: row.sellingPrice.toNumber(),
     mrp: row.mrp.toNumber(),
     gstRate: row.gstRate,
+    cessRate: row.cessRate.toNumber(),
     unit: row.unit,
     currentStock: row.currentStock.toNumber(),
     type: row.type,
@@ -199,20 +210,21 @@ export class SearchEngineService {
   }
 
   /** Fast autocomplete on name prefix; active, non-deleted products only. */
-  async autocomplete(shopId: string, rawQuery: string): Promise<Array<{ id: string; name: string }>> {
+  async autocomplete(shopId: string, rawQuery: string): Promise<SuggestionRow[]> {
     const query = normalizeSearchQuery(rawQuery);
     if (query.length < 2) return [];
 
     const cacheKey = `autocomplete:${shopId}:${query.toLowerCase()}`;
-    const cached = await this.cacheGet<Array<{ id: string; name: string }>>(cacheKey);
+    const cached = await this.cacheGet<SuggestionRow[]>(cacheKey);
     if (cached) return cached;
 
-    const products = await this.prisma.product.findMany({
+    const rows = await this.prisma.product.findMany({
       where: { shopId, isDeleted: false, isActive: true, name: { startsWith: query } },
-      select: { id: true, name: true },
+      select: { id: true, name: true, cessRate: true },
       orderBy: { name: 'asc' },
       take: this.searchFeatureConfig.searchResultLimit,
     });
+    const products: SuggestionRow[] = rows.map((row) => ({ id: row.id, name: row.name, cessRate: row.cessRate.toNumber() }));
 
     await this.cacheSet(cacheKey, products, this.cacheConfig.searchStockTtlMs);
     return products;

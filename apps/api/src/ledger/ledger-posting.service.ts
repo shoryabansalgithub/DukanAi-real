@@ -8,11 +8,30 @@ export interface LedgerEntryInput {
   description?: string;
 }
 
+/** Business events that post to the ledger; with `sourceId` they form the posting's unique key. */
+export type LedgerSourceType =
+  | 'SALE'
+  | 'RETURN'
+  | 'CANCELLATION'
+  | 'CUSTOMER_PAYMENT'
+  | 'GRN'
+  | 'PURCHASE_RETURN'
+  | 'ADJUSTMENT_REQUEST'
+  | 'STOCK_ADJUSTMENT';
+
 export interface LedgerPosting {
   shopId: string;
+  /** Idempotency key: at most one posting per (shop, source type, source id), enforced by a unique index. */
+  source: { type: LedgerSourceType; id: string };
   invoiceId?: string | null;
   description: string;
   entries: LedgerEntryInput[];
+}
+
+export interface LedgerPostingResult {
+  /** false when this source was already posted (a replay); nothing was written. */
+  posted: boolean;
+  postingId: string | null;
 }
 
 /** Accounts whose balance grows with debits (assets / expenses). */
@@ -23,31 +42,42 @@ const DEBIT_NORMAL: ReadonlySet<LedgerAccount> = new Set<LedgerAccount>([
   LedgerAccount.UDHAR_RECEIVABLE,
   LedgerAccount.COST_OF_GOODS,
   LedgerAccount.INVENTORY,
+  LedgerAccount.INVENTORY_ADJUSTMENT,
 ]);
 
 /**
  * Double-entry posting with deterministic running balances.
  *
- * Every posting must balance (Σ debits == Σ credits). For each entry the
- * per-account `LedgerAccountBalance` row is locked (`FOR UPDATE`, always in
- * account-name order to avoid deadlocks), updated, and the resulting balance
- * is stamped on the immutable `LedgerTransaction` row. Two concurrent
- * invoices therefore always produce strictly increasing, correct
- * `balanceAfter` values.
+ * Every posting must balance (Σ debits == Σ credits) and carries a business
+ * `source` key. A `LedgerPosting` header row with a unique
+ * (shopId, sourceType, sourceId) index is written first: a replay of an
+ * already-posted source is detected by that indexed key and skipped, and two
+ * concurrent postings of the same source cannot both commit (the second
+ * insert fails on the unique index and its transaction rolls back). For each
+ * entry the per-account `LedgerAccountBalance` row is locked (`FOR UPDATE`,
+ * always in account-name order to avoid deadlocks), updated, and the
+ * resulting balance is stamped on the immutable `LedgerTransaction` row.
  */
 @Injectable()
 export class LedgerPostingService {
-  async post(tx: Prisma.TransactionClient, posting: LedgerPosting): Promise<void> {
+  async post(tx: Prisma.TransactionClient, posting: LedgerPosting): Promise<LedgerPostingResult> {
     const entries = posting.entries
       .map((e) => ({ ...e, amount: new Prisma.Decimal(e.amount.toString()).toDecimalPlaces(2) }))
       .filter((e) => e.amount.greaterThan(0));
-    if (entries.length === 0) return;
+    if (entries.length === 0) return { posted: false, postingId: null };
+
+    const key = { shopId: posting.shopId, sourceType: posting.source.type, sourceId: posting.source.id };
+    const existing = await tx.ledgerPosting.findUnique({ where: { shopId_sourceType_sourceId: key }, select: { id: true } });
+    if (existing) return { posted: false, postingId: existing.id };
 
     const debits = entries.filter((e) => e.type === LedgerEntryType.DEBIT).reduce((a, e) => a.plus(e.amount), new Prisma.Decimal(0));
     const credits = entries.filter((e) => e.type === LedgerEntryType.CREDIT).reduce((a, e) => a.plus(e.amount), new Prisma.Decimal(0));
     if (!debits.equals(credits)) {
       throw new Error(`Unbalanced ledger posting for ${posting.description}: debits ${debits} != credits ${credits}`);
     }
+
+    // The unique index is the guard: a concurrent posting of the same source fails here (P2002).
+    const header = await tx.ledgerPosting.create({ data: { ...key, description: posting.description }, select: { id: true } });
 
     const sorted = [...entries].sort((a, b) => a.account.localeCompare(b.account));
     const balances = await this.lockBalances(tx, posting.shopId, sorted.map((e) => e.account));
@@ -71,9 +101,11 @@ export class LedgerPostingService {
           amount: entry.amount,
           balanceAfter: next,
           description: entry.description ?? posting.description,
+          postingId: header.id,
         },
       });
     }
+    return { posted: true, postingId: header.id };
   }
 
   private async lockBalances(tx: Prisma.TransactionClient, shopId: string, accounts: LedgerAccount[]): Promise<Map<LedgerAccount, Prisma.Decimal>> {

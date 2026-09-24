@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Length,
   Max,
   MaxLength,
   Min,
@@ -17,10 +18,44 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { PaymentMode, TenderType } from '@prisma/client';
+import { GstRate, PaymentMode, ProductUnit, TenderType } from '@prisma/client';
+
+/** Largest money value the invoice tables store (Prisma Decimal(10,2)). */
+export const MONEY_MAX_NUMBER = 99_999_999.99;
+
+/**
+ * An ad-hoc line that is not in the catalogue (a service charge, a one-off
+ * item). Priced and taxed by the same engine as catalogue lines, never touches
+ * inventory, carries no cess and is never merged with another line.
+ */
+export class CustomItemDto {
+  @IsString() @Length(1, 120) @ApiProperty() name: string;
+
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0.01)
+  @Max(MONEY_MAX_NUMBER)
+  @ApiProperty()
+  unitPrice: number;
+
+  @IsEnum(GstRate) @ApiProperty({ enum: GstRate }) gstRate: GstRate;
+
+  @IsEnum(ProductUnit) @IsOptional() @ApiPropertyOptional({ enum: ProductUnit, default: 'PCS' }) unit?: ProductUnit;
+}
 
 export class InvoiceItemDto {
-  @IsString() @IsNotEmpty() @ApiProperty() productId: string;
+  /** Catalogue product. Exactly one of `productId` / `custom` is required. */
+  @ValidateIf((o) => o.custom === undefined)
+  @IsString()
+  @IsNotEmpty()
+  @ApiPropertyOptional()
+  productId?: string;
+
+  @ValidateIf((o) => o.productId === undefined)
+  @IsDefined()
+  @ValidateNested()
+  @Type(() => CustomItemDto)
+  @ApiPropertyOptional({ type: CustomItemDto })
+  custom?: CustomItemDto;
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0.001)
@@ -41,11 +76,13 @@ export class PaymentTenderDto {
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)
+  @Max(MONEY_MAX_NUMBER)
   @ApiProperty()
   amount: number;
 
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)
+  @Max(MONEY_MAX_NUMBER)
   @IsOptional()
   @ApiPropertyOptional({ description: 'Cash handed over (CASH only); change = tenderedAmount - amount' })
   tenderedAmount?: number;
@@ -68,7 +105,7 @@ export class CreateInvoiceDto {
   @IsString() @IsOptional() @MaxLength(500) @ApiPropertyOptional() notes?: string;
   @IsString() @IsOptional() @ApiPropertyOptional() shiftId?: string;
 
-  @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @IsOptional() @ApiPropertyOptional() discountAmount?: number;
+  @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @Max(MONEY_MAX_NUMBER) @IsOptional() @ApiPropertyOptional() discountAmount?: number;
   @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @Max(100) @IsOptional() @ApiPropertyOptional() discountPercentage?: number;
   @IsEnum(['FIXED_AMOUNT', 'PERCENTAGE']) @IsOptional() @ApiPropertyOptional({ enum: ['FIXED_AMOUNT', 'PERCENTAGE'] }) discountType?: string;
 
@@ -87,7 +124,7 @@ export class CreateInvoiceDto {
   @ApiPropertyOptional({ type: [PaymentTenderDto] })
   payments?: PaymentTenderDto[];
 
-  @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @IsOptional() @ApiPropertyOptional() udharAmount?: number;
+  @IsNumber({ allowNaN: false, allowInfinity: false }) @Min(0) @Max(MONEY_MAX_NUMBER) @IsOptional() @ApiPropertyOptional() udharAmount?: number;
 
   /** @deprecated legacy clients: mapped onto `payments`. */
   @IsEnum(PaymentMode) @IsOptional() @ApiPropertyOptional({ enum: PaymentMode, deprecated: true }) paymentMode?: PaymentMode;

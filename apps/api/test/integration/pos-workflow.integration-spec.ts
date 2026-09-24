@@ -504,12 +504,23 @@ describe('EXEC-006C POS workflow (integration)', () => {
     const cancelledRow = list.items.find((i) => i.id === cashInvoiceId);
     expect(cancelledRow?.status).toBe('CANCELLED');
 
+    // The CSV export carries the same population as the dashboards: COMPLETED
+    // sales and returns only (cancelled and draft rows are excluded), so a
+    // total summed from the file equals the dashboard net revenue.
     const range = await asOwner(() => exporter.resolveRange(shopId));
     let csv = '';
     await asOwner(() => exporter.streamInvoicesCsv(shopId, range, (chunk) => { csv += chunk; }));
     const rows = csv.trim().split('\n');
     expect(rows[0]).toContain('invoiceNumber');
-    expect(rows.length - 1).toBe(list.total);
+    expect(rows.length - 1).toBe(sales._count._all + (await asSystem(() => prisma.invoice.count({ where: { shopId, type: 'SALES_RETURN', status: 'COMPLETED', isDeleted: false } }))));
+    const header = rows[0].split(',');
+    const typeIdx = header.indexOf('type');
+    const totalIdx = header.indexOf('totalAmount');
+    const csvNet = rows.slice(1).reduce((acc, row) => {
+      const cols = row.split(',');
+      return acc + (cols[typeIdx] === 'SALE' ? 1 : -1) * Number(cols[totalIdx]);
+    }, 0);
+    expect(csvNet).toBeCloseTo(net, 2);
     let gst = '';
     await asOwner(() => exporter.streamGstSummaryCsv(shopId, range, (chunk) => { gst += chunk; }));
     expect(gst).toContain('gstRate');

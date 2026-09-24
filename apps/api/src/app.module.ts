@@ -17,6 +17,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { BillingModule } from './billing/billing.module';
+import { LedgerModule } from './ledger/ledger.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { CacheModule } from '@nestjs/cache-manager';
@@ -126,6 +127,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     StorageModule,
     UsersModule,
     AuthModule,
+    LedgerModule,
     BillingModule,
     ShiftsModule,
     InventoryModule,

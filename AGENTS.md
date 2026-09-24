@@ -33,11 +33,20 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   Build it first (`npm run build` at the root runs turbo in dependency order;
   in isolation run `cd packages/invoice-math && npx tsc -p tsconfig.json`), or
   the API/web type-checks fail with TS2307.
-- Prisma migrations under `apps/api/prisma/migrations` had drifted from
-  `schema.prisma`; `20260918120000_exec006c_pos_integrity` brings the POS
-  tables in line. For a schema-accurate local DB use `prisma db push` on a
-  fresh database. Always run `npx prisma generate` after changing
-  `schema.prisma` or switching branches.
+- Prisma migrations under `apps/api/prisma/migrations` now produce exactly
+  `schema.prisma` (`20260919090500_schema_sync` closed the historical drift;
+  verify with `prisma migrate diff --from-url ... --to-schema-datamodel
+  prisma/schema.prisma --exit-code` after `migrate deploy`). Always run
+  `npx prisma generate` after changing `schema.prisma` or switching branches.
+- Production runs MySQL 8, dev/CI here often MariaDB: they differ. MySQL
+  cannot reference a TEMPORARY table twice in one statement (ERROR 1137,
+  MariaDB allows it). Test raw-SQL migrations on MySQL 8; without Docker Hub,
+  `apt-get download mysql-server-core-8.0` + `dpkg -x` runs one side by side.
+- MySQL treats NULLs as distinct in unique indexes: a unique key that includes
+  a nullable column (`deletedAt`, `variantId`) never blocks duplicates. Never
+  rely on such a key; `InventoryItem` carries `variantKey = variantId ?? '-'`
+  for its real unique index, and the default warehouse/bin bootstrap runs
+  under a `SELECT ... FOR UPDATE` on the Shop row.
 - `Shop.ownerId` and `User.shopId` are mutually-required foreign keys; creating
   the pair needs FK checks deferred within the transaction (MySQL). See
   `AuthBypassService.provisionSystemUser`.
@@ -63,11 +72,26 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `resolveWarehouseBin` for receipts). Never pass a code such as `'DEFAULT'`.
   Products that only carry `Product.currentStock` are bootstrapped into an
   `InventoryItem` + `OPENING_BALANCE` ledger row on first mutation.
-- `BillingService.createInvoice` is one transaction: NumberSequence lock →
-  shift lock → customer lock → invoice/items/payments → engine per line →
-  udhar → shift counters → `LedgerPostingService` (balanced double entry with
-  row-locked `LedgerAccountBalance`) → AuditLog → OutboxEvent. Returns and
-  cancellations (`InvoiceReversalService`) reverse the same authorities.
+- `BillingService.createInvoice` is one transaction. Lock order is canonical
+  for sales, returns, cancellations and repayments: original Invoice → Shift →
+  Customer → NumberSequence → Product rows in ascending productId
+  (`InventoryMutationEngine.lockProducts`, exclusive, BEFORE inserting any
+  invoice/return line: a child-row insert takes a shared lock on Product and
+  upgrading it later deadlocks) → LedgerAccountBalance by account. Deadlock /
+  lock-wait rollbacks (P2034, P2028, MySQL 1213/1205 via P2010) are retried
+  (`common/db/serialization-retry.ts`). Returns and cancellations
+  (`InvoiceReversalService`) reverse the same authorities.
+  `LedgerPostingService` lives in the global `LedgerModule` (`src/ledger`);
+  GRNs, purchase returns and adjustments post through it too (contract §9).
+  Every `post()` needs a `source` key; the unique `LedgerPosting` index is the
+  ledger's idempotency guard, so never add check-then-insert dedupe around it.
+- `BillingCheckpoints` (`billing/billing-checkpoints.ts`) is the fault
+  injection seam: no-op in production, overridden by the failure-injection
+  integration spec. Keep every checkpoint call when editing the flows.
+- Custom (ad-hoc) invoice lines have `productId = null`, `isCustom = true`;
+  any query joining `InvoiceItem` to `Product` must LEFT JOIN.
+- Discount authority: cashiers are limited to
+  `BILLING_CASHIER_MAX_DISCOUNT_PERCENT` (default 10); see contract §2.
 - Redis stock keys (`stock:{shopId}:{productId}`) are advisory only; an
   "insufficient" answer is re-checked against the DB and never rejects a sale
   on its own. Compensation never creates keys.
@@ -75,8 +99,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   with `ShopSettings.timezone` (default Asia/Kolkata); dashboards, reports,
   invoice dates and cancellation windows all use it.
 - Tests: `npm test` (unit, src/**/*.spec.ts), `npm run test:integration`
-  (real MySQL + Redis via `.env.test`, boots AppModule; run
-  `DATABASE_URL=... npx prisma db push` on the test DB first), `npm run test:e2e`.
+  (real MySQL + Redis via `.env.test`, boots AppModule; build the test DB with
+  `DATABASE_URL=... npx prisma migrate deploy` first). The integration suites
+  are `pos-workflow` (business flow), `pos-failure-injection` (every
+  checkpoint × sale/return/cancel/repayment), `pos-concurrency` (the
+  concurrency × stock × quantity matrix up to 200 parallel checkouts, edge
+  cases, multi-location, bootstrap race) and `pos-resilience` (Redis outage,
+  outbox, accounting incl. purchase side, custom items, authority rules).
+  `apps/web` has `npm run test:e2e` (Playwright, browser-level checkout).
+  `npm run test:e2e` in apps/api is the boot regression.
 
 ## Auth bypass flag
 

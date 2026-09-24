@@ -98,6 +98,7 @@ export function ReceiptView({ receipt }: { receipt: ReceiptPayload }) {
               <tr>
                 <td colSpan={4} className="pt-1 break-words">
                   {item.productName}
+                  {item.isCustom ? <span className="text-[9px] uppercase text-gray-600"> · custom</span> : null}
                 </td>
               </tr>
               <tr>
