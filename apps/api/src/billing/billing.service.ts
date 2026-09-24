@@ -430,6 +430,7 @@ export class BillingService {
               await this.checkpoints.reach('BEFORE_LEDGER', 'SALE');
               await this.ledger.post(tx, {
                 shopId: actor.shopId,
+                source: { type: 'SALE', id: created.id },
                 invoiceId: created.id,
                 description: `Sale ${invoiceNumber}`,
                 entries: this.saleLedgerEntries(payment.tenders, payment.udharAmount, math, costOfGoods),

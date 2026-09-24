@@ -13,7 +13,6 @@ describe('AdjustmentPostingService', () => {
   let ledger: { post: jest.Mock };
   let tx: {
     product: { findUnique: jest.Mock };
-    ledgerTransaction: { findFirst: jest.Mock };
     adjustmentRequest: { update: jest.Mock };
   };
   let prisma: { adjustmentRequest: { findFirst: jest.Mock }; $transaction: jest.Mock };
@@ -35,10 +34,9 @@ describe('AdjustmentPostingService', () => {
 
   beforeEach(() => {
     engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)) };
-    ledger = { post: jest.fn().mockResolvedValue(undefined) };
+    ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
     tx = {
       product: { findUnique: jest.fn().mockResolvedValue({ costPrice: D('12.50') }) },
-      ledgerTransaction: { findFirst: jest.fn().mockResolvedValue(null) },
       adjustmentRequest: { update: jest.fn().mockResolvedValue({}) },
     };
     prisma = {
@@ -85,6 +83,7 @@ describe('AdjustmentPostingService', () => {
     expect(posting.shopId).toBe('shop-1');
     expect(posting.invoiceId).toBeNull();
     expect(posting.description).toBe('Stock adjustment adj-1');
+    expect(posting.source).toEqual({ type: 'ADJUSTMENT_REQUEST', id: 'adj-1' });
     expect(posting.entries).toEqual([
       { account: LedgerAccount.INVENTORY, type: LedgerEntryType.DEBIT, amount: expect.anything() },
       { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.CREDIT, amount: expect.anything() },
@@ -132,20 +131,16 @@ describe('AdjustmentPostingService', () => {
 
     await service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1');
 
-    expect(tx.ledgerTransaction.findFirst).not.toHaveBeenCalled();
     expect(ledger.post).not.toHaveBeenCalled();
   });
 
-  it('skips the posting when a ledger transaction for the adjustment already exists (retry)', async () => {
+  it('delegates replay protection to the ledger source key (keyed by the adjustment request id)', async () => {
     prisma.adjustmentRequest.findFirst.mockResolvedValue(adjustment('3'));
-    tx.ledgerTransaction.findFirst.mockResolvedValue({ id: 'lt-1' });
+    ledger.post.mockResolvedValue({ posted: false, postingId: 'lp-existing' });
 
-    await service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1');
+    await expect(service.postApprovedAdjustment('shop-1', 'adj-1', 'user-1')).resolves.toEqual({ success: true });
 
-    expect(tx.ledgerTransaction.findFirst).toHaveBeenCalledWith({
-      where: { shopId: 'shop-1', description: 'Stock adjustment adj-1' },
-      select: { id: true },
-    });
-    expect(ledger.post).not.toHaveBeenCalled();
+    expect(ledger.post).toHaveBeenCalledTimes(1);
+    expect(ledger.post.mock.calls[0][1].source).toEqual({ type: 'ADJUSTMENT_REQUEST', id: 'adj-1' });
   });
 });

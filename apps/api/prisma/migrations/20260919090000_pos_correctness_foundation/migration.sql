@@ -14,7 +14,10 @@
 -- 4. Ledger accounts ACCOUNTS_PAYABLE (goods received on credit) and
 --    INVENTORY_ADJUSTMENT (manual adjustments, damage, loss, expiry).
 -- Safe to run on a database created from the baseline migration or via `prisma db push`.
--- Requires MySQL 8.0+ or MariaDB 10.2+ (window functions).
+-- Requires MySQL 8.0+ or MariaDB 10.2+ (window functions). MySQL cannot refer
+-- to a TEMPORARY table more than once in one statement (ERROR 1137), so every
+-- statement below reads each temporary table exactly once; verified on MySQL
+-- 8.0 and MariaDB 10.11.
 
 -- ---------------------------------------------------------------------------
 -- 1. InventoryItem.variantKey + real unique index
@@ -24,22 +27,21 @@ UPDATE `InventoryItem` SET `variantKey` = COALESCE(`variantId`, '-');
 
 -- Survivor per key: the oldest live row (isDeleted = false first, then
 -- createdAt, then id so the choice is total even when timestamps collide).
-CREATE TEMPORARY TABLE `__ii_ranked` AS
-  SELECT `id`, `shopId`, `productId`, `variantKey`, `locationId`,
-         ROW_NUMBER() OVER (
-           PARTITION BY `shopId`, `productId`, `variantKey`, `locationId`
-           ORDER BY `isDeleted` ASC, `createdAt` ASC, `id` ASC
-         ) AS rn
-  FROM `InventoryItem`;
-
+-- The survivor id is computed in the same window pass, so no statement ever
+-- has to join a temporary table to itself.
 CREATE TEMPORARY TABLE `__ii_dups` AS
-  SELECT d.`id` AS dupId, s.`id` AS survivorId
-  FROM `__ii_ranked` d
-  JOIN `__ii_ranked` s
-    ON s.`shopId` = d.`shopId` AND s.`productId` = d.`productId`
-   AND s.`variantKey` = d.`variantKey` AND s.`locationId` = d.`locationId`
-   AND s.rn = 1
-  WHERE d.rn > 1;
+  SELECT ranked.`id` AS dupId, ranked.survivorId
+  FROM (
+    SELECT `id`,
+           ROW_NUMBER() OVER w AS rn,
+           FIRST_VALUE(`id`) OVER w AS survivorId
+    FROM `InventoryItem`
+    WINDOW w AS (
+      PARTITION BY `shopId`, `productId`, `variantKey`, `locationId`
+      ORDER BY `isDeleted` ASC, `createdAt` ASC, `id` ASC
+    )
+  ) ranked
+  WHERE ranked.rn > 1;
 
 -- Fold every quantity of the duplicates into the survivor.
 UPDATE `InventoryItem` s
@@ -73,7 +75,6 @@ UPDATE `StockLedgerEntry`      c JOIN `__ii_dups` x ON c.`inventoryItemId` = x.d
 UPDATE `StockSnapshot`         c JOIN `__ii_dups` x ON c.`inventoryItemId` = x.dupId SET c.`inventoryItemId` = x.survivorId;
 DELETE i FROM `InventoryItem` i JOIN `__ii_dups` x ON i.`id` = x.dupId;
 DROP TEMPORARY TABLE `__ii_dups`;
-DROP TEMPORARY TABLE `__ii_ranked`;
 
 ALTER TABLE `InventoryItem` DROP INDEX `InventoryItem_shopId_productId_variantId_locationId_key`;
 CREATE UNIQUE INDEX `InventoryItem_shopId_productId_variantKey_locationId_key` ON `InventoryItem`(`shopId`, `productId`, `variantKey`, `locationId`);

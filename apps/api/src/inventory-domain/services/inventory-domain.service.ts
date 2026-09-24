@@ -150,6 +150,20 @@ export class InventoryDomainService {
       const newOnHand = engineResult.balanceAfter.toNumber();
       const oldOnHand = engineResult.balanceAfter.minus(isDeduction ? -Math.abs(quantityChange) : Math.abs(quantityChange)).toNumber();
 
+      const adjustment = await tx.inventoryAdjustment.create({
+        data: {
+          shopId,
+          inventoryItemId,
+          reason,
+          quantityBefore: oldOnHand,
+          quantityChange: quantityChange,
+          quantityAfter: newOnHand,
+          createdBy,
+          notes: opts?.notes,
+          correlationId: opts?.correlationId,
+        },
+      });
+
       // Accounting effect of a manual adjustment: stock value moves between
       // INVENTORY (asset) and INVENTORY_ADJUSTMENT (expense) at cost price.
       if (!engineResult.bypassed) {
@@ -158,6 +172,7 @@ export class InventoryDomainService {
         if (value.greaterThan(0)) {
           await this.ledger.post(tx, {
             shopId,
+            source: { type: 'STOCK_ADJUSTMENT', id: adjustment.id },
             description: `Stock adjustment ${inventoryItemId} (${reason})`,
             entries: isDeduction
               ? [
@@ -172,19 +187,6 @@ export class InventoryDomainService {
         }
       }
 
-      await tx.inventoryAdjustment.create({
-        data: {
-          shopId,
-          inventoryItemId,
-          reason,
-          quantityBefore: oldOnHand,
-          quantityChange: quantityChange,
-          quantityAfter: newOnHand,
-          createdBy,
-          notes: opts?.notes,
-          correlationId: opts?.correlationId,
-        },
-      });
 
       // 7. Emit event to Outbox
       await this.eventPublisher.publish(tx as any, {

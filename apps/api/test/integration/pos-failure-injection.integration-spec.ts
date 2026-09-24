@@ -74,7 +74,7 @@ describe('POS failure injection (no partial state survives a failure at any poin
         Promise.all(Object.values(products).map((id) => redis.get(`stock:${shop.shopId}:${id}`))),
       ]);
       const products$ = await prisma.product.findMany({ where: { shopId: shop.shopId }, select: { id: true, currentStock: true, stockVersion: true }, orderBy: { id: 'asc' } });
-      const [productEvents, customerAudits, adjustments, alerts, notifications, warehouses, locations] = await Promise.all([
+      const [productEvents, customerAudits, adjustments, alerts, notifications, warehouses, locations, ledgerPostings] = await Promise.all([
         prisma.productEventLog.count({ where: { shopId: shop.shopId } }),
         prisma.customerAudit.count({ where: { customerId: shop.customerId } }),
         prisma.inventoryAdjustment.count({ where: { shopId: shop.shopId } }),
@@ -82,8 +82,9 @@ describe('POS failure injection (no partial state survives a failure at any poin
         prisma.notification.count({ where: { shopId: shop.shopId } }),
         prisma.warehouse.count({ where: { shopId: shop.shopId } }),
         prisma.location.count({ where: { shopId: shop.shopId } }),
+        prisma.ledgerPosting.count({ where: { shopId: shop.shopId } }),
       ]);
-      return JSON.stringify({ invoices, items, payments, inventoryItems, ledgerEntries, logs, ledgerTx, balances, customer, shiftRow, outbox, audits, udhar, sequences, redisKeys, products: products$, productEvents, customerAudits, adjustments, alerts, notifications, warehouses, locations });
+      return JSON.stringify({ invoices, items, payments, inventoryItems, ledgerEntries, logs, ledgerTx, balances, customer, shiftRow, outbox, audits, udhar, sequences, redisKeys, products: products$, productEvents, customerAudits, adjustments, alerts, notifications, warehouses, locations, ledgerPostings });
     });
 
   const saleDto = () => ({

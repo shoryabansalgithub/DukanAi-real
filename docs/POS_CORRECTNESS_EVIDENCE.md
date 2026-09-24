@@ -11,8 +11,10 @@ How to reproduce (from the repository root, MySQL and Redis running locally):
 npm ci --ignore-scripts
 (cd packages/invoice-math && npx tsc -p tsconfig.json && npx jest)          # engine: 27 tests
 (cd apps/api && npx prisma generate && DATABASE_URL=mysql://root:password@localhost:3306/dukaanai_test npx prisma migrate deploy)
-(cd apps/api && npx jest)                                                    # unit: 157 tests
-(cd apps/api && npx jest -c test/jest-integration.json --runInBand)         # integration: 100 tests
+(cd apps/api && npx jest)                                                    # unit: 165 tests
+(cd apps/api && npx jest -c test/jest-integration.json --runInBand)         # integration: 103 tests
+# Same suite against MySQL 8 (the production engine):
+# TEST_DATABASE_URL='mysql://root:password@127.0.0.1:3307/dukaanai_test' npx jest -c test/jest-integration.json --runInBand
 (cd apps/api && npx nest build && npx jest -c test/jest-e2e.json)           # boot regression: 2 tests
 (cd apps/web && npm run type-check && npm run build && npm run test:e2e)     # browser-level checkout
 ```
@@ -62,7 +64,7 @@ Legend for the "Layers" column (roadmap testing layers): 1 source, 2 unit,
 | B payment accounting (cash, card, UPI, bank, credit, split) | `tenderBuckets` (CASH → CASH; UPI/CARD/BANK_TRANSFER → BANK), udhar → ACCOUNTS_RECEIVABLE | `pos-workflow` (cash, UPI, card, split, credit) |
 | C receivable / udhar | `UdharTransaction` CREDIT/PAYMENT/ADJUSTMENT rows with before/after, customer row lock, repayment posts CASH/BANK vs AR | `pos-workflow` repayment, `pos-concurrency` "concurrent credit sales, repayments and returns" (balance = Σ ledger) |
 | D returns / refunds | `InvoiceReversalService` reverses revenue, GST, tenders, credit, stock and COGS for lines that came back | `pos-workflow` partial/full return and cancel, `pos-resilience` accounting |
-| E double entry | `LedgerPostingService.post` throws on Σ debits ≠ Σ credits; balances row-locked in account order | every suite's final "books balance" assertion |
+| E double entry | `LedgerPostingService.post` throws on Σ debits ≠ Σ credits; balances row-locked in account order; one `LedgerPosting` header per business source with a unique `(shopId, sourceType, sourceId)` index, so a source can never be posted twice | every suite's final "books balance" assertion; `pos-resilience` "ledger idempotency is enforced by the database" (same GRN accepted 5× concurrently → 1 posting; 6 raw concurrent postings of one source with no other lock → exactly 1 commits; every entry has a balanced `postingId`); `src/ledger/ledger-posting.service.spec.ts` |
 | F reporting agrees | dashboards/CSV from the same `COMPLETED SALE/SALES_RETURN` population; purchase side posts INVENTORY vs ACCOUNTS_PAYABLE (GRN, purchase return) and INVENTORY vs INVENTORY_ADJUSTMENT (adjustments); INVENTORY carries stock at purchase cost, the dashboard shows stock at current cost price (contract §9 states the valuation basis and when the two coincide) | `pos-resilience` accounting (600 → 480 → 420 → 480 → 300 = onHand × cost with receipt price = cost price; dashboard `inventoryValue` 300), CSV net = dashboard net in `pos-workflow` |
 
 ## Phase 4 — Transaction integrity (POS-MATH-010/012/013)

@@ -24,6 +24,8 @@ import { SystemEventsProcessor } from '../../src/common/outbox/system-events.pro
 import { DashboardService } from '../../src/analytics-domain/services/dashboard.service';
 import { ReportExportService } from '../../src/analytics-domain/services/report-export.service';
 import { REDIS_CLIENT } from '../../src/common/redis/redis.module';
+import { LedgerPostingService } from '../../src/ledger/ledger-posting.service';
+import { LedgerAccount, LedgerEntryType } from '@prisma/client';
 import { InvoiceMathEngine } from '@dukaanai/invoice-math';
 import { actorFor, bootApp, createProduct, createShop, makeReaders, num, receiveStock, tenantRunner, TestShop } from './pos-fixtures';
 
@@ -232,6 +234,66 @@ describe('POS resilience, accounting and custom items', () => {
     const summary = await asFreshOwner(() => dashboard.getSummary(fresh.shopId, fresh.ownerId));
     expect(summary.inventoryValue).toBeCloseTo(300, 2);
     expect(summary.todaySales).toBeCloseTo(118, 2);
+  });
+
+  it('ledger idempotency is enforced by the database: one posting per business source, even under concurrency', async () => {
+    const fresh = await createShop(app, 'lp');
+    const r = makeReaders(app, fresh);
+    const productId = await createProduct(app, fresh, { key: 'LP', costPrice: 40, sellingPrice: 100 });
+    const asFreshOwner = <T>(fn: () => Promise<T>) => run.as(fresh.shopId, fresh.ownerId, Role.OWNER, fn);
+    const grnId = `GRN-conc-${fresh.suffix}`;
+
+    // 1. The same GRN accepted five times at once (double click / retry storm):
+    //    stock and the ledger each move exactly once.
+    const acceptances = await Promise.allSettled(
+      Array.from({ length: 5 }, () =>
+        asFreshOwner(() => prisma.$transaction((tx) => grn.updateInventoryFromGrn(tx, fresh.shopId, { id: grnId, warehouseId: null, createdBy: fresh.ownerId, lines: [{ productId, acceptedQuantity: 10, unitPrice: 40 }] }))),
+      ),
+    );
+    const committed = acceptances.filter((a) => a.status === 'fulfilled').length;
+    expect(committed).toBeGreaterThanOrEqual(1);
+    for (const a of acceptances) if (a.status === 'rejected') expect(String((a.reason as Error).message)).toMatch(/Unique constraint|LedgerPosting/);
+    expect(await r.onHand(productId)).toBe(10);
+    expect(await r.ledgerBalance('INVENTORY')).toBeCloseTo(400, 2);
+    expect(await r.ledgerBalance('ACCOUNTS_PAYABLE')).toBeCloseTo(400, 2);
+    expect(await run.system(() => prisma.ledgerPosting.count({ where: { shopId: fresh.shopId, sourceType: 'GRN', sourceId: grnId } }))).toBe(1);
+
+    // 2. Raw race on the posting authority itself, with no product lock or any
+    //    other serialisation in front of it: the unique index lets exactly one
+    //    commit; every other transaction fails and rolls back completely.
+    const ledger = app.get(LedgerPostingService);
+    const race = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        run.system(() =>
+          prisma.$transaction(async (tx) => {
+            const res = await ledger.post(tx, {
+              shopId: fresh.shopId,
+              source: { type: 'ADJUSTMENT_REQUEST', id: `race-${fresh.suffix}` },
+              description: 'race',
+              entries: [
+                { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: LedgerEntryType.DEBIT, amount: 7 },
+                { account: LedgerAccount.INVENTORY, type: LedgerEntryType.CREDIT, amount: 7 },
+              ],
+            });
+            // Hold the transaction open so the others overlap it.
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            return res;
+          }),
+        ),
+      ),
+    );
+    const postedNow = race.filter((x) => x.status === 'fulfilled' && x.value.posted).length;
+    expect(postedNow).toBe(1);
+    expect(await r.ledgerBalance('INVENTORY_ADJUSTMENT')).toBeCloseTo(7, 2);
+    expect(await r.ledgerBalance('INVENTORY')).toBeCloseTo(393, 2);
+    const rows = await run.system(() => prisma.ledgerTransaction.findMany({ where: { shopId: fresh.shopId } }));
+    expect(rows.filter((t) => t.description === 'race')).toHaveLength(2);
+
+    // 3. Every entry in the shop belongs to a keyed posting, and every posting balances.
+    expect(rows.every((t) => t.postingId !== null)).toBe(true);
+    const byPosting = new Map<string, number>();
+    for (const t of rows) byPosting.set(t.postingId!, (byPosting.get(t.postingId!) ?? 0) + (t.type === 'DEBIT' ? 1 : -1) * num(t.amount));
+    for (const net of byPosting.values()) expect(net).toBeCloseTo(0, 2);
   });
 
   it('service products post no cost of goods and never touch INVENTORY', async () => {

@@ -1318,7 +1318,9 @@ model LedgerAccountBalance {
 model InvoiceItem {
   id               String      @id @default(cuid())
   invoiceId        String
-  /** Null for custom (ad-hoc) lines; see docs/POS_BILLING_CONTRACT.md §2. */
+  /**
+   * Null for custom (ad-hoc) lines; see docs/POS_BILLING_CONTRACT.md §2.
+   */
   productId        String?
   isCustom         Boolean     @default(false)
   productName      String
@@ -1343,7 +1345,7 @@ model InvoiceItem {
   isDeleted        Boolean     @default(false)
   deletedAt        DateTime?
 
-  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoice Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([invoiceId])
@@ -2757,12 +2759,36 @@ model LedgerTransaction {
   description  String?
   createdAt    DateTime        @default(now())
 
-  shop    Shop     @relation(fields: [shopId], references: [id], onDelete: Restrict)
-  invoice Invoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  /**
+   * Header of the balanced posting this entry belongs to (null for rows written before headers existed).
+   */
+  postingId String?
+
+  shop    Shop           @relation(fields: [shopId], references: [id], onDelete: Restrict)
+  invoice Invoice?       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  posting LedgerPosting? @relation(fields: [postingId], references: [id], onDelete: Restrict)
 
   @@index([shopId, createdAt])
   @@index([invoiceId])
   @@index([shopId, account])
+  @@index([postingId])
+}
+
+/// One balanced double-entry posting. The unique (shopId, sourceType, sourceId)
+/// key is the database-level idempotency guard: a business event (sale,
+/// return, GRN, purchase return, adjustment, repayment) can be posted to the
+/// ledger at most once, even under concurrent retries.
+model LedgerPosting {
+  id          String   @id @default(cuid())
+  shopId      String
+  sourceType  String   @db.VarChar(40)
+  sourceId    String
+  description String
+  createdAt   DateTime @default(now())
+
+  transactions LedgerTransaction[]
+
+  @@unique([shopId, sourceType, sourceId])
 }
 
 model InventoryDriftLog {
@@ -3752,7 +3778,9 @@ model InventoryItem {
   shopId     String
   productId  String
   variantId  String?
-  /** variantId with "-" for NULL: MySQL treats NULLs as distinct in unique indexes, so the real uniqueness key uses this column. */
+  /**
+   * variantId with "-" for NULL: MySQL treats NULLs as distinct in unique indexes, so the real uniqueness key uses this column.
+   */
   variantKey String  @default("-")
   locationId String
 

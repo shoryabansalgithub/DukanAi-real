@@ -320,7 +320,14 @@ email, logoUrl, settings: { gstin, currency, timezone } }`. The POS uses
 
 Every money or stock-value movement posts through `LedgerPostingService`
 (balanced double entry, row-locked `LedgerAccountBalance`, immutable
-`LedgerTransaction`). Debit-normal accounts: `CASH`, `BANK`,
+`LedgerTransaction`). Each posting writes one `LedgerPosting` header keyed by
+its business source, `(shopId, sourceType, sourceId)` with a unique index:
+`SALE` / `RETURN` / `CANCELLATION` (invoice id), `CUSTOMER_PAYMENT` (udhar
+transaction id), `GRN`, `PURCHASE_RETURN`, `ADJUSTMENT_REQUEST`,
+`STOCK_ADJUSTMENT` (their document ids). A replay of an already-posted
+source posts nothing; a concurrent duplicate fails on the index and its
+transaction rolls back. Every `LedgerTransaction` row carries the header's
+`postingId`. Debit-normal accounts: `CASH`, `BANK`,
 `ACCOUNTS_RECEIVABLE`, `UDHAR_RECEIVABLE`, `COST_OF_GOODS`, `INVENTORY`,
 `INVENTORY_ADJUSTMENT`. Credit-normal: `SALES_REVENUE`, `GST_PAYABLE`,
 `ACCOUNTS_PAYABLE`.
@@ -373,8 +380,9 @@ costing layer.
   overridden by `test/integration/pos-failure-injection.integration-spec.ts`
   to prove that a failure at any point leaves the database and Redis exactly
   as they were.
-- Database guards: `Invoice(shopId, idempotencyKey)` and
-  `UdharTransaction(shopId, idempotencyKey)` are unique;
+- Database guards: `Invoice(shopId, idempotencyKey)`,
+  `UdharTransaction(shopId, idempotencyKey)` and
+  `LedgerPosting(shopId, sourceType, sourceId)` are unique;
   `InventoryItem(shopId, productId, variantKey, locationId)` is unique with
   `variantKey = variantId ?? '-'` because MySQL treats NULLs as distinct in
   unique indexes; the default warehouse/bin bootstrap of a shop runs under

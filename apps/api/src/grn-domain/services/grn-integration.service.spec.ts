@@ -11,7 +11,7 @@ describe('GrnIntegrationService', () => {
   let engine: { mutateStock: jest.Mock };
   let locations: { resolveWarehouseBin: jest.Mock };
   let ledger: { post: jest.Mock };
-  let tx: { ledgerTransaction: { findFirst: jest.Mock } };
+  let tx: Record<string, never>;
 
   const mutationResult = (bypassed: boolean) => ({
     bypassed,
@@ -23,8 +23,8 @@ describe('GrnIntegrationService', () => {
   beforeEach(() => {
     engine = { mutateStock: jest.fn().mockResolvedValue(mutationResult(false)) };
     locations = { resolveWarehouseBin: jest.fn().mockResolvedValue('loc-1') };
-    ledger = { post: jest.fn().mockResolvedValue(undefined) };
-    tx = { ledgerTransaction: { findFirst: jest.fn().mockResolvedValue(null) } };
+    ledger = { post: jest.fn().mockResolvedValue({ posted: true, postingId: 'lp-1' }) };
+    tx = {};
     service = new GrnIntegrationService(
       engine as unknown as InventoryMutationEngine,
       locations as unknown as InventoryLocationService,
@@ -76,10 +76,7 @@ describe('GrnIntegrationService', () => {
     expect(posting.entries[1].account).toBe(LedgerAccount.ACCOUNTS_PAYABLE);
     expect(posting.entries[1].type).toBe(LedgerEntryType.CREDIT);
     expect(posting.entries[1].amount.toFixed(2)).toBe('42.50');
-    expect(tx.ledgerTransaction.findFirst).toHaveBeenCalledWith({
-      where: { shopId: 'shop-1', description: 'GRN grn-1' },
-      select: { id: true },
-    });
+    expect(posting.source).toEqual({ type: 'GRN', id: 'grn-1' });
   });
 
   it('excludes lines the engine bypassed (SERVICE / DIGITAL) from the inventory value', async () => {
@@ -105,16 +102,16 @@ describe('GrnIntegrationService', () => {
     ]);
 
     expect(engine.mutateStock).toHaveBeenCalledTimes(1);
-    expect(tx.ledgerTransaction.findFirst).not.toHaveBeenCalled();
     expect(ledger.post).not.toHaveBeenCalled();
   });
 
-  it('skips the posting when a ledger transaction for the GRN already exists (retry)', async () => {
-    tx.ledgerTransaction.findFirst.mockResolvedValue({ id: 'lt-1' });
+  it('delegates replay protection to the ledger source key (a re-accepted GRN posts nothing twice)', async () => {
+    ledger.post.mockResolvedValue({ posted: false, postingId: 'lp-existing' });
 
-    await run([{ productId: 'p-1', acceptedQuantity: D('3'), unitPrice: D('10') }]);
+    await expect(run([{ productId: 'p-1', acceptedQuantity: D('3'), unitPrice: D('10') }])).resolves.toBeUndefined();
 
     expect(engine.mutateStock).toHaveBeenCalledTimes(1);
-    expect(ledger.post).not.toHaveBeenCalled();
+    expect(ledger.post).toHaveBeenCalledTimes(1);
+    expect(ledger.post.mock.calls[0][1].source).toEqual({ type: 'GRN', id: 'grn-1' });
   });
 });

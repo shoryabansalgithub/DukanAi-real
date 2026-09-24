@@ -38,6 +38,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   verify with `prisma migrate diff --from-url ... --to-schema-datamodel
   prisma/schema.prisma --exit-code` after `migrate deploy`). Always run
   `npx prisma generate` after changing `schema.prisma` or switching branches.
+- Production runs MySQL 8, dev/CI here often MariaDB: they differ. MySQL
+  cannot reference a TEMPORARY table twice in one statement (ERROR 1137,
+  MariaDB allows it). Test raw-SQL migrations on MySQL 8; without Docker Hub,
+  `apt-get download mysql-server-core-8.0` + `dpkg -x` runs one side by side.
 - MySQL treats NULLs as distinct in unique indexes: a unique key that includes
   a nullable column (`deletedAt`, `variantId`) never blocks duplicates. Never
   rely on such a key; `InventoryItem` carries `variantKey = variantId ?? '-'`
@@ -79,6 +83,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (`InvoiceReversalService`) reverse the same authorities.
   `LedgerPostingService` lives in the global `LedgerModule` (`src/ledger`);
   GRNs, purchase returns and adjustments post through it too (contract §9).
+  Every `post()` needs a `source` key; the unique `LedgerPosting` index is the
+  ledger's idempotency guard, so never add check-then-insert dedupe around it.
 - `BillingCheckpoints` (`billing/billing-checkpoints.ts`) is the fault
   injection seam: no-op in production, overridden by the failure-injection
   integration spec. Keep every checkpoint call when editing the flows.

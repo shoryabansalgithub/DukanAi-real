@@ -79,14 +79,11 @@ export class GrnIntegrationService {
     if (value.lessThanOrEqualTo(0)) return;
 
     const description = `GRN ${grnId}`;
-    const existing = await tx.ledgerTransaction.findFirst({ where: { shopId, description }, select: { id: true } });
-    if (existing) {
-      this.logger.log(`Ledger posting for ${description} already exists. Skipping.`);
-      return;
-    }
 
-    await this.ledger.post(tx, {
+    // Idempotent at the database level: LedgerPosting (shopId, sourceType, sourceId) is unique.
+    const result = await this.ledger.post(tx, {
       shopId,
+      source: { type: 'GRN', id: grnId },
       invoiceId: null,
       description,
       entries: [
@@ -94,5 +91,6 @@ export class GrnIntegrationService {
         { account: LedgerAccount.ACCOUNTS_PAYABLE, type: LedgerEntryType.CREDIT, amount: value },
       ],
     });
+    if (!result.posted) this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
   }
 }

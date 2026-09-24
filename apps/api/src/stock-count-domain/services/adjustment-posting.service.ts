@@ -79,15 +79,12 @@ export class AdjustmentPostingService {
     if (value.lessThanOrEqualTo(0)) return;
 
     const description = `Stock adjustment ${adjustmentId}`;
-    const existing = await tx.ledgerTransaction.findFirst({ where: { shopId, description }, select: { id: true } });
-    if (existing) {
-      this.logger.log(`Ledger posting for ${description} already exists. Skipping.`);
-      return;
-    }
 
     const gain = delta.greaterThan(0);
-    await this.ledger.post(tx, {
+    // Idempotent at the database level: LedgerPosting (shopId, sourceType, sourceId) is unique.
+    const result = await this.ledger.post(tx, {
       shopId,
+      source: { type: 'ADJUSTMENT_REQUEST', id: adjustmentId },
       invoiceId: null,
       description,
       entries: [
@@ -95,5 +92,6 @@ export class AdjustmentPostingService {
         { account: LedgerAccount.INVENTORY_ADJUSTMENT, type: gain ? LedgerEntryType.CREDIT : LedgerEntryType.DEBIT, amount: value },
       ],
     });
+    if (!result.posted) this.logger.log(`Ledger posting for ${description} already exists. Skipped.`);
   }
 }

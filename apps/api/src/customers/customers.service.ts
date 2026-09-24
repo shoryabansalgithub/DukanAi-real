@@ -238,6 +238,7 @@ export class CustomersService {
       await this.checkpoints.reach('BEFORE_LEDGER', 'REPAYMENT');
       await this.ledger.post(tx, {
         shopId: actor.shopId,
+        source: { type: 'CUSTOMER_PAYMENT', id: transaction.id },
         description: `Customer payment ${rows[0].name} (${dto.tender})`,
         entries: [
           { account: dto.tender === 'CASH' ? LedgerAccount.CASH : LedgerAccount.BANK, type: LedgerEntryType.DEBIT, amount },

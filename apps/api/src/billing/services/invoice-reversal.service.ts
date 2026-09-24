@@ -242,6 +242,7 @@ export class InvoiceReversalService {
         await this.checkpoints.reach('BEFORE_LEDGER', 'RETURN');
         await this.ledger.post(tx, {
           shopId: actor.shopId,
+          source: { type: 'RETURN', id: returnInvoice.id },
           invoiceId: returnInvoice.id,
           description: `Return ${invoiceNumber}`,
           entries: this.reversalLedgerEntries(math, tenders, udharReversal, costOfGoods),
@@ -388,6 +389,7 @@ export class InvoiceReversalService {
         await this.checkpoints.reach('BEFORE_LEDGER', 'CANCEL');
         await this.ledger.post(tx, {
           shopId: actor.shopId,
+          source: { type: 'CANCELLATION', id: original.id },
           invoiceId: original.id,
           description: `Cancellation ${original.invoiceNumber}`,
           entries: this.reversalLedgerEntries(math, tenders, udharReversal, costOfGoods),
