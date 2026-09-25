@@ -469,30 +469,97 @@ export interface DashboardShift {
   closedBy: { id: string; name: string } | null;
 }
 
+export type DashboardSummarySection =
+  | 'today'
+  | 'todayProfit'
+  | 'allTime'
+  | 'customers'
+  | 'products'
+  | 'udhar'
+  | 'stock'
+  | 'inventoryValue'
+  | 'recentInvoices'
+  | 'paymentModes'
+  | 'shift';
+
+export interface LowStockItem {
+  productId: string;
+  name: string;
+  sku: string;
+  unit: string;
+  currentStock: number;
+  reorderPoint: number;
+  status: 'OUT_OF_STOCK' | 'LOW_STOCK';
+}
+
+export interface LowStockList {
+  lowStockCount: number;
+  outOfStockCount: number;
+  items: LowStockItem[];
+}
+
+/** Figures of a section listed in `failedSections` are null (lists empty). */
 export interface DashboardSummary {
   businessDate: string;
   timezone: string;
-  todayGrossSales: number;
-  todayReturns: number;
+  failedSections: DashboardSummarySection[];
+  todayGrossSales: number | null;
+  todayReturns: number | null;
   /** Net: gross sales minus returns. */
-  todaySales: number;
-  todayProfit: number;
-  todayOrders: number;
-  todayReturnCount: number;
+  todaySales: number | null;
+  /** Gross profit: taxable value minus cost of goods, net of returns. */
+  todayProfit: number | null;
+  todayOrders: number | null;
+  todayReturnCount: number | null;
   /** Net, all time. */
-  totalRevenue: number;
-  totalOrders: number;
-  totalCustomers: number;
-  totalProducts: number;
-  outstandingUdhar: number;
-  lowStockCount: number;
-  outOfStockCount: number;
-  inventoryValue: number;
+  totalRevenue: number | null;
+  totalOrders: number | null;
+  totalCustomers: number | null;
+  totalProducts: number | null;
+  outstandingUdhar: number | null;
+  lowStockCount: number | null;
+  outOfStockCount: number | null;
+  /** Most urgent stock alerts, out of stock first (at most 5). */
+  lowStockItems: LowStockItem[];
+  inventoryValue: number | null;
   recentInvoices: DashboardRecentInvoice[];
-  /** Today, from tenders plus udhar. */
+  /** Today, per tender plus udhar, net of refunds (adds up to today's net sales). */
   paymentModes: Array<{ mode: string; amount: number }>;
   /** The caller's OPEN shift, or null. */
   shift: DashboardShift | null;
+}
+
+export type InsightSection = 'forecast' | 'restock' | 'topProduct';
+
+export interface RestockSuggestion {
+  productId: string;
+  name: string;
+  sku: string;
+  unit: string;
+  currentStock: number;
+  reorderPoint: number;
+  avgDailyUnits: number;
+  daysOfCover: number | null;
+  suggestedQuantity: number;
+  urgency: 'OUT_OF_STOCK' | 'CRITICAL' | 'LOW';
+  reason: string;
+}
+
+export interface DashboardInsights {
+  businessDate: string;
+  generatedAt: string;
+  failedSections: InsightSection[];
+  forecast: {
+    forecastNetRevenue: number;
+    basisDays: number;
+    confidence: 'LOW' | 'MEDIUM';
+    basisFrom: string;
+    basisTo: string;
+    todayNetSales: number;
+    progressPct: number | null;
+  } | null;
+  restock: { basisDays: number; coverDays: number; items: RestockSuggestion[] } | null;
+  topProduct: { productId: string; name: string; sku: string; unitsSold: number; netRevenue: number; grossProfit: number; grossMarginPct: number } | null;
 }
 
 export interface DashboardKpis {
@@ -558,55 +625,91 @@ function mapDashboardShift(raw: unknown): DashboardShift | null {
   };
 }
 
-function mapDashboardSummary(raw: Record<string, unknown>): DashboardSummary {
-  const recentInvoices = Array.isArray(raw.recentInvoices)
-    ? raw.recentInvoices.map((item): DashboardRecentInvoice => {
-        const invoice = item as Record<string, unknown>;
-        const customer = invoice.customer as { id?: string; name?: string } | null | undefined;
-        return {
-          id: invoice.id as string,
-          invoiceNumber: (invoice.invoiceNumber as string) ?? '',
-          type: (invoice.type as string) ?? 'SALE',
-          status: (invoice.status as string) ?? '',
-          totalAmount: toNumber(invoice.totalAmount),
-          paymentMode: (invoice.paymentMode as string) ?? '',
-          createdAt: (invoice.createdAt as string) ?? '',
-          customer: customer && typeof customer.name === 'string' ? { id: customer.id, name: customer.name } : null,
-        };
-      })
-    : [];
-  const paymentModes = Array.isArray(raw.paymentModes)
-    ? raw.paymentModes.map((item) => {
-        const mode = item as Record<string, unknown>;
-        return { mode: (mode.mode as string) ?? '', amount: toNumber(mode.amount) };
-      })
-    : [];
+/** Thrown when a dashboard endpoint answers with a body that is not the documented shape. */
+export class DashboardPayloadError extends Error {
+  constructor(endpoint: string) {
+    super(`the API returned an unexpected response for ${endpoint}`);
+    this.name = 'DashboardPayloadError';
+  }
+}
+
+/** Dashboard reads give up after this long so a hung request becomes a retryable error. */
+export const DASHBOARD_REQUEST_TIMEOUT_MS = 15_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function requireRecord(raw: unknown, endpoint: string, keys: string[] = ['businessDate']): Record<string, unknown> {
+  if (!isRecord(raw) || keys.some((key) => typeof raw[key] !== 'string')) throw new DashboardPayloadError(endpoint);
+  return raw;
+}
+
+function mapLowStockItem(item: unknown): LowStockItem {
+  const row = isRecord(item) ? item : {};
   return {
-    businessDate: (raw.businessDate as string) ?? '',
-    timezone: (raw.timezone as string) ?? 'Asia/Kolkata',
-    todayGrossSales: toNumber(raw.todayGrossSales ?? raw.todaySales),
-    todayReturns: toNumber(raw.todayReturns),
-    todaySales: toNumber(raw.todaySales),
-    todayProfit: toNumber(raw.todayProfit),
-    todayOrders: toNumber(raw.todayOrders),
-    todayReturnCount: toNumber(raw.todayReturnCount),
-    totalRevenue: toNumber(raw.totalRevenue),
-    totalOrders: toNumber(raw.totalOrders),
-    totalCustomers: toNumber(raw.totalCustomers),
-    totalProducts: toNumber(raw.totalProducts),
-    outstandingUdhar: toNumber(raw.outstandingUdhar),
-    lowStockCount: toNumber(raw.lowStockCount),
-    outOfStockCount: toNumber(raw.outOfStockCount),
-    inventoryValue: toNumber(raw.inventoryValue),
+    productId: (row.productId as string) ?? '',
+    name: (row.name as string) ?? '',
+    sku: (row.sku as string) ?? '',
+    unit: (row.unit as string) ?? '',
+    currentStock: toNumber(row.currentStock),
+    reorderPoint: toNumber(row.reorderPoint),
+    status: row.status === 'OUT_OF_STOCK' ? 'OUT_OF_STOCK' : 'LOW_STOCK',
+  };
+}
+
+function mapDashboardSummary(payload: unknown): DashboardSummary {
+  const raw = requireRecord(payload, 'GET /dashboard/summary', ['businessDate', 'timezone']);
+  if (!Array.isArray(raw.recentInvoices) || !Array.isArray(raw.paymentModes)) {
+    throw new DashboardPayloadError('GET /dashboard/summary');
+  }
+  const recentInvoices = raw.recentInvoices.map((item): DashboardRecentInvoice => {
+    const invoice = item as Record<string, unknown>;
+    const customer = invoice.customer as { id?: string; name?: string } | null | undefined;
+    return {
+      id: invoice.id as string,
+      invoiceNumber: (invoice.invoiceNumber as string) ?? '',
+      type: (invoice.type as string) ?? 'SALE',
+      status: (invoice.status as string) ?? '',
+      totalAmount: toNumber(invoice.totalAmount),
+      paymentMode: (invoice.paymentMode as string) ?? '',
+      createdAt: (invoice.createdAt as string) ?? '',
+      customer: customer && typeof customer.name === 'string' ? { id: customer.id, name: customer.name } : null,
+    };
+  });
+  const paymentModes = raw.paymentModes.map((item) => {
+    const mode = item as Record<string, unknown>;
+    return { mode: (mode.mode as string) ?? '', amount: toNumber(mode.amount) };
+  });
+  return {
+    businessDate: raw.businessDate as string,
+    timezone: raw.timezone as string,
+    failedSections: Array.isArray(raw.failedSections) ? (raw.failedSections as DashboardSummarySection[]) : [],
+    todayGrossSales: toNullableNumber(raw.todayGrossSales),
+    todayReturns: toNullableNumber(raw.todayReturns),
+    todaySales: toNullableNumber(raw.todaySales),
+    todayProfit: toNullableNumber(raw.todayProfit),
+    todayOrders: toNullableNumber(raw.todayOrders),
+    todayReturnCount: toNullableNumber(raw.todayReturnCount),
+    totalRevenue: toNullableNumber(raw.totalRevenue),
+    totalOrders: toNullableNumber(raw.totalOrders),
+    totalCustomers: toNullableNumber(raw.totalCustomers),
+    totalProducts: toNullableNumber(raw.totalProducts),
+    outstandingUdhar: toNullableNumber(raw.outstandingUdhar),
+    lowStockCount: toNullableNumber(raw.lowStockCount),
+    outOfStockCount: toNullableNumber(raw.outOfStockCount),
+    lowStockItems: Array.isArray(raw.lowStockItems) ? raw.lowStockItems.map(mapLowStockItem) : [],
+    inventoryValue: toNullableNumber(raw.inventoryValue),
     recentInvoices,
     paymentModes,
     shift: mapDashboardShift(raw.shift),
   };
 }
 
-function mapDashboardKpis(raw: Record<string, unknown>): DashboardKpis {
+function mapDashboardKpis(payload: unknown): DashboardKpis {
+  const raw = requireRecord(payload, 'GET /dashboard/kpis');
   return {
-    businessDate: (raw.businessDate as string) ?? '',
+    businessDate: raw.businessDate as string,
     grossRevenue: toNumber(raw.grossRevenue),
     netRevenue: toNumber(raw.netRevenue),
     totalRefunds: toNumber(raw.totalRefunds),
@@ -616,12 +719,78 @@ function mapDashboardKpis(raw: Record<string, unknown>): DashboardKpis {
 }
 
 function mapTrend(data: unknown): TrendPoint[] {
-  return Array.isArray(data)
-    ? data.map((item) => {
-        const point = item as Record<string, unknown>;
-        return { date: (point.date as string) ?? '', sales: toNumber(point.sales) };
-      })
-    : [];
+  if (!Array.isArray(data) || data.some((item) => !isRecord(item) || typeof item.date !== 'string')) {
+    throw new DashboardPayloadError('GET /dashboard/trends');
+  }
+  return data.map((item) => {
+    const point = item as Record<string, unknown>;
+    return { date: point.date as string, sales: toNumber(point.sales) };
+  });
+}
+
+function mapLowStockList(payload: unknown): LowStockList {
+  if (!isRecord(payload) || !Array.isArray(payload.items)) throw new DashboardPayloadError('GET /dashboard/low-stock');
+  return {
+    lowStockCount: toNumber(payload.lowStockCount),
+    outOfStockCount: toNumber(payload.outOfStockCount),
+    items: payload.items.map(mapLowStockItem),
+  };
+}
+
+function mapInsights(payload: unknown): DashboardInsights {
+  const raw = requireRecord(payload, 'GET /dashboard/insights');
+  const forecast = isRecord(raw.forecast) ? raw.forecast : null;
+  const restock = isRecord(raw.restock) && Array.isArray(raw.restock.items) ? raw.restock : null;
+  const top = isRecord(raw.topProduct) ? raw.topProduct : null;
+  return {
+    businessDate: raw.businessDate as string,
+    generatedAt: (raw.generatedAt as string) ?? '',
+    failedSections: Array.isArray(raw.failedSections) ? (raw.failedSections as InsightSection[]) : [],
+    forecast: forecast
+      ? {
+          forecastNetRevenue: toNumber(forecast.forecastNetRevenue),
+          basisDays: toNumber(forecast.basisDays),
+          confidence: forecast.confidence === 'MEDIUM' ? 'MEDIUM' : 'LOW',
+          basisFrom: (forecast.basisFrom as string) ?? '',
+          basisTo: (forecast.basisTo as string) ?? '',
+          todayNetSales: toNumber(forecast.todayNetSales),
+          progressPct: toNullableNumber(forecast.progressPct),
+        }
+      : null,
+    restock: restock
+      ? {
+          basisDays: toNumber(restock.basisDays),
+          coverDays: toNumber(restock.coverDays),
+          items: (restock.items as unknown[]).map((item) => {
+            const row = isRecord(item) ? item : {};
+            return {
+              ...mapLowStockItem(row),
+              avgDailyUnits: toNumber(row.avgDailyUnits),
+              daysOfCover: toNullableNumber(row.daysOfCover),
+              suggestedQuantity: toNumber(row.suggestedQuantity),
+              urgency: row.urgency === 'OUT_OF_STOCK' || row.urgency === 'CRITICAL' ? row.urgency : 'LOW',
+              reason: (row.reason as string) ?? '',
+            } satisfies RestockSuggestion;
+          }),
+        }
+      : null,
+    topProduct: top
+      ? {
+          productId: (top.productId as string) ?? '',
+          name: (top.name as string) ?? '',
+          sku: (top.sku as string) ?? '',
+          unitsSold: toNumber(top.unitsSold),
+          netRevenue: toNumber(top.netRevenue),
+          grossProfit: toNumber(top.grossProfit),
+          grossMarginPct: toNumber(top.grossMarginPct),
+        }
+      : null,
+  };
+}
+
+async function getDashboard<T>(url: string, map: (payload: unknown) => T): Promise<T> {
+  const { data } = await apiClient.get<unknown>(url, { timeout: DASHBOARD_REQUEST_TIMEOUT_MS });
+  return map(data);
 }
 
 /** Reads `filename="..."` from a Content-Disposition header, if present. */
@@ -632,12 +801,18 @@ function filenameFromDisposition(header: unknown): string | null {
 }
 
 export const analyticsApi = {
-  dashboardSummary: () => get<Record<string, unknown>>('/dashboard/summary').then(mapDashboardSummary),
+  dashboardSummary: () => getDashboard('/dashboard/summary', mapDashboardSummary),
 
   /** `GET /dashboard/kpis` — live, cached server-side for 60 s. */
-  kpis: () => get<Record<string, unknown>>('/dashboard/kpis').then(mapDashboardKpis),
+  kpis: () => getDashboard('/dashboard/kpis', mapDashboardKpis),
 
-  revenueTrend: (days = 30) => get<unknown>(`/dashboard/trends?days=${days}`).then(mapTrend),
+  revenueTrend: (days = 30) => getDashboard(`/dashboard/trends?days=${days}`, mapTrend),
+
+  /** `GET /dashboard/low-stock` — every stock alert, out of stock first. */
+  lowStock: (limit = 200) => getDashboard(`/dashboard/low-stock?limit=${limit}`, mapLowStockList),
+
+  /** `GET /dashboard/insights` — forecast, restock suggestions, top product. */
+  insights: () => getDashboard('/dashboard/insights', mapInsights),
 
   analyticsPage: (range: AnalyticsRange = 'week') =>
     get<AnalyticsPagePayload>(`/dashboard/analytics?range=${range}`),

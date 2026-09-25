@@ -16,10 +16,10 @@ import {
   SystemEventJobData,
 } from './outbox-routing';
 
+import { invalidateAnalyticsCache } from '../cache/analytics-cache-keys';
+
 /** Contract §6: keys the event processor invalidates after any invoice mutation. */
-export function analyticsCacheKeys(shopId: string): string[] {
-  return ['dashboard', 'kpis', 'summary'].map((suffix) => `shop:${shopId}:analytics:${suffix}`);
-}
+export { analyticsCacheKeys } from '../cache/analytics-cache-keys';
 
 export const SYSTEM_EVENT_PROCESSED_ACTION = 'SYSTEM_EVENT_PROCESSED';
 
@@ -236,9 +236,7 @@ export class SystemEventsProcessor extends WorkerHost {
   }
 
   private async invalidateAnalyticsCache(shopId: string): Promise<void> {
-    for (const key of analyticsCacheKeys(shopId)) {
-      await this.cache.del(key);
-    }
+    await invalidateAnalyticsCache(this.cache, shopId);
   }
 
   /** One unread LOW_STOCK notification per product; re-raised only after the previous one was read. */

@@ -1,11 +1,10 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   Database, FileText, Package, RefreshCw, ShoppingBag, TrendingUp, Users, Wallet,
 } from 'lucide-react';
-import { analyticsApi, type DashboardKpis, type DashboardSummary, type TrendPoint } from '@/lib/api-client';
-import { describeApiError } from '@/lib/api-error';
+import { analyticsApi, type DashboardSummarySection } from '@/lib/api-client';
 import { SummaryStatCard } from '@/components/dashboard/SummaryStatCard';
 import { ShiftCard } from '@/components/dashboard/ShiftCard';
 import { RecentInvoicesCard } from '@/components/dashboard/RecentInvoicesCard';
@@ -13,106 +12,79 @@ import { KpiStrip } from '@/components/dashboard/KpiStrip';
 import { SalesTrendCard } from '@/components/dashboard/SalesTrendCard';
 import { PaymentModesCard } from '@/components/dashboard/PaymentModesCard';
 import { QuickActionsCard } from '@/components/dashboard/QuickActionsCard';
+import { LowStockCard } from '@/components/dashboard/LowStockCard';
+import { AiInsightsCard } from '@/components/dashboard/AiInsightsCard';
+import { StaleBadge } from '@/components/dashboard/CardStates';
 import { useVisibilityPolling } from '@/components/dashboard/useVisibilityPolling';
+import { useDashboardResource } from '@/components/dashboard/useDashboardResource';
 import { ErrorState } from '@/components/customers/States';
 import { formatCount, formatMoney, formatTime } from '@/components/customers/format';
 
 const POLL_INTERVAL_MS = 30 * 1000;
 
-interface Resource<T> {
-  data: T | null;
-  loading: boolean;
-  error: string | null;
-}
-
-const idle = <T,>(): Resource<T> => ({ data: null, loading: true, error: null });
+const money = (value: number | null | undefined) => (value === null || value === undefined ? '' : formatMoney(value));
+const count = (value: number | null | undefined) => (value === null || value === undefined ? '' : formatCount(value));
 
 export default function DashboardPage() {
-  const [summary, setSummary] = useState<Resource<DashboardSummary>>(idle<DashboardSummary>());
-  const [kpis, setKpis] = useState<Resource<DashboardKpis>>(idle<DashboardKpis>());
-  const [trend, setTrend] = useState<Resource<TrendPoint[]>>(idle<TrendPoint[]>());
   const [trendDays, setTrendDays] = useState(7);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const trendSeq = useRef(0);
 
-  const loadSummary = useCallback(async () => {
-    setSummary((current) => ({ ...current, loading: true }));
-    try {
-      const data = await analyticsApi.dashboardSummary();
-      setSummary({ data, loading: false, error: null });
-      setLastUpdated(new Date());
-    } catch (err) {
-      setSummary((current) => ({
-        ...current,
-        loading: false,
-        error: describeApiError(err, 'Loading dashboard summary (GET /dashboard/summary)'),
-      }));
-    }
-  }, []);
+  const fetchSummary = useCallback(() => analyticsApi.dashboardSummary(), []);
+  const fetchKpis = useCallback(() => analyticsApi.kpis(), []);
+  const fetchTrend = useCallback(() => analyticsApi.revenueTrend(trendDays), [trendDays]);
+  const fetchInsights = useCallback(() => analyticsApi.insights(), []);
 
-  const loadKpis = useCallback(async () => {
-    setKpis((current) => ({ ...current, loading: true }));
-    try {
-      const data = await analyticsApi.kpis();
-      setKpis({ data, loading: false, error: null });
-    } catch (err) {
-      setKpis((current) => ({
-        ...current,
-        loading: false,
-        error: describeApiError(err, 'Loading KPIs (GET /dashboard/kpis)'),
-      }));
-    }
-  }, []);
+  const [summary, loadSummary] = useDashboardResource(fetchSummary, 'Loading dashboard summary (GET /dashboard/summary)');
+  const [kpis, loadKpis] = useDashboardResource(fetchKpis, 'Loading KPIs (GET /dashboard/kpis)');
+  const [trend, loadTrend] = useDashboardResource(fetchTrend, 'Loading sales trend (GET /dashboard/trends)');
+  const [insights, loadInsights] = useDashboardResource(fetchInsights, 'Loading AI insights (GET /dashboard/insights)');
 
-  const loadTrend = useCallback(async (days: number) => {
-    const seq = ++trendSeq.current;
-    setTrend((current) => ({ ...current, loading: true }));
-    try {
-      const data = await analyticsApi.revenueTrend(days);
-      if (seq !== trendSeq.current) return;
-      setTrend({ data, loading: false, error: null });
-    } catch (err) {
-      if (seq !== trendSeq.current) return;
-      setTrend((current) => ({
-        ...current,
-        loading: false,
-        error: describeApiError(err, 'Loading sales trend (GET /dashboard/trends)'),
-      }));
-    }
-  }, []);
+  const refreshSummary = useCallback(
+    async (force = false) => {
+      if (await loadSummary({ force })) setLastUpdated(new Date());
+    },
+    [loadSummary],
+  );
 
-  const refreshAll = useCallback(() => {
-    void loadSummary();
-    void loadKpis();
-    void loadTrend(trendDays);
-  }, [loadSummary, loadKpis, loadTrend, trendDays]);
+  /** Poll tick (skips resources still loading) or manual refresh (`force`). */
+  const refreshAll = useCallback(
+    (force = false) => {
+      void refreshSummary(force);
+      void loadKpis({ force });
+      void loadTrend({ force });
+      void loadInsights({ force });
+    },
+    [refreshSummary, loadKpis, loadTrend, loadInsights],
+  );
 
-  // Initial load of the two date-independent resources.
+  // Initial load of the date-independent resources.
   useEffect(() => {
-    void loadSummary();
+    void refreshSummary();
     void loadKpis();
-  }, [loadSummary, loadKpis]);
+    void loadInsights();
+  }, [refreshSummary, loadKpis, loadInsights]);
 
-  // Trend reloads whenever the range changes (and on the shared poll).
+  // Trend reloads whenever the range changes; the previous range's data and
+  // any in-flight response for it no longer apply.
   useEffect(() => {
-    setTrend((current) => ({ ...current, data: null }));
-    void loadTrend(trendDays);
-  }, [trendDays, loadTrend]);
+    void loadTrend({ force: true, reset: true });
+  }, [loadTrend]);
 
-  // 30 s polling, paused while the tab is hidden.
-  useVisibilityPolling(refreshAll, POLL_INTERVAL_MS);
+  // 30 s polling, paused while the tab is hidden, never overlapping a request in flight.
+  const poll = useCallback(() => refreshAll(false), [refreshAll]);
+  useVisibilityPolling(poll, POLL_INTERVAL_MS);
 
   const s = summary.data;
-  const initialLoading = summary.loading && !s;
-  const refreshing = summary.loading || kpis.loading || trend.loading;
-
-  if (summary.error && !s) {
-    return (
-      <div className="space-y-6">
-        <ErrorState title="Unable to load the dashboard" message={summary.error} onRetry={() => void loadSummary()} retrying={summary.loading} />
-      </div>
-    );
-  }
+  const summaryLoading = summary.loading && !s;
+  const summaryDown = !!summary.error && !s;
+  const failed = new Set<DashboardSummarySection>(s?.failedSections ?? []);
+  const tile = (section: DashboardSummarySection) => ({ loading: summaryLoading, unavailable: summaryDown || failed.has(section) });
+  const card = (section: DashboardSummarySection) => ({
+    loading: summaryLoading,
+    unavailable: summaryDown || failed.has(section),
+    onRetry: () => void refreshSummary(true),
+  });
+  const refreshing = summary.loading || kpis.loading || trend.loading || insights.loading;
 
   return (
     <div className="space-y-6">
@@ -123,19 +95,24 @@ export default function DashboardPage() {
           <p className="mt-1 text-sm text-gray-500">
             {s ? (
               <>Business day <span className="font-semibold text-gray-700">{s.businessDate}</span> · {s.timezone}</>
+            ) : summaryDown ? (
+              'Business day unavailable'
             ) : (
               'Loading business day…'
             )}
           </p>
         </div>
         <div className="flex items-center gap-3 text-xs text-gray-500">
-          {summary.error && s && (
-            <span className="rounded-full bg-red-50 px-2 py-1 font-semibold text-red-600" title={summary.error}>Refresh failed — showing last data</span>
+          {summary.error && s && <StaleBadge detail={summary.error} />}
+          {s && failed.size > 0 && !summary.error && (
+            <span role="status" className="rounded-full bg-amber-50 px-2 py-1 font-semibold text-amber-700">
+              Some figures are unavailable
+            </span>
           )}
           {lastUpdated && <span>Updated {formatTime(lastUpdated.toISOString())}</span>}
           <button
             type="button"
-            onClick={refreshAll}
+            onClick={() => refreshAll(true)}
             disabled={refreshing}
             aria-label="Refresh dashboard"
             className="rounded-lg border border-gray-200 bg-white p-2 text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-800 disabled:opacity-50"
@@ -145,48 +122,58 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {summaryDown && (
+        <ErrorState
+          compact
+          title="Today's figures are unavailable"
+          message={summary.error!}
+          onRetry={() => void refreshSummary(true)}
+          retrying={summary.loading}
+        />
+      )}
+
       {/* Today */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         <SummaryStatCard
           icon={<TrendingUp size={24} />}
           tone="bg-[#8B5CF6]/10 text-[#8B5CF6]"
           label="Today's sales (net)"
-          value={s ? formatMoney(s.todaySales) : ''}
-          hint={s ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns)}` : undefined}
-          loading={initialLoading}
+          value={money(s?.todaySales)}
+          hint={s && s.todayGrossSales !== null ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns ?? 0)}` : undefined}
+          {...tile('today')}
         />
         <SummaryStatCard
           icon={<ShoppingBag size={24} />}
           tone="bg-green-500/10 text-green-500"
-          label="Today's profit"
-          value={s ? formatMoney(s.todayProfit) : ''}
-          hint="Net profit today"
-          loading={initialLoading}
+          label="Today's gross profit"
+          value={money(s?.todayProfit)}
+          hint="Sales − cost of goods, after returns"
+          {...tile('todayProfit')}
         />
         <SummaryStatCard
           icon={<FileText size={24} />}
           tone="bg-blue-500/10 text-blue-500"
           label="Today's orders"
-          value={s ? formatCount(s.todayOrders) : ''}
-          hint={s ? `${formatCount(s.todayReturnCount)} return${s.todayReturnCount === 1 ? '' : 's'}` : undefined}
+          value={count(s?.todayOrders)}
+          hint={s && s.todayReturnCount !== null ? `${formatCount(s.todayReturnCount)} return${s.todayReturnCount === 1 ? '' : 's'}` : undefined}
           href="/invoices"
-          loading={initialLoading}
+          {...tile('today')}
         />
         <SummaryStatCard
           icon={<Users size={24} />}
           tone="bg-orange-500/10 text-orange-500"
           label="Outstanding udhar"
-          value={s ? formatMoney(s.outstandingUdhar) : ''}
+          value={money(s?.outstandingUdhar)}
           hint="Across all customers"
           href="/customers"
-          loading={initialLoading}
+          {...tile('udhar')}
         />
         <SummaryStatCard
           icon={<Package size={24} />}
           tone="bg-amber-500/10 text-amber-500"
           label="Low & out of stock"
           value={
-            s ? (
+            s && s.lowStockCount !== null && s.outOfStockCount !== null ? (
               <>
                 {formatCount(s.lowStockCount)} <span className="text-sm text-red-500">/ {formatCount(s.outOfStockCount)}</span>
               </>
@@ -194,7 +181,7 @@ export default function DashboardPage() {
           }
           hint="Low / out of stock"
           href="/inventory?tab=low-stock"
-          loading={initialLoading}
+          {...tile('stock')}
         />
       </div>
 
@@ -204,45 +191,45 @@ export default function DashboardPage() {
           icon={<Wallet size={24} />}
           tone="bg-emerald-500/10 text-emerald-500"
           label="Total revenue"
-          value={s ? formatMoney(s.totalRevenue) : ''}
+          value={money(s?.totalRevenue)}
           hint="Net, all time"
-          loading={initialLoading}
+          {...tile('allTime')}
         />
         <SummaryStatCard
           icon={<FileText size={24} />}
           tone="bg-indigo-500/10 text-indigo-500"
           label="Total invoices"
-          value={s ? formatCount(s.totalOrders) : ''}
-          hint="All time"
+          value={count(s?.totalOrders)}
+          hint="Sales, all time"
           href="/invoices"
-          loading={initialLoading}
+          {...tile('allTime')}
         />
         <SummaryStatCard
           icon={<Users size={24} />}
           tone="bg-teal-500/10 text-teal-500"
           label="Total customers"
-          value={s ? formatCount(s.totalCustomers) : ''}
+          value={count(s?.totalCustomers)}
           hint="Registered"
           href="/customers"
-          loading={initialLoading}
+          {...tile('customers')}
         />
         <SummaryStatCard
           icon={<Package size={24} />}
           tone="bg-rose-500/10 text-rose-500"
           label="Total products"
-          value={s ? formatCount(s.totalProducts) : ''}
+          value={count(s?.totalProducts)}
           hint="Catalog size"
           href="/products"
-          loading={initialLoading}
+          {...tile('products')}
         />
         <SummaryStatCard
           icon={<Database size={24} />}
           tone="bg-cyan-500/10 text-cyan-500"
           label="Inventory value"
-          value={s ? formatMoney(s.inventoryValue) : ''}
-          hint="Current stock worth"
+          value={money(s?.inventoryValue)}
+          hint="Current stock at cost"
           href="/inventory"
-          loading={initialLoading}
+          {...tile('inventoryValue')}
         />
       </div>
 
@@ -255,17 +242,39 @@ export default function DashboardPage() {
           error={trend.error}
           days={trendDays}
           onDaysChange={setTrendDays}
-          onRetry={() => void loadTrend(trendDays)}
+          onRetry={() => void loadTrend({ force: true })}
         />
         <QuickActionsCard className="lg:col-span-3" />
-        <ShiftCard className="lg:col-span-3" shift={s?.shift ?? null} />
+        <ShiftCard className="lg:col-span-3" shift={s?.shift ?? null} {...card('shift')} />
+      </div>
+
+      {/* AI insights + low stock */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <AiInsightsCard
+          className="lg:col-span-2"
+          insights={insights.data}
+          loading={insights.loading}
+          error={insights.error}
+          onRetry={() => void loadInsights({ force: true })}
+        />
+        <LowStockCard
+          items={s?.lowStockItems ?? []}
+          lowStockCount={s?.lowStockCount ?? null}
+          outOfStockCount={s?.outOfStockCount ?? null}
+          {...card('stock')}
+        />
       </div>
 
       {/* KPIs + payment modes + recent invoices */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <KpiStrip kpis={kpis.data} loading={kpis.loading} error={kpis.error} onRetry={() => void loadKpis()} />
-        <PaymentModesCard paymentModes={s?.paymentModes ?? []} />
-        <RecentInvoicesCard invoices={s?.recentInvoices ?? []} />
+        <KpiStrip kpis={kpis.data} loading={kpis.loading} error={kpis.error} onRetry={() => void loadKpis({ force: true })} />
+        <PaymentModesCard paymentModes={s?.paymentModes ?? []} {...card('paymentModes')} />
+        <RecentInvoicesCard
+          invoices={s?.recentInvoices ?? []}
+          businessDate={s?.businessDate}
+          timezone={s?.timezone}
+          {...card('recentInvoices')}
+        />
       </div>
     </div>
   );

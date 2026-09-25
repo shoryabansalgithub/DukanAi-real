@@ -8,7 +8,8 @@ import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { CurrentUser } from '../iam/decorators/current-user.decorator';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { AnalyticsPageService } from './services/analytics-page.service';
-import { DashboardService } from './services/dashboard.service';
+import { DashboardService, MAX_LOW_STOCK_ITEMS } from './services/dashboard.service';
+import { DashboardInsightsService } from './services/dashboard-insights.service';
 import { CsvSink, ReportExportService } from './services/report-export.service';
 
 const READ_ROLES: Role[] = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER, Role.VIEWER];
@@ -56,6 +57,7 @@ export class AnalyticsController {
   constructor(
     private readonly analyticsPage: AnalyticsPageService,
     private readonly dashboard: DashboardService,
+    private readonly insights: DashboardInsightsService,
     private readonly exports: ReportExportService,
   ) {}
 
@@ -78,6 +80,21 @@ export class AnalyticsController {
   @Roles(...READ_ROLES)
   getDashboardSummary(@CurrentShop() shopId: string, @CurrentUser() user: SafeUserDto) {
     return this.dashboard.getSummary(shopId, user.id);
+  }
+
+  /** Stock alerts: counts plus the most urgent products (out of stock first); `limit` 1..500, default 100. */
+  @Get('low-stock')
+  @Roles(...READ_ROLES)
+  getLowStock(@CurrentShop() shopId: string, @Query('limit') limit?: string) {
+    const requested = parseIntQuery(limit, 100);
+    return this.dashboard.lowStock(shopId, Math.max(1, Math.min(requested, MAX_LOW_STOCK_ITEMS)));
+  }
+
+  /** AI insights card: today's sales vs. forecast, restock suggestions, top product. */
+  @Get('insights')
+  @Roles(...READ_ROLES)
+  getInsights(@CurrentShop() shopId: string) {
+    return this.insights.getInsights(shopId);
   }
 
   /** Top products by gross profit over the last 30 business days. */

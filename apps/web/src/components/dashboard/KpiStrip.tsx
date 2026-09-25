@@ -7,6 +7,7 @@ import { SkeletonBox } from '@/components/ui/Skeleton';
 import type { DashboardKpis } from '@/lib/api-client';
 import { ErrorState } from '@/components/customers/States';
 import { formatCount, formatMoney } from '@/components/customers/format';
+import { StaleBadge } from './CardStates';
 
 interface KpiStripProps {
   kpis: DashboardKpis | null;
@@ -24,7 +25,7 @@ export function KpiStrip({ kpis, loading, error, onRetry, className = '' }: KpiS
         { label: 'Refunds', value: `-${formatMoney(kpis.totalRefunds)}`, tone: 'text-red-500' },
         { label: 'Net revenue', value: formatMoney(kpis.netRevenue), tone: 'text-gray-900', strong: true },
         { label: 'Orders', value: formatCount(kpis.orders) },
-        { label: 'Avg order value', value: formatMoney(kpis.avgOrderValue) },
+        { label: 'Avg order value (net)', value: formatMoney(kpis.avgOrderValue) },
       ]
     : [];
 
@@ -34,7 +35,11 @@ export function KpiStrip({ kpis, loading, error, onRetry, className = '' }: KpiS
         <h3 className="flex items-center gap-2 text-[15px] font-bold text-gray-800">
           <Activity size={16} className="text-[#8B5CF6]" /> Today's KPIs
         </h3>
-        {kpis?.businessDate && <span className="text-[10px] font-medium text-gray-400">{kpis.businessDate}</span>}
+        {error && kpis ? (
+          <StaleBadge detail={error} />
+        ) : (
+          kpis?.businessDate && <span className="text-[10px] font-medium text-gray-400">{kpis.businessDate}</span>
+        )}
       </div>
 
       {loading && !kpis ? (

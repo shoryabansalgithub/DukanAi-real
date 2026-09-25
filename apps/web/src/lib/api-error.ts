@@ -55,6 +55,9 @@ export function describeApiError(error: unknown, operation: string): string {
 
   if (axios.isAxiosError(error)) {
     if (!error.response) {
+      if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+        return `${operation} timed out: the API at ${clientConfig.NEXT_PUBLIC_API_URL} did not answer in time.`;
+      }
       return `${operation} failed: the API at ${clientConfig.NEXT_PUBLIC_API_URL} is unreachable. Is the backend running?`;
     }
     const data = readEnvelope(error);

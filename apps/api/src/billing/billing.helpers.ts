@@ -1,4 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
 import { Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -6,6 +8,7 @@ import { InventoryGateway } from '../inventory/inventory.gateway';
 import { InventoryCacheService } from '../inventory/inventory-cache.service';
 import { BillingActor, StockOutcome } from './billing.types';
 import { safeTimeZone } from '../common/time/business-day';
+import { invalidateAnalyticsCache } from '../common/cache/analytics-cache-keys';
 
 /**
  * Side effects around the billing transaction: outbox staging (inside the
@@ -21,6 +24,7 @@ export class BillingHelpers {
     private readonly prisma: PrismaService,
     private readonly inventoryGateway: InventoryGateway,
     private readonly inventoryCache: InventoryCacheService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
   async shopTimeZone(shopId: string): Promise<string> {
@@ -58,6 +62,14 @@ export class BillingHelpers {
 
   /** After commit: sync Redis from authoritative values and push realtime stock updates. */
   async afterStockChange(actor: BillingActor, stock: StockOutcome[]): Promise<void> {
+    // Dashboard KPIs are cached; drop them now so the next read reflects this
+    // commit. The outbox processor invalidates again when the event is relayed,
+    // which also covers a read that raced this commit and re-cached old figures.
+    try {
+      await invalidateAnalyticsCache(this.cache, actor.shopId);
+    } catch (e) {
+      this.logger.warn(`Analytics cache invalidation failed: ${(e as Error).message}`);
+    }
     if (stock.length === 0) return;
     await this.inventoryCache.syncMany(stock.map((s) => ({ productId: s.productId, stock: s.productStockAfter })), actor.shopId);
     try {

@@ -275,17 +275,48 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
 ## 6. Dashboard and reports
 
 - `GET /dashboard/summary` returns
-  `{ businessDate, timezone, todayGrossSales, todayReturns, todaySales (net),
-  todayProfit, todayOrders, todayReturnCount, totalRevenue (net, all time),
-  totalOrders, totalCustomers, totalProducts, outstandingUdhar, lowStockCount,
-  outOfStockCount, inventoryValue, recentInvoices: [{ id, invoiceNumber, type,
-  status, totalAmount, paymentMode, createdAt, customer }], paymentModes:
-  [{ mode, amount }] (today, from tenders plus udhar), shift }`.
+  `{ businessDate, timezone, failedSections, todayGrossSales, todayReturns,
+  todaySales (net), todayProfit (gross profit: taxable value minus cost of
+  goods, sales minus returns), todayOrders, todayReturnCount, totalRevenue
+  (net, all time), totalOrders, totalCustomers, totalProducts,
+  outstandingUdhar, lowStockCount, outOfStockCount, lowStockItems (at most 5),
+  inventoryValue, recentInvoices: [{ id, invoiceNumber, type, status,
+  totalAmount, paymentMode, createdAt, customer }] (last 10, all time,
+  COMPLETED and CANCELLED), paymentModes: [{ mode, amount }] (today, sale
+  tenders plus udhar minus refund tenders and credit reversed, so they add up
+  to today's net sales), shift }`.
   Only `SALE` invoices count as sales; `SALES_RETURN` totals are subtracted;
   `CANCELLED` invoices are excluded.
+  Each part (`today`, `todayProfit`, `allTime`, `customers`, `products`,
+  `udhar`, `stock`, `inventoryValue`, `recentInvoices`, `paymentModes`,
+  `shift`) loads independently: a part that fails is listed in
+  `failedSections`, its figures are `null` and its lists empty, and the rest
+  of the response is authoritative. Only when every part fails does the route
+  answer `503 DASHBOARD_UNAVAILABLE`.
+- Stock alerts (`lowStockCount`, `outOfStockCount`, `lowStockItems`,
+  `GET /dashboard/low-stock`) cover active (`isActive`), non-deleted,
+  stock-tracked products (not `SERVICE`/`DIGITAL`): out of stock is
+  `currentStock <= 0`, low stock is `0 < currentStock <= reorderPoint`.
+- `GET /dashboard/low-stock?limit` (1..500, default 100) returns
+  `{ lowStockCount, outOfStockCount, items: [{ productId, name, sku, unit,
+  currentStock, reorderPoint, status: OUT_OF_STOCK | LOW_STOCK }] }`, out of
+  stock first, then lowest stock relative to the reorder point.
 - `GET /dashboard/kpis` returns `{ businessDate, grossRevenue, netRevenue,
-  totalRefunds, orders, avgOrderValue }` computed live and cached for 60 s
-  under key `shop:{shopId}:analytics:kpis`.
+  totalRefunds, orders, avgOrderValue (net revenue / orders, as on the
+  Reports page) }` computed live and cached for 60 s under key
+  `shop:{shopId}:analytics:kpis`.
+- `GET /dashboard/insights` (the dashboard's AI insights card) returns
+  `{ businessDate, generatedAt, failedSections, forecast: { forecastNetRevenue,
+  basisDays, confidence, basisFrom, basisTo, todayNetSales, progressPct },
+  restock: { basisDays: 30, coverDays: 14, items: [{ productId, name, sku,
+  unit, currentStock, reorderPoint, avgDailyUnits, daysOfCover,
+  suggestedQuantity, urgency: OUT_OF_STOCK | CRITICAL | LOW, reason }] },
+  topProduct }`. The forecast is the 7-day moving average of net daily sales;
+  restock velocity is net units sold over the last 30 business days;
+  suggestions cover stock-alert products plus products with under 7 days of
+  cover, and refill to reorder point plus 14 days of demand. Sections fail
+  independently like the summary (`503 INSIGHTS_UNAVAILABLE` only when all
+  fail).
 - `GET /dashboard/analytics?range` and `GET /dashboard/trends?days` keep their
   shapes with the same SALE/RETURN/CANCELLED rules and business-day ranges.
 - `GET /dashboard/export/invoices.csv?from&to`,
@@ -295,9 +326,16 @@ Roles: reads for all roles; create/update/payments for `CASHIER`+; delete for
   `SALES_RETURN` invoices only, so a total summed from a file equals the
   dashboard net revenue for the same range.
 
-Cache keys the event processor invalidates after any invoice mutation:
+Analytics cache keys, dropped right after every committed sale, return and
+cancellation (`BillingHelpers.afterStockChange`) and again by the event
+processor when the invoice event is relayed:
 `shop:{shopId}:analytics:dashboard`, `shop:{shopId}:analytics:kpis`,
 `shop:{shopId}:analytics:summary`.
+
+The web dashboard polls summary, KPIs and trend every 30 s while the tab is
+visible (never overlapping a poll still in flight), times dashboard requests
+out after 15 s, rejects payloads that do not have the documented shape, and
+renders every card's loading, empty, error and stale states independently.
 
 ## 7. Outbox events (payloads)
 

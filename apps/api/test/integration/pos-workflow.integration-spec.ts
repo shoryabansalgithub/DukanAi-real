@@ -490,8 +490,11 @@ describe('EXEC-006C POS workflow (integration)', () => {
     expect(summary.todaySales).toBeCloseTo(net, 2);
     expect(summary.todayOrders).toBe(sales._count._all);
     expect(summary.outstandingUdhar).toBeCloseTo(await outstanding(), 2);
-    expect(summary.recentInvoices.every((i) => i.status !== 'CANCELLED')).toBe(true);
-    expect(summary.paymentModes.reduce((a, m) => a + m.amount, 0)).toBeGreaterThan(0);
+    expect(summary.failedSections).toEqual([]);
+    // Recent invoices are the last committed ones of any status: cancellations stay visible (with their status).
+    expect(summary.recentInvoices.every((i) => i.status === 'COMPLETED' || i.status === 'CANCELLED')).toBe(true);
+    // Payment modes are net of refunds, so they add up to today's net sales.
+    expect(summary.paymentModes.reduce((a, m) => a + m.amount, 0)).toBeCloseTo(net, 2);
 
     const kpis = await asOwner(() => dashboard.getKpis(shopId));
     expect(kpis.netRevenue).toBeCloseTo(net, 2);

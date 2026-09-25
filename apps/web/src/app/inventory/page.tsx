@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { Suspense, useState, useEffect, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { 
   ClipboardList, AlertTriangle, AlertOctagon, TrendingDown, 
@@ -12,13 +13,25 @@ import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { inventoryApi, type BatchItem } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
+import { LowStockPanel } from '@/components/inventory/LowStockPanel';
 
 function formatBatchDate(date: string | null, options: Intl.DateTimeFormatOptions) {
   return date ? new Date(date).toLocaleDateString('en-IN', options) : 'Not recorded';
 }
 
-export default function InventoryPage() {
+const LOW_STOCK_TAB = 'Low Stock';
+const MAIN_TABS = ['Batches & Expiry', LOW_STOCK_TAB, 'Stock Adjustments', 'Purchase Orders'];
+
+/** `?tab=low-stock` (dashboard links) opens the Low Stock tab. */
+function tabFromQuery(tab: string | null): string {
+  return tab === 'low-stock' ? LOW_STOCK_TAB : 'Batches & Expiry';
+}
+
+function InventoryPageContent() {
   const { toast } = useToast();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get('tab');
   const [batches, setBatches] = useState<BatchItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -44,7 +57,17 @@ export default function InventoryPage() {
   const [selectedBatch, setSelectedBatch] = useState<any>(null);
 
   // Dropdowns & Tabs
-  const [activeMainTab, setActiveMainTab] = useState('Batches & Expiry');
+  const [activeMainTab, setActiveMainTab] = useState(() => tabFromQuery(tabParam));
+
+  // Follow the URL when it changes while the page is open (e.g. a dashboard link).
+  useEffect(() => {
+    setActiveMainTab(tabFromQuery(tabParam));
+  }, [tabParam]);
+
+  const selectTab = (tab: string) => {
+    setActiveMainTab(tab);
+    router.replace(tab === LOW_STOCK_TAB ? '/inventory?tab=low-stock' : '/inventory', { scroll: false });
+  };
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   
@@ -115,8 +138,9 @@ export default function InventoryPage() {
         break;
     }
   };
-  if (loading) return <div className="p-12 text-center text-gray-500">Loading inventory batches...</div>;
-  if (loadError) return <div className="p-12 text-center text-red-600">{loadError}</div>;
+  // The batch list gates only its own tab: Low Stock loads independently.
+  if (loading && activeMainTab !== LOW_STOCK_TAB) return <div className="p-12 text-center text-gray-500">Loading inventory batches...</div>;
+  if (loadError && activeMainTab !== LOW_STOCK_TAB) return <div className="p-12 text-center text-red-600">{loadError}</div>;
 
   return (
     <div className="space-y-6">
@@ -186,16 +210,18 @@ export default function InventoryPage() {
 
       {/* Tabs */}
       <div className="flex gap-6 border-b border-gray-200">
-        {['Batches & Expiry', 'Stock Adjustments', 'Purchase Orders'].map(tab => (
+        {MAIN_TABS.map(tab => (
           <button 
             key={tab}
-            onClick={() => setActiveMainTab(tab)}
+            onClick={() => selectTab(tab)}
             className={`pb-3 text-sm font-bold border-b-2 transition-colors ${activeMainTab === tab ? 'border-[#8B5CF6] text-[#8B5CF6]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
           >
             {tab}
           </button>
         ))}
       </div>
+
+      {activeMainTab === LOW_STOCK_TAB && <LowStockPanel />}
 
       {/* Main Content Card */}
       {activeMainTab === 'Batches & Expiry' && (
@@ -349,7 +375,7 @@ export default function InventoryPage() {
         </Card>
       )}
 
-      {activeMainTab !== 'Batches & Expiry' && (
+      {activeMainTab !== 'Batches & Expiry' && activeMainTab !== LOW_STOCK_TAB && (
         <Card className="p-16 flex flex-col items-center justify-center text-center min-h-[400px] border-dashed">
           <FileText size={48} className="text-gray-300 mb-4" />
           <h3 className="text-xl font-bold text-gray-800">Module Coming Soon</h3>
@@ -478,5 +504,13 @@ export default function InventoryPage() {
         )}
       </SlidingPanel>
     </div>
+  );
+}
+
+export default function InventoryPage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-500">Loading inventory…</div>}>
+      <InventoryPageContent />
+    </Suspense>
   );
 }

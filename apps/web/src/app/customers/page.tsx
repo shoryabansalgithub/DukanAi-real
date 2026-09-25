@@ -88,7 +88,7 @@ function CustomersPageContent() {
   const fetchOutstanding = useCallback(() => {
     analyticsApi
       .dashboardSummary()
-      .then((summary) => setOutstandingUdhar(summary.outstandingUdhar))
+      .then((summary) => setOutstandingUdhar(summary.outstandingUdhar ?? 'error'))
       .catch((err) => {
         describeApiError(err, 'Loading outstanding udhar (GET /dashboard/summary)');
         setOutstandingUdhar('error');

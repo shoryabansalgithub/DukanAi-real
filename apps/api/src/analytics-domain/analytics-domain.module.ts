@@ -8,6 +8,7 @@ import { ForecastEngine } from './engines/forecast-engine';
 import { AnalyticsCacheService } from './services/analytics-cache.service';
 import { AnalyticsPageService } from './services/analytics-page.service';
 import { DashboardService } from './services/dashboard.service';
+import { DashboardInsightsService } from './services/dashboard-insights.service';
 import { ReportExportService } from './services/report-export.service';
 import { ShopTimezoneService } from './services/shop-timezone.service';
 import { KpiService } from './services/kpi.service';
@@ -33,6 +34,7 @@ import { AnalyticsController } from './analytics.controller';
     AnalyticsCacheService,
     AnalyticsPageService,
     DashboardService,
+    DashboardInsightsService,
     ReportExportService,
     ShopTimezoneService,
     KpiService,

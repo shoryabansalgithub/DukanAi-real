@@ -6,14 +6,35 @@ import { Clock, ArrowRight } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import type { DashboardShift } from '@/lib/api-client';
 import { formatMoney, formatTime } from '@/components/customers/format';
+import { CardSkeletonRows, CardUnavailable } from './CardStates';
 
 interface ShiftCardProps {
   shift: DashboardShift | null;
+  loading?: boolean;
+  unavailable?: boolean;
+  onRetry?: () => void;
   className?: string;
 }
 
 /** The caller's OPEN shift from `GET /dashboard/summary`, or a prompt to open one. */
-export function ShiftCard({ shift, className = '' }: ShiftCardProps) {
+export function ShiftCard({ shift, loading = false, unavailable = false, onRetry, className = '' }: ShiftCardProps) {
+  if (loading || unavailable) {
+    return (
+      <Card className={`flex flex-col justify-between p-5 ${className}`}>
+        <div>
+          <h3 className="mb-3 flex items-center gap-2 text-[15px] font-bold text-gray-800">
+            <Clock size={16} className="text-gray-400" /> Shift
+          </h3>
+          {loading ? (
+            <CardSkeletonRows rows={4} />
+          ) : (
+            <CardUnavailable message="Your shift status could not be loaded." onRetry={onRetry} />
+          )}
+        </div>
+      </Card>
+    );
+  }
+
   if (!shift) {
     return (
       <Card className={`flex flex-col justify-between p-5 ${className}`}>

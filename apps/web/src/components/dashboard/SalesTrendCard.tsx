@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/Card';
 import { SkeletonBox } from '@/components/ui/Skeleton';
 import type { TrendPoint } from '@/lib/api-client';
 import { ErrorState } from '@/components/customers/States';
+import { StaleBadge } from './CardStates';
 
 export const TREND_RANGES: Array<{ label: string; days: number }> = [
   { label: 'Today', days: 1 },
@@ -43,12 +44,16 @@ export function SalesTrendCard({ trend, loading, error, days, onDaysChange, onRe
     return () => document.removeEventListener('mousedown', close);
   }, [isOpen]);
 
-  const hasData = !!trend && trend.some((point) => point.sales > 0);
+  // Any non-zero day counts: a day with only returns is a real (negative) figure.
+  const hasData = !!trend && trend.some((point) => point.sales !== 0);
 
   return (
     <Card className={`relative p-5 ${className}`}>
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="font-bold text-gray-800">Sales Overview</h3>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <h3 className="font-bold text-gray-800">Sales Overview</h3>
+          {error && trend && <StaleBadge detail={error} />}
+        </div>
         <div ref={dropdownRef} className="relative z-20">
           <button
             type="button"

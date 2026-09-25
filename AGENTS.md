@@ -105,9 +105,32 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   checkpoint × sale/return/cancel/repayment), `pos-concurrency` (the
   concurrency × stock × quantity matrix up to 200 parallel checkouts, edge
   cases, multi-location, bootstrap race) and `pos-resilience` (Redis outage,
-  outbox, accounting incl. purchase side, custom items, authority rules).
-  `apps/web` has `npm run test:e2e` (Playwright, browser-level checkout).
-  `npm run test:e2e` in apps/api is the boot regression.
+  outbox, accounting incl. purchase side, custom items, authority rules) and
+  `dashboard` (EXEC-005: every dashboard figure against SQL, boundaries,
+  stock alerts, insights, partial failure, tenant isolation).
+  `apps/web` has `npm run test:e2e` (Playwright: checkout and dashboard
+  states/polling). `npm run test:e2e` in apps/api is the boot regression.
+  Point either at another database with `TEST_DATABASE_URL` (integration) or
+  `DATABASE_URL` + `E2E_DATABASE_URL` (Playwright); no env file edits needed.
+- BullMQ takes host/port/credentials/db from `REDIS_URL` (`app.module.ts`).
+  The db index matters: dev (db 0) and tests (db 1) share one Redis server,
+  and before the db was honoured a running dev API consumed the tests' jobs.
+
+## Dashboard (EXEC-005)
+
+- Contract §6. `GET /dashboard/summary` loads 11 sections independently: a
+  failed one is listed in `failedSections` with `null` figures (503 only when
+  all fail); the web marks exactly those tiles/cards unavailable. Keep new
+  summary figures inside a section.
+- Stock alerts count active, non-deleted, stock-tracked products only
+  (`stockAlertProductFilter`: not SERVICE/DIGITAL, which the inventory engine
+  bypasses). The inventory page's `?tab=low-stock` lists them all.
+- KPIs are cached 60 s; `BillingHelpers.afterStockChange` drops the cache
+  right after every committed sale/return/cancel, and the outbox processor
+  drops it again, so tiles and KPI strip agree on the next read.
+- Web resources go through `useDashboardResource` (newest response wins, polls
+  skip a request in flight), dashboard GETs time out after 15 s and payloads
+  are shape-checked (`DashboardPayloadError`): never render a failure as zeros.
 
 ## Auth bypass flag
 

@@ -72,42 +72,59 @@ export class RevenueEngine {
    * per `InvoicePayment.tender`, an `UDHAR` bucket from `Invoice.udharAmount`,
    * and, for legacy invoices without payment rows, `paidAmount` bucketed under
    * `Invoice.paymentMode`.
+   *
+   * With `netOfRefunds`, COMPLETED SALES_RETURN invoices of the same window are
+   * subtracted the same way (refund tender rows, credit reversed, legacy
+   * `paidAmount`), so the buckets add up to net sales. Buckets that net to
+   * zero are dropped; a negative bucket (refunds exceeding that tender's
+   * takings in the window) is kept so the totals still reconcile.
    */
-  async paymentModeBuckets(shopId: string, start: Date, end: Date): Promise<PaymentModeBucket[]> {
-    const saleWhere: Prisma.InvoiceWhereInput = {
-      shopId,
-      type: InvoiceType.SALE,
-      status: InvoiceStatus.COMPLETED,
-      isDeleted: false,
-      createdAt: { gte: start, lt: end },
-    };
-
-    const [tenders, udhar, legacy] = await Promise.all([
-      // InvoicePayment is not tenant-scoped by the Prisma extension: explicit shopId.
-      this.prisma.invoicePayment.groupBy({
-        by: ['tender'],
-        where: { shopId, invoice: saleWhere },
-        _sum: { amount: true },
-      }),
-      this.prisma.invoice.aggregate({ where: saleWhere, _sum: { udharAmount: true } }),
-      this.prisma.invoice.groupBy({
-        by: ['paymentMode'],
-        where: { ...saleWhere, payments: { none: {} } },
-        _sum: { paidAmount: true },
-      }),
-    ]);
-
+  async paymentModeBuckets(
+    shopId: string,
+    start: Date,
+    end: Date,
+    options: { netOfRefunds?: boolean } = {},
+  ): Promise<PaymentModeBucket[]> {
     const buckets = new Map<string, Prisma.Decimal>();
-    const add = (mode: string, amount: Prisma.Decimal | null | undefined) => {
+    const add = (mode: string, amount: Prisma.Decimal | null | undefined, sign: 1 | -1) => {
       if (!amount || amount.isZero()) return;
-      buckets.set(mode, (buckets.get(mode) ?? new Prisma.Decimal(0)).plus(amount));
+      buckets.set(mode, (buckets.get(mode) ?? new Prisma.Decimal(0)).plus(sign === 1 ? amount : amount.neg()));
     };
 
-    for (const group of tenders) add(group.tender, group._sum.amount);
-    add('UDHAR', udhar._sum.udharAmount);
-    for (const group of legacy) add(group.paymentMode, group._sum.paidAmount);
+    const types: Array<[InvoiceType, 1 | -1]> = [[InvoiceType.SALE, 1]];
+    if (options.netOfRefunds) types.push([InvoiceType.SALES_RETURN, -1]);
+
+    await Promise.all(
+      types.map(async ([type, sign]) => {
+        const where: Prisma.InvoiceWhereInput = {
+          shopId,
+          type,
+          status: InvoiceStatus.COMPLETED,
+          isDeleted: false,
+          createdAt: { gte: start, lt: end },
+        };
+        const [tenders, udhar, legacy] = await Promise.all([
+          // InvoicePayment is not tenant-scoped by the Prisma extension: explicit shopId.
+          this.prisma.invoicePayment.groupBy({
+            by: ['tender'],
+            where: { shopId, invoice: where },
+            _sum: { amount: true },
+          }),
+          this.prisma.invoice.aggregate({ where, _sum: { udharAmount: true } }),
+          this.prisma.invoice.groupBy({
+            by: ['paymentMode'],
+            where: { ...where, payments: { none: {} } },
+            _sum: { paidAmount: true },
+          }),
+        ]);
+        for (const group of tenders) add(group.tender, group._sum.amount, sign);
+        add('UDHAR', udhar._sum.udharAmount, sign);
+        for (const group of legacy) add(group.paymentMode, group._sum.paidAmount, sign);
+      }),
+    );
 
     return [...buckets.entries()]
+      .filter(([, amount]) => !amount.isZero())
       .map(([mode, amount]) => ({ mode, amount }))
       .sort((a, b) => b.amount.comparedTo(a.amount));
   }
