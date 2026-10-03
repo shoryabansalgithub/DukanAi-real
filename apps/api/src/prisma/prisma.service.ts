@@ -1,30 +1,37 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnApplicationShutdown, Logger } from '@nestjs/common';
 import { writeSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { tenantExtension } from './prisma-tenant.extension';
+import { softDeleteTokenExtension } from './soft-delete-token';
 import { AppConfig, Environment } from '../config/domains/app.config';
 import { PrismaConfig } from '../config/domains/prisma.config';
 
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
+export class PrismaService extends PrismaClient implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(PrismaService.name);
+
+  /**
+   * Production logs warnings and errors only. Elsewhere every query is
+   * logged only when `PRISMA_LOG_QUERIES` says so (roadmap 5.8: the flag
+   * used to be read into `PrismaConfig` and ignored, so a load test under
+   * `NODE_ENV=test` measured the log writer rather than the API).
+   */
+  static logLevelsFor(appConfig: Pick<AppConfig, 'nodeEnv'>, prismaConfig: Pick<PrismaConfig, 'logQueries' | 'logLevelProduction' | 'logLevelDevelopment'>): string[] {
+    if (appConfig.nodeEnv === Environment.Production) return prismaConfig.logLevelProduction;
+    return prismaConfig.logQueries ? prismaConfig.logLevelDevelopment : prismaConfig.logLevelDevelopment.filter((level) => level !== 'query');
+  }
 
   constructor(
     private readonly tenantContextService: TenantContextService,
     appConfig: AppConfig,
     prismaConfig: PrismaConfig,
   ) {
-    const isProduction = appConfig.nodeEnv === Environment.Production;
-    const logLevels = isProduction
-      ? (prismaConfig.logLevelProduction || ['warn', 'error'])
-      : (prismaConfig.logLevelDevelopment || ['query', 'info', 'warn', 'error']);
-
     super({
-      log: logLevels.map(level => ({ emit: 'stdout', level })) as any,
+      log: PrismaService.logLevelsFor(appConfig, prismaConfig).map((level) => ({ emit: 'stdout', level })) as any,
     });
 
-    const extended = this.$extends(tenantExtension(this.tenantContextService));
+    const extended = this.$extends(tenantExtension(this.tenantContextService)).$extends(softDeleteTokenExtension());
 
     return new Proxy(this, {
       get: (target, prop) => {
@@ -83,8 +90,11 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
             '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
             `SCHEMA DRIFT DETECTED: ${detail}.`,
             `Prisma error: ${(error as Error).message?.split('\n').pop()?.trim()}`,
-            'Fix it by syncing the database with the schema:',
-            '    cd apps/api && npx prisma db push',
+            'Apply the pending migrations (never `prisma db push`, which bypasses the migration history):',
+            '    cd apps/api && npx prisma migrate status && npx prisma migrate deploy',
+            'A migration recorded as failed or edited after it was applied is settled with',
+            '    npx prisma migrate resolve --applied <name>   (or --rolled-back <name>)',
+            'and then `migrate deploy` again; see apps/api/prisma/MIGRATIONS.md.',
             '(Ensure DATABASE_URL points at the right database first.)',
             '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!',
             '',
@@ -95,7 +105,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     }
   }
 
-  async onModuleDestroy() {
+  /**
+   * Disconnects in `onApplicationShutdown`, the last shutdown phase, after the
+   * HTTP server has stopped and the BullMQ workers have finished their active
+   * jobs (roadmap 7.3). As an `onModuleDestroy` hook it ran first, and every
+   * request still in flight failed against a closed client.
+   */
+  async onApplicationShutdown() {
     await this.$disconnect();
     this.logger.log('Database connection closed');
   }

@@ -1,15 +1,13 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, Query } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/create-product.dto';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
-import { RolesGuard } from '../auth/roles.guard';
+import { ProductListQueryDto } from './dto/product-list-query.dto';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
+import { PagedList } from '../common/pagination';
 
 @Controller('products')
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
@@ -19,10 +17,16 @@ export class ProductsController {
     return this.productsService.create(createProductDto);
   }
 
+  /**
+   * `GET /products?q&limit&offset&categoryId&stock` (limit max 200) — an array
+   * body with the page in `X-Total-Count` / `X-Page-Skip` / `X-Page-Take`
+   * (contract §5, roadmap 6.2).
+   */
   @Get()
+  @PagedList()
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER, Role.CASHIER, Role.VIEWER)
-  findAll() {
-    return this.productsService.findAll();
+  findAll(@Query() query: ProductListQueryDto) {
+    return this.productsService.findAll(query);
   }
 
   @Get(':id')

@@ -3,6 +3,7 @@ import { AnalyticsProcessorService } from './analytics-processor.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalyticsRepository } from '../repositories/analytics.repository';
 import { Job } from 'bullmq';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 describe('AnalyticsProcessorService', () => {
   let service: AnalyticsProcessorService;
@@ -11,6 +12,7 @@ describe('AnalyticsProcessorService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AnalyticsProcessorService,
+        TenantContextService,
         {
           provide: PrismaService,
           useValue: {

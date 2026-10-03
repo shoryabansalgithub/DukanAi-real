@@ -1,12 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
 import { IsString, IsOptional } from 'class-validator';
+import { IsProductionAbsolutePath } from '../validation/env-rules';
 
 @Injectable()
 @ConfigDomain({ owner: 'Storage', feature: 'Configuration', version: '1.0.0', description: 'StorageConfig Domain' })
 export class StorageConfig {
+  /**
+   * Local document root (billing evidence). Production requires an absolute
+   * path (roadmap 7.5); elsewhere a relative value is resolved against the
+   * working directory once, at boot, by `StoragePathBuilder`.
+   */
   @IsString()
   @IsOptional()
+  @IsProductionAbsolutePath()
   @EnvVariable('STORAGE_ROOT')
   readonly storageRoot?: string;
 

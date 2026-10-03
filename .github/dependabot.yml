@@ -1,0 +1,12 @@
+# Roadmap 7.4: every action is pinned to a commit SHA, so updates arrive as
+# pull requests that move the pin (and its version comment) instead of a
+# floating tag silently changing what CI runs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

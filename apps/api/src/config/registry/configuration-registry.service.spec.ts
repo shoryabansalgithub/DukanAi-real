@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { DiscoveryService } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import { ConfigurationRegistryService } from './configuration-registry.service';
-import { ConfigDomain, EnvVariable, RuleDependencies, CONFIG_DOMAIN_KEY, ENV_VARIABLE_KEY, RULE_DEPENDENCIES_KEY } from './registry.decorators';
+import { ConfigDomain, EnvVariable, RuleDependencies, CONFIG_DOMAIN_KEY } from './registry.decorators';
 
 // Mock Classes
 @ConfigDomain({ owner: 'TeamA', feature: 'Redis', version: '1.0', description: 'Redis Config' })
@@ -93,8 +93,7 @@ describe('ConfigurationRegistryService', () => {
   });
 
   describe('Duplicate Ownership Detection', () => {
-    it('should detect duplicate environment variable claims and call process.exit', () => {
-      // Mock process.exit to prevent test runner from crashing
+    it('should detect duplicate environment variable claims and throw (bootstrap reports it)', () => {
       const exitSpy = jest.spyOn(process, 'exit').mockImplementation((code) => {
         throw new Error(`Process exited with code ${code}`);
       });
@@ -118,9 +117,9 @@ describe('ConfigurationRegistryService', () => {
 
       expect(() => {
         service.onModuleInit();
-      }).toThrow('Process exited with code 1');
+      }).toThrow('variable SHARED_VAR is claimed by both');
 
-      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(exitSpy).not.toHaveBeenCalled();
       expect(Logger.prototype.error).toHaveBeenCalledWith(expect.stringContaining('REGISTRY DUPLICATE OWNERSHIP DETECTED'));
     });
   });
@@ -154,9 +153,9 @@ describe('ConfigurationRegistryService', () => {
 
       expect(() => {
         service.onModuleInit();
-      }).toThrow('Process exited with code 1');
+      }).toThrow('depends on unknown domain');
 
-      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(exitSpy).not.toHaveBeenCalled();
       expect(Logger.prototype.error).toHaveBeenCalledWith(expect.stringContaining('unknown domain'));
     });
 

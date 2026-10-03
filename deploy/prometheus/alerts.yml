@@ -1,0 +1,112 @@
+# Alert rules for the DukaanAI API (roadmap 7.6). Load them into Prometheus
+# with `rule_files` (see prometheus.yml next to this file) and route the
+# `severity` label in Alertmanager. Thresholds come from the recorded load
+# baseline (docs/LOAD_TEST_BASELINE.md: checkout p95 < 500 ms, zero 5xx) and
+# the outbox / retention settings; docs/OBSERVABILITY.md has the runbook for
+# each alert. Validate after an edit: `promtool check rules deploy/prometheus/alerts.yml`.
+groups:
+  - name: dukaanai-api
+    rules:
+      # ---- availability -------------------------------------------------
+      - alert: DukaanAiApiDown
+        expr: up{job="dukaanai-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API instance {{ $labels.instance }} is not scrapeable"
+          description: "Prometheus could not scrape /api/metrics for 2 minutes. Check the readiness probe (/api/health/ready) and the container logs."
+
+      # ---- 5xx rate -------------------------------------------------------
+      # More than 1 % of answers are server errors, with enough traffic to
+      # mean something (at least one request every 10 s on average).
+      - alert: DukaanAiHigh5xxRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="dukaanai-api", status=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{job="dukaanai-api"}[5m]))
+          ) > 0.01
+          and
+          sum(rate(http_requests_total{job="dukaanai-api"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 1% of API answers are 5xx"
+          description: "{{ $value | humanizePercentage }} of requests failed server-side over the last 5 minutes. Read the JSON logs for the correlation ids of the 500s and the error tracker for the stack traces."
+
+      # Any unhandled error that reached error tracking: visible even when
+      # traffic is too low for the ratio above.
+      - alert: DukaanAiUnhandledErrors
+        expr: increase(errors_tracked_total{job="dukaanai-api", kind=~"unhandled|prisma"}[15m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unhandled API errors in the last 15 minutes"
+          description: "{{ $value }} server-side errors were handed to error tracking (kind={{ $labels.kind }}). Each carries its correlation id as a tag."
+
+      # ---- ledger -------------------------------------------------------
+      # A ledger posting that threw means a sale, return, receipt or payment
+      # transaction rolled back (or an unbalanced posting reached the ledger).
+      - alert: DukaanAiLedgerPostingFailures
+        expr: increase(ledger_posting_failures_total{job="dukaanai-api"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ledger posting failed (source {{ $labels.source }})"
+          description: "{{ $value }} ledger posting(s) threw in the last 10 minutes. Find the 'Unbalanced ledger posting' or database error in the JSON logs; the business transaction was rolled back, so the client saw an error."
+
+      # ---- checkout latency ---------------------------------------------
+      - alert: DukaanAiCheckoutSlow
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(checkout_duration_seconds_bucket{job="dukaanai-api", outcome="completed"}[10m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Checkout p95 above 500 ms"
+          description: "The 95th percentile of completed checkouts is {{ $value | humanizeDuration }} over 10 minutes (baseline: under 500 ms at 3x peak). Check MySQL lock waits (one shop bills serially by design), slow queries (PRISMA_SLOW_QUERY_THRESHOLD) and Redis latency."
+
+      # ---- outbox -------------------------------------------------------
+      # The relays claim PENDING rows every few seconds; a row older than five
+      # minutes that is still waiting means the relay crons are not running
+      # (CRON_ENABLED, cron lock held by a dead pod) or the worker is stuck.
+      - alert: DukaanAiOutboxLag
+        expr: max(outbox_oldest_pending_age_seconds{job="dukaanai-api"}) > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox rows have been waiting for more than 5 minutes"
+          description: "The oldest PENDING/CLAIMED outbox row is {{ $value | humanizeDuration }} old. Check that the relay crons run (one pod holds cron:outbox-reaper etc.), the system-events / purchase-events / webhook workers are connected (queue_jobs), and Redis."
+
+      - alert: DukaanAiOutboxFailedRows
+        expr: max(outbox_rows{job="dukaanai-api", status="FAILED"}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox rows exhausted their retries"
+          description: "{{ $value }} outbox row(s) are FAILED. They carry their last error; list them with GET /sales/events?status=FAILED and re-queue with POST /sales/events/retry once the cause is fixed."
+
+      # ---- queues -------------------------------------------------------
+      - alert: DukaanAiQueueBacklog
+        expr: max by (queue) (queue_jobs{job="dukaanai-api", state="waiting"}) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BullMQ queue {{ $labels.queue }} has a backlog"
+          description: "{{ $value }} jobs are waiting on {{ $labels.queue }} for 15 minutes: the worker is not keeping up or not running. Check QUEUE_CONCURRENCY and the worker's errors in the logs."
+
+      - alert: DukaanAiQueueFailedJobs
+        expr: max by (queue) (queue_jobs{job="dukaanai-api", state="failed"}) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "BullMQ queue {{ $labels.queue }} holds failed jobs"
+          description: "{{ $value }} job(s) on {{ $labels.queue }} failed every attempt. The job data and the last error are in Redis (the queue's failed set); a job that names an outbox row also marked that row FAILED."

@@ -1,14 +1,32 @@
 import * as path from 'path';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { StorageConfig } from '../config/domains/storage.config';
 import { StorageCustomerDirectory } from './storage-security.constants';
 
+/**
+ * Every filesystem path the storage module touches comes from here
+ * (roadmap 7.5): the root is resolved once (`path.resolve`, so the committed
+ * relative `./data/storage` is pinned to the boot-time working directory and
+ * production, which must set an absolute root, is unaffected), every id is
+ * reduced to a safe segment, and every join is contained with
+ * `path.relative`: a result that leaves its base (`..`, an absolute segment,
+ * or a sibling that merely shares the prefix such as `<root>2`) is refused.
+ * Responses never carry an absolute path: `relativeToShop` turns one into
+ * the shop-relative form.
+ */
 @Injectable()
 export class StoragePathBuilder {
+  private readonly logger = new Logger(StoragePathBuilder.name);
   private readonly storageRoot: string;
 
   constructor(private storageConfig: StorageConfig) {
-    this.storageRoot = this.storageConfig.storageRoot || path.join(process.cwd(), 'data', 'storage');
+    this.storageRoot = path.resolve(this.storageConfig.storageRoot || path.join(process.cwd(), 'data', 'storage'));
+    this.logger.log(`Storage root resolved to ${this.storageRoot}`);
+  }
+
+  /** The resolved, absolute storage root. */
+  get root(): string {
+    return this.storageRoot;
   }
 
   private sanitizeSegment(segment: string): string {
@@ -22,10 +40,15 @@ export class StoragePathBuilder {
     return sanitized;
   }
 
+  /** True when `target` is `base` itself or lives under it. */
+  static isContained(base: string, target: string): boolean {
+    const relative = path.relative(base, target);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  }
+
   private secureJoin(base: string, ...segments: string[]): string {
     const resolved = path.resolve(base, ...segments);
-    // Anti-traversal check: The resolved path MUST still begin with the base path.
-    if (!resolved.startsWith(base)) {
+    if (!StoragePathBuilder.isContained(base, resolved)) {
       throw new BadRequestException('Directory traversal detected');
     }
     return resolved;
@@ -38,6 +61,18 @@ export class StoragePathBuilder {
   getShopRoot(shopId: string): string {
     const safeShopId = this.sanitizeSegment(shopId);
     return this.secureJoin(this.storageRoot, safeShopId);
+  }
+
+  /**
+   * An absolute path under the shop root in its shop-relative, forward-slash
+   * form (`Customers/<id>/Profile`), the only form a response may carry.
+   */
+  relativeToShop(shopId: string, absolutePath: string): string {
+    const shopRoot = this.getShopRoot(shopId);
+    if (!StoragePathBuilder.isContained(shopRoot, absolutePath)) {
+      throw new BadRequestException('Path is outside the shop storage');
+    }
+    return path.relative(shopRoot, absolutePath).split(path.sep).join('/');
   }
 
   /**

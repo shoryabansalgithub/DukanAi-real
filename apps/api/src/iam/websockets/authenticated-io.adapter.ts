@@ -3,12 +3,14 @@ import { INestApplicationContext, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { AppConfig } from '../../config/domains/app.config';
-import { JwtConfig } from '../../config/domains/jwt.config';
+import { JWT_ALGORITHM, JwtConfig } from '../../config/domains/jwt.config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SocketSessionService } from './socket-session.service';
+import { CORRELATION_HEADER, sanitizeIdentifier } from '../../common/correlation/correlation-id';
 
 export class AuthenticatedIoAdapter extends IoAdapter {
-  private readonly logger = new Logger(AuthenticatedIoAdapter.name);
+  // `IoAdapter` declares a protected `logger` since @nestjs/platform-socket.io 11.2: override it with our own tag.
+  protected override readonly logger = new Logger(AuthenticatedIoAdapter.name);
   private readonly jwtService: JwtService;
   private readonly appConfig: AppConfig;
   private readonly jwtConfig: JwtConfig;
@@ -37,8 +39,18 @@ export class AuthenticatedIoAdapter extends IoAdapter {
     };
     const server: Server = super.createIOServer(port, options);
 
-    // This middleware intercepts ALL connections before they reach the Gateway
-    server.use(async (socket: Socket, next) => {
+    // `server.use` only guards the root namespace; gateways such as /inventory
+    // are namespaces of their own, created after this point. Register the
+    // middleware on the root and on every namespace as it appears (P2-17).
+    server.use(this.authenticate);
+    server.on('new_namespace', (namespace) => namespace.use(this.authenticate));
+
+    return server;
+  }
+
+  /** Verifies the token, checks the user, session family and shop, then joins the tenant room. */
+  private readonly authenticate = async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
+    {
       try {
         const token =
           socket.handshake.auth?.token ||
@@ -52,9 +64,10 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         // Verify JWT Signature
         const payload = this.jwtService.verify(token, {
           secret: this.jwtConfig.jwtSecret,
+          algorithms: [JWT_ALGORITHM],
         });
 
-        if (!payload || !payload.sub || !payload.shopId) {
+        if (!payload || !payload.sub || !payload.shopId || typeof payload.sid !== 'string') {
           this.logger.warn(`Connection rejected: Invalid token payload`);
           return next(new Error('Authentication Error: Invalid token'));
         }
@@ -64,15 +77,23 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         const tokenVersion = payload.tokenVersion;
 
         // Perform Zero Trust check against Database
+        const now = new Date();
         const user = await this.prisma.user.findUnique({
           where: { id: userId, isDeleted: false },
-          select: { isActive: true, isLocked: true, tokenVersion: true, role: true },
+          select: {
+            isActive: true,
+            tokenVersion: true,
+            role: true,
+            // The session family behind the token must still be live (logout, revoke, reuse, absolute lifetime).
+            refreshTokens: { where: { familyId: payload.sid, isRevoked: false, expiresAt: { gt: now }, absoluteExpiresAt: { gt: now } }, select: { id: true }, take: 1 },
+          },
         });
 
         if (!user) {
           return next(new Error('Authentication Error: User not found or deleted'));
         }
-        if (!user.isActive || user.isLocked) {
+        // A brute-force lock blocks new logins only; it does not drop live sockets (P1-4).
+        if (!user.isActive || user.refreshTokens.length === 0) {
           return next(new Error('Authentication Error: Account suspended or locked'));
         }
         if (user.tokenVersion !== tokenVersion) {
@@ -96,21 +117,19 @@ export class AuthenticatedIoAdapter extends IoAdapter {
         socket.data.userId = userId;
         socket.data.shopId = shopId;
         socket.data.role = user.role;
-        socket.data.correlationId = socket.handshake.headers['x-correlation-id'] || `ws-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        socket.data.correlationId = sanitizeIdentifier(socket.handshake.headers[CORRELATION_HEADER]);
         
         // Register connection for session revocation
         this.sessionService.registerSocket(userId, socket);
 
         // Force deterministic room joins based solely on validated server context
-        socket.join(`tenant:${shopId}`);
+        void socket.join(`tenant:${shopId}`);
         
         next();
       } catch (error: any) {
         this.logger.warn(`Connection rejected: ${error.message}`);
         next(new Error('Authentication Error: Unauthorized'));
       }
-    });
-
-    return server;
-  }
+    }
+  };
 }

@@ -6,17 +6,12 @@ import {
   Post,
   Request,
   UploadedFiles,
-  UseGuards,
   UseInterceptors,
   BadRequestException,
 } from '@nestjs/common';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { Role } from '@prisma/client';
-import type { Request as ExpressRequest } from 'express';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
-import { SafeUserDto } from '../users/dto/safe-user.dto';
 import {
   MAX_CLOUD_UPLOAD_BYTES,
   MAX_BILLING_DOCUMENT_BYTES,
@@ -43,15 +38,15 @@ import {
 
 import { StorageService } from './storage.service';
 
-interface AuthenticatedRequest extends ExpressRequest {
-  user: SafeUserDto;
-}
-
+// Roadmap 5.1: hard limits on every part of the request, not only the file size.
 const billingUploadInterceptor = AnyFilesInterceptor({
   fileFilter: secureFileFilter,
   limits: {
     fileSize: MAX_BILLING_DOCUMENT_BYTES,
     files: MAX_FILES_PER_REQUEST,
+    fields: 8,
+    parts: MAX_FILES_PER_REQUEST + 8,
+    fieldSize: 16 * 1024,
   },
 });
 
@@ -60,6 +55,9 @@ const cloudUploadInterceptor = AnyFilesInterceptor({
   limits: {
     fileSize: MAX_CLOUD_UPLOAD_BYTES,
     files: 1,
+    fields: 8,
+    parts: 9,
+    fieldSize: 16 * 1024,
   },
 });
 
@@ -92,7 +90,6 @@ function parseJsonObject(rawJson: string | undefined): Record<string, unknown> {
  * Rate limiting recommendation: wire ThrottlerModule globally and apply a
  * stricter @Throttle policy here, especially for upload, backup, and delete.
  */
-@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('storage')
 export class StorageController {
   constructor(private readonly storageService: StorageService) {}
@@ -101,7 +98,6 @@ export class StorageController {
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER)
   async createCustomerFolder(
     @Body() body: CreateCustomerFolderDto,
-    @Request() req: any,
   ) {
     const folderPath = await this.storageService.createCustomerFolder(
       body.customerId,
@@ -122,7 +118,6 @@ export class StorageController {
     @Param('invoiceId') invoiceId: string,
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @Body() body: StoreInvoiceBodyDto,
-    @Request() req: any,
   ) {
     const pdfFile = assertPdfFile(findFile(files, 'pdf'));
     const thumbnailFile = assertOptionalImageFile(findFile(files, 'thumbnail'));
@@ -147,7 +142,6 @@ export class StorageController {
     @Param('billId') billId: string,
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @Body() body: StoreCapturedBillBodyDto,
-    @Request() req: any,
   ) {
     const imageFile = assertImageFile(findFile(files, 'image'));
     const pdfFile = assertOptionalPdfFile(findFile(files, 'pdf'));
@@ -170,7 +164,6 @@ export class StorageController {
   async storePayment(
     @Param('customerId') customerId: string,
     @Body() body: StorePaymentDto,
-    @Request() req: any,
   ) {
     await this.storageService.storePayment(customerId, body.paymentData);
     return { success: true };
@@ -182,7 +175,6 @@ export class StorageController {
   async storeStatement(
     @Param('customerId') customerId: string,
     @UploadedFiles() files: Express.Multer.File[] | undefined,
-    @Request() req: any,
   ) {
     const pdfFile = assertPdfFile(findFile(files, 'pdf'));
     await this.storageService.storeStatement(customerId, pdfFile);
@@ -194,7 +186,6 @@ export class StorageController {
   async deleteFile(
     @Param('customerId') customerId: string,
     @Body() body: DeleteStorageFileDto,
-    @Request() req: any,
   ) {
     return this.storageService.softDeleteFile(customerId, body);
   }
@@ -203,7 +194,6 @@ export class StorageController {
   @Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN)
   async triggerBackup(
     @Body() body: BackupStorageDto,
-    @Request() req: any,
   ) {
     return this.storageService.createBackup(body.type);
   }
@@ -214,7 +204,6 @@ export class StorageController {
   async uploadToCloud(
     @UploadedFiles() files: Express.Multer.File[] | undefined,
     @Body() body: CloudUploadDto,
-    @Request() req: any,
   ) {
     const file = validateUploadedFile(files?.[0], cloudUploadPolicy);
 

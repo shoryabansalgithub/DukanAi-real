@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { InspectGoodsDto } from '../dto/goods-receipt.dto';
 
 @Injectable()
 export class GrnInspectionService {
@@ -7,7 +8,7 @@ export class GrnInspectionService {
     tx: Prisma.TransactionClient, 
     shopId: string, 
     id: string, 
-    payload: any, 
+    payload: InspectGoodsDto,
     actorId: string
   ) {
     const { status, checklist, notes, images } = payload;
@@ -23,7 +24,7 @@ export class GrnInspectionService {
         shopId,
         inspectorId: actorId,
         status,
-        checklist: checklist || {},
+        checklist: (checklist ?? {}) as Prisma.InputJsonObject,
         notes,
         images: images || []
       }

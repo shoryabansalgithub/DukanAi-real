@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { Role, ShopStatus, Prisma } from '@prisma/client';
-import { AuthConfig } from '../config/domains/auth.config';
+import { AuthConfig, authBypassPermitted } from '../config/domains/auth.config';
 import { PrismaService } from '../prisma/prisma.service';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { UserMapper, safeUserSelect } from '../users/user.mapper';
@@ -40,8 +40,11 @@ export class AuthBypassService implements OnApplicationBootstrap {
     private readonly prisma: PrismaService,
   ) {}
 
+  /** Decided once at construction: the environment cannot change under a running process. */
+  private readonly permittedHere = authBypassPermitted(process.env.NODE_ENV);
+
   get isEnabled(): boolean {
-    return this.authConfig.authDisabled === true;
+    return this.authConfig.authDisabled === true && this.permittedHere;
   }
 
   onApplicationBootstrap(): void {

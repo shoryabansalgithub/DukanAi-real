@@ -6,9 +6,11 @@ export class CreateUserDto {
   @IsEmail()
   email: string;
 
-  @ApiProperty({ minLength: 8 })
+  /** bcrypt hashes the first 72 bytes only, so longer passwords are refused rather than silently truncated. */
+  @ApiProperty({ minLength: 8, maxLength: 72 })
   @IsString()
   @MinLength(8)
+  @MaxLength(72)
   password: string;
 
   @ApiProperty()

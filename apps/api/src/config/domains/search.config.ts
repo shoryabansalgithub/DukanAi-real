@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
+import { ConfigDomain } from '../registry/registry.decorators';
 import { IsOptional, IsString } from 'class-validator';
 
 @Injectable()

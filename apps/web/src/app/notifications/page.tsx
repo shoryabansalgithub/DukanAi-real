@@ -38,11 +38,21 @@ export default function NotificationsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false; // stale-response guard (roadmap 6.5): nothing lands after unmount
     notificationsApi
       .list()
-      .then(setNotifications)
-      .catch((err) => setLoadError(describeApiError(err, 'Loading notifications (GET /notifications)')))
-      .finally(() => setLoading(false));
+      .then((list) => {
+        if (!cancelled) setNotifications(list);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(describeApiError(err, 'Loading notifications (GET /notifications)'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleMarkAllRead = async () => {

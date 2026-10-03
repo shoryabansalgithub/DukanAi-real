@@ -1,39 +1,66 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
 import { 
   Users, Plus, Search, Filter, MoreVertical, 
-  UserCircle, ChevronDown, CheckCircle2, Clock, Wallet, Calculator,
-  TrendingDown, FileText, Activity, AlertCircle
+  UserCircle, ChevronDown, CheckCircle2, ShieldCheck, ShieldOff, Mail, AlertCircle, UserX
 } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { SlidingPanel } from '@/components/ui/SlidingPanel';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
-import { employeesApi } from '@/lib/api-client';
+import { employeesApi, INVITABLE_ROLES, ROLE_LABELS, type EmployeeView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
+import { AUTH_DISABLED } from '@/lib/auth-bypass';
 
 const ROLE_COLORS: Record<string, string> = {
-  'Cashier': 'bg-blue-100 text-blue-600',
-  'Manager': 'bg-purple-100 text-purple-600',
+  Owner: 'bg-yellow-100 text-yellow-700',
+  Admin: 'bg-indigo-100 text-indigo-600',
+  Manager: 'bg-purple-100 text-purple-600',
+  Cashier: 'bg-blue-100 text-blue-600',
   'Stock Clerk': 'bg-orange-100 text-orange-600',
-  'Delivery Boy': 'bg-green-100 text-green-600',
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  'On Shift': 'bg-green-50 text-green-600 border-green-200',
-  'Off Shift': 'bg-gray-50 text-gray-600 border-gray-200',
-  'On Leave': 'bg-red-50 text-red-600 border-red-200',
+  Active: 'bg-green-50 text-green-600 border-green-200',
+  Suspended: 'bg-red-50 text-red-600 border-red-200',
 };
 
+/** `PATCH /users/:id/suspend` and `DELETE /users/:id` are OWNER/ADMIN; invitations are MANAGER and above. */
+const USER_ADMIN_ROLES = new Set(['OWNER', 'ADMIN', 'SUPER_ADMIN']);
+const INVITE_ROLES = new Set(['MANAGER', 'OWNER', 'ADMIN', 'SUPER_ADMIN']);
+
+function canAdministerUsers(role: string | null | undefined): boolean {
+  if (AUTH_DISABLED) return true; // the bypass system user is an OWNER
+  return !!role && USER_ADMIN_ROLES.has(role.toUpperCase());
+}
+
+function canInvite(role: string | null | undefined): boolean {
+  if (AUTH_DISABLED) return true;
+  return !!role && INVITE_ROLES.has(role.toUpperCase());
+}
+
+/**
+ * Staff page (roadmap 6.1). Every row is a real shop user from
+ * `GET /users/employees`; suspend / reinstate and delete go through
+ * `/users`, and "Invite" issues an invitation whose code reaches the invitee
+ * by email (the invitee joins on the register page). Payroll, attendance and
+ * shifts are not modelled by the API and are no longer shown.
+ */
 export default function EmployeesPage() {
   const { toast } = useToast();
-  const [employees, setEmployees] = useState<any[]>([]);
+  const { data: session } = useSession();
+  const currentUserId = session?.user?.id ?? null;
+  const allowAdmin = canAdministerUsers(session?.user?.role);
+  const allowInvite = canInvite(session?.user?.role);
+
+  const [employees, setEmployees] = useState<EmployeeView[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    employeesApi.list()
+  const load = useCallback(() => {
+    return employeesApi.list()
       .then(setEmployees)
       .catch((err) => {
         setEmployees([]);
@@ -41,14 +68,18 @@ export default function EmployeesPage() {
       })
       .finally(() => setLoading(false));
   }, [toast]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modals & Panels
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
-  const [selectedEmployee, setSelectedEmployee] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState('Profile');
+  const [pendingDelete, setPendingDelete] = useState<EmployeeView | null>(null);
+  const [selectedEmployee, setSelectedEmployee] = useState<EmployeeView | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   // Dropdowns
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -70,26 +101,21 @@ export default function EmployeesPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Form State - Add Employee
-  const [newName, setNewName] = useState('');
-  const [newRole, setNewRole] = useState('Cashier');
-  const [newPhone, setNewPhone] = useState('');
-  const [newShift, setNewShift] = useState('Morning');
-  const [newSalary, setNewSalary] = useState('');
+  // Form State - Invite
+  const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState(INVITABLE_ROLES[0].key);
+  const [inviting, setInviting] = useState(false);
 
-  // Form State - Payment
-  const [paymentType, setPaymentType] = useState('Salary');
-  const [paymentAmount, setPaymentAmount] = useState('');
-
-  // Derived Stats
+  // Derived Stats (all from the API rows; nothing invented)
   const totalEmployees = employees.length;
-  const onShiftCount = employees.filter(e => e.status === 'On Shift').length;
-  const totalPayroll = employees.reduce((acc, curr) => acc + curr.salary, 0);
-  const totalAdvances = employees.reduce((acc, curr) => acc + curr.advance, 0);
+  const activeCount = employees.filter(e => e.isActive).length;
+  const suspendedCount = employees.filter(e => !e.isActive).length;
+  const managementCount = employees.filter(e => ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'MANAGER'].includes(e.roleKey)).length;
 
   // Filter Logic
   let processedEmployees = employees.filter(e => 
     e.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    e.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
     e.phone.includes(searchTerm) ||
     e.id.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -102,53 +128,56 @@ export default function EmployeesPage() {
     processedEmployees = processedEmployees.filter(e => e.role === roleFilter);
   }
 
-  const handleSaveEmployee = (e: React.FormEvent) => {
+  const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName.trim() || !newPhone) return;
-
-    const newEmp = {
-      id: `EMP-0${employees.length + 1}`,
-      name: newName,
-      role: newRole,
-      phone: newPhone,
-      shift: newShift,
-      salary: Number(newSalary) || 0,
-      advance: 0,
-      status: 'Off Shift'
-    };
-    
-    setEmployees([newEmp, ...employees]);
-    toast(`${newName} added successfully`, 'success');
-    setIsAddModalOpen(false);
-    
-    setNewName(''); setNewPhone(''); setNewSalary('');
-  };
-
-  const handleRecordPayment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!paymentAmount || Number(paymentAmount) <= 0) return;
-
-    if (paymentType === 'Advance') {
-      setEmployees(employees.map(emp => {
-        if (emp.id === selectedEmployee.id) return { ...emp, advance: emp.advance + Number(paymentAmount) };
-        return emp;
-      }));
-      toast(`₹${paymentAmount} advance recorded for ${selectedEmployee.name}`, 'success');
-    } else {
-      // If paying salary, we typically deduct advance
-      setEmployees(employees.map(emp => {
-        if (emp.id === selectedEmployee.id) return { ...emp, advance: 0 }; // simplified
-        return emp;
-      }));
-      toast(`Salary paid to ${selectedEmployee.name}`, 'success');
+    const email = inviteEmail.trim();
+    if (!email) return;
+    setInviting(true);
+    try {
+      const result = await employeesApi.invite({ email, role: inviteRole });
+      toast(`Invitation emailed to ${result.email} (${ROLE_LABELS[result.role] ?? result.role}); it expires ${new Date(result.expiresAt).toLocaleDateString('en-IN')}.`, 'success');
+      setIsInviteModalOpen(false);
+      setInviteEmail('');
+      setInviteRole(INVITABLE_ROLES[0].key);
+    } catch (err) {
+      toast(describeApiError(err, 'Inviting a staff member (POST /invitations/generate)'), 'error');
+    } finally {
+      setInviting(false);
     }
-
-    setIsPaymentModalOpen(false);
-    setPaymentAmount('');
-    setIsSidePanelOpen(false);
   };
 
-  const handleAction = (action: string, employee: any, e: React.MouseEvent) => {
+  const handleSetActive = async (employee: EmployeeView, isActive: boolean) => {
+    setBusyId(employee.id);
+    try {
+      const updated = await employeesApi.setActive(employee.id, isActive);
+      setEmployees((rows) => rows.map((row) => (row.id === updated.id ? updated : row)));
+      if (selectedEmployee?.id === updated.id) setSelectedEmployee(updated);
+      toast(isActive ? `${updated.name} reinstated` : `${updated.name} suspended; their sessions were ended`, 'success');
+    } catch (err) {
+      toast(describeApiError(err, `${isActive ? 'Reinstating' : 'Suspending'} ${employee.name} (PATCH /users/:id/suspend)`), 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!pendingDelete) return;
+    const target = pendingDelete;
+    setBusyId(target.id);
+    try {
+      await employeesApi.remove(target.id);
+      setEmployees((rows) => rows.filter((row) => row.id !== target.id));
+      if (selectedEmployee?.id === target.id) { setSelectedEmployee(null); setIsSidePanelOpen(false); }
+      toast(`${target.name} removed from the shop`, 'success');
+      setPendingDelete(null);
+    } catch (err) {
+      toast(describeApiError(err, `Removing ${target.name} (DELETE /users/:id)`), 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleAction = (action: string, employee: EmployeeView, e: React.MouseEvent) => {
     e.stopPropagation();
     setOpenActionMenuId(null);
     setSelectedEmployee(employee);
@@ -157,24 +186,21 @@ export default function EmployeesPage() {
       case 'View Profile':
         setIsSidePanelOpen(true);
         break;
-      case 'Process Payment':
-        setIsPaymentModalOpen(true);
+      case 'Suspend':
+        void handleSetActive(employee, false);
         break;
-      case 'Toggle Shift':
-        setEmployees(employees.map(emp => {
-          if (emp.id === employee.id) {
-            return { ...emp, status: emp.status === 'On Shift' ? 'Off Shift' : 'On Shift' };
-          }
-          return emp;
-        }));
-        toast(`Shift updated for ${employee.name}`, 'success');
+      case 'Reinstate':
+        void handleSetActive(employee, true);
         break;
       case 'Delete':
-        setEmployees(employees.filter(ex => ex.id !== employee.id));
-        toast(`${employee.name} removed successfully`, 'success');
+        setPendingDelete(employee);
         break;
     }
   };
+
+  /** The API refuses acting on yourself; the menu says so instead of offering it. */
+  const isSelf = (employee: EmployeeView) => currentUserId !== null && employee.id === currentUserId;
+
   if (loading) return <div className="p-12 text-center text-gray-500">Loading employees...</div>;
 
   return (
@@ -183,15 +209,17 @@ export default function EmployeesPage() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Staff & Employees</h1>
-          <p className="text-sm text-gray-500 mt-1">Manage shifts, payroll, advances, and employee profiles.</p>
+          <p className="text-sm text-gray-500 mt-1">Invite staff, manage their access and see who can sign in.</p>
         </div>
-        <button 
-          onClick={() => setIsAddModalOpen(true)}
-          className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
-        >
-          <Plus size={18} />
-          Add Employee
-        </button>
+        {allowInvite && (
+          <button 
+            onClick={() => setIsInviteModalOpen(true)}
+            className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
+          >
+            <Plus size={18} />
+            Invite Employee
+          </button>
+        )}
       </div>
 
       {/* Stats Row */}
@@ -208,31 +236,31 @@ export default function EmployeesPage() {
         
         <Card className="p-5 flex items-center gap-4 hoverable bg-green-50/50 border-green-100">
           <div className="w-12 h-12 rounded-xl bg-green-500/10 flex items-center justify-center text-green-600">
-            <Activity size={24} />
+            <CheckCircle2 size={24} />
           </div>
           <div>
-            <p className="text-xs text-green-600 font-bold">On Shift Currently</p>
-            <h3 className="text-xl font-black text-green-700 tracking-tight">{onShiftCount}</h3>
+            <p className="text-xs text-green-600 font-bold">Active Accounts</p>
+            <h3 className="text-xl font-black text-green-700 tracking-tight">{activeCount}</h3>
           </div>
         </Card>
 
         <Card className="p-5 flex items-center gap-4 hoverable">
           <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-600">
-            <Calculator size={24} />
+            <ShieldCheck size={24} />
           </div>
           <div>
-            <p className="text-xs text-gray-500 font-medium">Monthly Payroll</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹{totalPayroll.toLocaleString('en-IN')}</h3>
+            <p className="text-xs text-gray-500 font-medium">Managers & Admins</p>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{managementCount}</h3>
           </div>
         </Card>
 
         <Card className="p-5 flex items-center gap-4 hoverable border-l-4 border-l-orange-500">
           <div className="w-12 h-12 rounded-xl bg-orange-500/10 flex items-center justify-center text-orange-600">
-            <TrendingDown size={24} />
+            <ShieldOff size={24} />
           </div>
           <div>
-            <p className="text-xs text-orange-500 font-bold">Pending Advances</p>
-            <h3 className="text-xl font-black text-gray-800 tracking-tight">₹{totalAdvances.toLocaleString('en-IN')}</h3>
+            <p className="text-xs text-orange-500 font-bold">Suspended</p>
+            <h3 className="text-xl font-black text-gray-800 tracking-tight">{suspendedCount}</h3>
           </div>
         </Card>
       </div>
@@ -245,7 +273,7 @@ export default function EmployeesPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
             <input 
               type="text" 
-              placeholder="Search by name, ID or phone..." 
+              placeholder="Search by name, email or phone..." 
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-white border border-gray-200 rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B5CF6]/20 focus:border-[#8B5CF6] transition-all"
@@ -272,7 +300,7 @@ export default function EmployeesPage() {
                     <div>
                       <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Status</h4>
                       <div className="flex flex-wrap gap-2">
-                        {['All', 'On Shift', 'Off Shift', 'On Leave'].map(s => (
+                        {['All', 'Active', 'Suspended'].map(s => (
                           <button 
                             key={s} 
                             onClick={() => setStatusFilter(s)}
@@ -290,7 +318,7 @@ export default function EmployeesPage() {
                         onChange={(e) => setRoleFilter(e.target.value)}
                         className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2 text-sm text-gray-700 outline-none focus:border-[#8B5CF6]"
                       >
-                        {['All', 'Cashier', 'Manager', 'Stock Clerk', 'Delivery Boy'].map(c => <option key={c} value={c}>{c}</option>)}
+                        {['All', 'Owner', 'Admin', 'Manager', 'Cashier', 'Stock Clerk'].map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                     </div>
                   </div>
@@ -307,8 +335,7 @@ export default function EmployeesPage() {
               <tr>
                 <th className="px-6 py-4">Employee</th>
                 <th className="px-6 py-4">Contact</th>
-                <th className="px-6 py-4">Shift & Salary</th>
-                <th className="px-6 py-4">Pending Advance</th>
+                <th className="px-6 py-4">Joined</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4 text-right">Actions</th>
               </tr>
@@ -317,10 +344,12 @@ export default function EmployeesPage() {
               {processedEmployees.map((emp) => {
                 const roleColor = ROLE_COLORS[emp.role] || 'bg-gray-100 text-gray-600';
                 const statusStyle = STATUS_COLORS[emp.status];
+                const self = isSelf(emp);
                 
                 return (
                   <tr 
                     key={emp.id} 
+                    data-testid={`employee-row-${emp.id}`}
                     onClick={() => { setSelectedEmployee(emp); setIsSidePanelOpen(true); }}
                     className="hover:bg-gray-50/50 transition-colors cursor-pointer group"
                   >
@@ -330,34 +359,27 @@ export default function EmployeesPage() {
                           <UserCircle size={24} />
                         </div>
                         <div>
-                          <span className="font-bold text-gray-800 block">{emp.name}</span>
+                          <span className="font-bold text-gray-800 block">{emp.name}{self && <span className="ml-2 text-[10px] font-bold text-gray-400 uppercase">You</span>}</span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold inline-block mt-1 ${roleColor}`}>{emp.role}</span>
                         </div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="font-medium text-gray-800 block">{emp.phone}</span>
-                      <span className="text-xs text-gray-400 font-mono mt-0.5 block">{emp.id}</span>
+                      <span className="font-medium text-gray-800 block">{emp.email}</span>
+                      <span className="text-xs text-gray-400 mt-0.5 block">{emp.phone || 'No phone on file'}</span>
                     </td>
-                    <td className="px-6 py-4">
-                      <span className="font-black text-gray-800 text-sm block">₹{emp.salary.toLocaleString('en-IN')}/mo</span>
-                      <span className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
-                        <Clock size={12} /> {emp.shift}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className={`font-bold ${emp.advance > 0 ? 'text-orange-500' : 'text-gray-400'}`}>
-                        {emp.advance > 0 ? `₹${emp.advance.toLocaleString('en-IN')}` : 'Nil'}
-                      </span>
+                    <td className="px-6 py-4 text-gray-500 font-medium">
+                      {emp.createdAt ? new Date(emp.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '-'}
                     </td>
                     <td className="px-6 py-4">
                       <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold border ${statusStyle}`}>
-                        {emp.status === 'On Shift' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
-                        {emp.status}
+                        {emp.isActive ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                        {emp.status}{emp.isLocked && emp.isActive ? ' · Locked' : ''}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right relative">
                       <button 
+                        aria-label={`Actions for ${emp.name}`}
                         onClick={(e) => { e.stopPropagation(); setOpenActionMenuId(openActionMenuId === emp.id ? null : emp.id); }}
                         className="p-2 text-gray-400 hover:text-[#8B5CF6] transition-colors rounded-lg hover:bg-[#8B5CF6]/10"
                       >
@@ -370,34 +392,37 @@ export default function EmployeesPage() {
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: 1, scale: 1 }}
                             exit={{ opacity: 0, scale: 0.95 }}
-                            className="absolute right-8 top-10 w-40 bg-white border border-gray-100 shadow-xl rounded-xl z-50 overflow-hidden text-left"
+                            className="absolute right-8 top-10 w-44 bg-white border border-gray-100 shadow-xl rounded-xl z-50 overflow-hidden text-left"
                           >
-                            <button 
-                              onClick={(e) => handleAction('Toggle Shift', emp, e)}
-                              className="w-full text-left px-4 py-2.5 text-xs text-[#8B5CF6] hover:bg-purple-50 font-bold transition-colors"
-                            >
-                              {emp.status === 'On Shift' ? 'End Shift' : 'Start Shift'}
-                            </button>
-                            <div className="h-px bg-gray-100 w-full" />
-                            <button 
-                              onClick={(e) => handleAction('Process Payment', emp, e)}
-                              className="w-full text-left px-4 py-2.5 text-xs text-gray-700 hover:bg-gray-50 font-medium transition-colors"
-                            >
-                              Pay Salary/Advance
-                            </button>
                             <button 
                               onClick={(e) => handleAction('View Profile', emp, e)}
                               className="w-full text-left px-4 py-2.5 text-xs text-gray-700 hover:bg-gray-50 font-medium transition-colors"
                             >
                               View Profile
                             </button>
-                            <div className="h-px bg-gray-100 w-full" />
-                            <button 
-                              onClick={(e) => handleAction('Delete', emp, e)}
-                              className="w-full text-left px-4 py-2.5 text-xs text-red-600 hover:bg-red-50 font-bold transition-colors"
-                            >
-                              Delete
-                            </button>
+                            {allowAdmin && !self && (
+                              <>
+                                <div className="h-px bg-gray-100 w-full" />
+                                <button 
+                                  disabled={busyId === emp.id}
+                                  onClick={(e) => handleAction(emp.isActive ? 'Suspend' : 'Reinstate', emp, e)}
+                                  className="w-full text-left px-4 py-2.5 text-xs text-[#8B5CF6] hover:bg-purple-50 font-bold transition-colors disabled:opacity-50"
+                                >
+                                  {emp.isActive ? 'Suspend Access' : 'Reinstate Access'}
+                                </button>
+                                <div className="h-px bg-gray-100 w-full" />
+                                <button 
+                                  disabled={busyId === emp.id}
+                                  onClick={(e) => handleAction('Delete', emp, e)}
+                                  className="w-full text-left px-4 py-2.5 text-xs text-red-600 hover:bg-red-50 font-bold transition-colors disabled:opacity-50"
+                                >
+                                  Remove from Shop
+                                </button>
+                              </>
+                            )}
+                            {allowAdmin && self && (
+                              <p className="px-4 py-2.5 text-[11px] text-gray-400">You cannot suspend or remove your own account.</p>
+                            )}
                           </motion.div>
                         )}
                       </AnimatePresence>
@@ -407,7 +432,7 @@ export default function EmployeesPage() {
               })}
               {processedEmployees.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
+                  <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
                     <Users className="mx-auto h-12 w-12 text-gray-300 mb-3" />
                     <p className="font-medium text-gray-800">No employees found</p>
                     <p className="text-xs mt-1">Try adjusting your filters or search.</p>
@@ -419,101 +444,47 @@ export default function EmployeesPage() {
         </div>
       </Card>
 
-      {/* Add Employee Modal */}
-      <Modal isOpen={isAddModalOpen} onClose={() => setIsAddModalOpen(false)} title="Add New Employee" size="md">
-        <form onSubmit={handleSaveEmployee} className="space-y-4">
+      {/* Invite Employee Modal */}
+      <Modal isOpen={isInviteModalOpen} onClose={() => setIsInviteModalOpen(false)} title="Invite a Staff Member" size="md">
+        <form onSubmit={handleInvite} className="space-y-4">
           <div>
-            <label className="text-sm font-medium">Full Name *</label>
-            <input value={newName} onChange={e=>setNewName(e.target.value)} required className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. Raju Bhai" />
+            <label className="text-sm font-medium">Email Address *</label>
+            <input value={inviteEmail} onChange={e=>setInviteEmail(e.target.value)} type="email" required autoComplete="off" className="w-full mt-1 border rounded-lg p-2" placeholder="e.g. raju@example.com" />
           </div>
           
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-sm font-medium">Role</label>
-              <select value={newRole} onChange={e=>setNewRole(e.target.value)} className="w-full mt-1 border rounded-lg p-2 bg-white">
-                <option>Cashier</option>
-                <option>Manager</option>
-                <option>Stock Clerk</option>
-                <option>Delivery Boy</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Phone Number *</label>
-              <input value={newPhone} onChange={e=>setNewPhone(e.target.value)} required pattern="[0-9]{10}" maxLength={10} className="w-full mt-1 border rounded-lg p-2" placeholder="10-digit number" />
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="text-sm font-medium">Shift Timing</label>
-              <select value={newShift} onChange={e=>setNewShift(e.target.value)} className="w-full mt-1 border rounded-lg p-2 bg-white">
-                <option>Morning</option>
-                <option>Evening</option>
-                <option>Full Day</option>
-                <option>Night</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Monthly Salary (₹)</label>
-              <input value={newSalary} onChange={e=>setNewSalary(e.target.value)} type="number" className="w-full mt-1 border rounded-lg p-2" placeholder="0" />
-            </div>
+          <div>
+            <label className="text-sm font-medium">Role</label>
+            <select value={inviteRole} onChange={e=>setInviteRole(e.target.value)} className="w-full mt-1 border rounded-lg p-2 bg-white">
+              {INVITABLE_ROLES.map((role) => <option key={role.key} value={role.key}>{role.label}</option>)}
+            </select>
+            <p className="text-xs text-gray-500 mt-2">You can only invite roles below your own. The invitee receives an email with a code and joins with their own name and password.</p>
           </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsAddModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">Save Employee</button>
+            <button type="button" onClick={() => setIsInviteModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button type="submit" disabled={inviting} className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30 disabled:opacity-60 flex items-center gap-2">
+              <Mail size={16} /> {inviting ? 'Sending…' : 'Send Invitation'}
+            </button>
           </div>
         </form>
       </Modal>
 
-      {/* Record Payment Modal */}
-      <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title={`Process Payment: ${selectedEmployee?.name}`} size="sm">
-        <form onSubmit={handleRecordPayment} className="space-y-4">
-          <div className="bg-purple-50 p-3 rounded-xl border border-purple-100 flex items-center justify-between mb-4">
-            <span className="text-xs font-bold uppercase text-purple-600">Base Salary</span>
-            <span className="font-black text-lg text-purple-700">₹{selectedEmployee?.salary.toLocaleString('en-IN')}</span>
-          </div>
-
-          {selectedEmployee?.advance > 0 && (
-            <div className="bg-orange-50 p-3 rounded-xl border border-orange-100 flex items-center justify-between mb-4">
-              <span className="text-xs font-bold uppercase text-orange-600">Pending Advance</span>
-              <span className="font-black text-orange-700">₹{selectedEmployee?.advance.toLocaleString('en-IN')}</span>
+      {/* Remove confirmation */}
+      <Modal isOpen={pendingDelete !== null} onClose={() => setPendingDelete(null)} title="Remove from Shop" size="sm">
+        {pendingDelete && (
+          <div className="space-y-4">
+            <div className="bg-red-50 p-3 rounded-xl border border-red-100 flex items-start gap-3">
+              <UserX className="text-red-500 mt-0.5 shrink-0" size={18} />
+              <p className="text-sm text-red-700"><span className="font-bold">{pendingDelete.name}</span> will lose access immediately and their open sessions will be ended. This cannot be undone from here.</p>
             </div>
-          )}
-
-          <div>
-            <label className="text-sm font-medium">Payment Type</label>
-            <div className="flex gap-2 mt-1">
-              {['Salary', 'Advance'].map(type => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setPaymentType(type)}
-                  className={`flex-1 py-2 text-xs font-bold rounded-lg border transition-colors ${paymentType === type ? 'bg-[#8B5CF6] border-[#8B5CF6] text-white' : 'bg-white text-gray-500 hover:bg-gray-50'}`}
-                >
-                  {type}
-                </button>
-              ))}
+            <div className="flex justify-end gap-2 pt-4 border-t">
+              <button type="button" onClick={() => setPendingDelete(null)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
+              <button type="button" disabled={busyId === pendingDelete.id} onClick={() => void handleDelete()} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-bold shadow-lg shadow-red-500/30 disabled:opacity-60">
+                {busyId === pendingDelete.id ? 'Removing…' : 'Remove'}
+              </button>
             </div>
           </div>
-
-          <div>
-            <label className="text-sm font-medium">Amount (₹) *</label>
-            <input 
-              value={paymentAmount} 
-              onChange={e=>setPaymentAmount(e.target.value)} 
-              type="number" 
-              required 
-              className="w-full mt-1 border rounded-lg p-3 text-lg font-bold" 
-              placeholder="0" 
-            />
-          </div>
-          
-          <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsPaymentModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg text-sm font-bold shadow-lg shadow-green-500/30">Confirm Payment</button>
-          </div>
-        </form>
+        )}
       </Modal>
 
       {/* Side Panel for Profile */}
@@ -526,7 +497,7 @@ export default function EmployeesPage() {
               </div>
               <div>
                 <h2 className="text-xl font-bold text-gray-800">{selectedEmployee.name}</h2>
-                <p className="text-sm text-gray-500 mt-0.5">{selectedEmployee.phone}</p>
+                <p className="text-sm text-gray-500 mt-0.5">{selectedEmployee.email}</p>
                 <div className="mt-2 flex gap-2">
                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${ROLE_COLORS[selectedEmployee.role] || 'bg-gray-100 text-gray-600'}`}>
                      {selectedEmployee.role}
@@ -538,88 +509,36 @@ export default function EmployeesPage() {
               </div>
             </div>
 
-            <div className="flex gap-4 border-b border-gray-100 mb-6">
-              {['Profile', 'Attendance', 'Payroll'].map(tab => (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                  <p className="text-xs text-gray-500 mb-1">Phone</p>
+                  <p className="font-bold text-gray-800">{selectedEmployee.phone || '—'}</p>
+                </div>
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                  <p className="text-xs text-gray-500 mb-1">Joined</p>
+                  <p className="font-bold text-gray-800">{selectedEmployee.createdAt ? new Date(selectedEmployee.createdAt).toLocaleDateString('en-IN') : '—'}</p>
+                </div>
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                  <p className="text-xs text-gray-500 mb-1">Sign-in</p>
+                  <p className="font-bold text-gray-800">{selectedEmployee.isActive ? (selectedEmployee.isLocked ? 'Locked after failed attempts' : 'Allowed') : 'Suspended'}</p>
+                </div>
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
+                  <p className="text-xs text-gray-500 mb-1">User ID</p>
+                  <p className="font-bold text-gray-800 font-mono text-xs break-all">{selectedEmployee.id}</p>
+                </div>
+              </div>
+              
+              {allowAdmin && !isSelf(selectedEmployee) && (
                 <button 
-                  key={tab} 
-                  onClick={() => setActiveTab(tab)}
-                  className={`pb-2 text-sm font-bold border-b-2 transition-colors ${activeTab === tab ? 'border-[#8B5CF6] text-[#8B5CF6]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
+                  disabled={busyId === selectedEmployee.id}
+                  onClick={() => void handleSetActive(selectedEmployee, !selectedEmployee.isActive)}
+                  className="w-full mt-4 bg-purple-50 text-[#8B5CF6] hover:bg-purple-100 py-3 rounded-xl text-sm font-bold transition-colors border border-purple-200 flex items-center justify-center gap-2 disabled:opacity-60"
                 >
-                  {tab}
+                  {selectedEmployee.isActive ? <><ShieldOff size={16} /> Suspend Access</> : <><ShieldCheck size={16} /> Reinstate Access</>}
                 </button>
-              ))}
+              )}
             </div>
-
-            {activeTab === 'Profile' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Employee ID</p>
-                    <p className="font-bold text-gray-800 font-mono">{selectedEmployee.id}</p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Shift Timing</p>
-                    <p className="font-bold text-gray-800">{selectedEmployee.shift}</p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                    <p className="text-xs text-gray-500 mb-1">Base Salary</p>
-                    <p className="font-bold text-gray-800">₹{selectedEmployee.salary.toLocaleString()}/mo</p>
-                  </div>
-                  <div className="bg-orange-50 p-4 rounded-xl border border-orange-100">
-                    <p className="text-xs text-orange-500 mb-1 font-bold">Pending Advance</p>
-                    <p className="font-bold text-orange-700">₹{selectedEmployee.advance.toLocaleString()}</p>
-                  </div>
-                </div>
-                
-                <button 
-                  onClick={() => { setIsSidePanelOpen(false); setIsPaymentModalOpen(true); }}
-                  className="w-full mt-4 bg-purple-50 text-[#8B5CF6] hover:bg-purple-100 py-3 rounded-xl text-sm font-bold transition-colors border border-purple-200 flex items-center justify-center gap-2"
-                >
-                  <Wallet size={16} /> Process Payroll / Advance
-                </button>
-              </div>
-            )}
-
-            {activeTab === 'Attendance' && (
-              <div className="space-y-6">
-                <div className="flex items-center justify-between bg-green-50 p-4 rounded-xl border border-green-100">
-                  <div>
-                    <p className="text-xs font-bold text-green-600 uppercase">This Month</p>
-                    <p className="font-black text-green-700 text-xl">20 / 22 Days</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs font-bold text-gray-500">Leaves Taken</p>
-                    <p className="font-bold text-gray-800">2</p>
-                  </div>
-                </div>
-                
-                <div className="space-y-3">
-                  <h4 className="font-bold text-gray-800 text-sm border-b pb-2">Recent Logs</h4>
-                  {[
-                    { date: 'Today, 21 May', status: 'Present', time: '09:05 AM', color: 'text-green-500' },
-                    { date: 'Yesterday, 20 May', status: 'Present', time: '08:55 AM', color: 'text-green-500' },
-                    { date: 'Wed, 19 May', status: 'Absent', time: '-', color: 'text-red-500' },
-                    { date: 'Tue, 18 May', status: 'Present', time: '09:10 AM', color: 'text-green-500' },
-                  ].map((log, i) => (
-                    <div key={i} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl">
-                      <div>
-                        <p className="text-xs font-bold text-gray-800">{log.date}</p>
-                        <p className="text-[10px] text-gray-500 mt-0.5">Punch in: {log.time}</p>
-                      </div>
-                      <span className={`text-xs font-bold ${log.color}`}>{log.status}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            
-            {activeTab === 'Payroll' && (
-              <div className="flex flex-col items-center justify-center py-10 text-center">
-                <FileText size={40} className="text-gray-300 mb-3" />
-                <h4 className="font-bold text-gray-800">Payslip Generation</h4>
-                <p className="text-xs text-gray-500 max-w-[200px] mt-1">Automatic payslip generation is available in the Pro version.</p>
-              </div>
-            )}
           </div>
         )}
       </SlidingPanel>

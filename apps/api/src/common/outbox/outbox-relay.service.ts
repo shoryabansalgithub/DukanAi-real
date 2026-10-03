@@ -1,83 +1,80 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
-import { PrismaService } from '../../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { Prisma } from '@prisma/client';
-import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
+import { buildSystemEventJob, buildSystemEventsTypePredicate } from './outbox-routing';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { OutboxClaimService } from './outbox-claim.service';
 
+/**
+ * Relays PENDING OutboxEvent rows that no domain relay owns into the
+ * `system-events` queue. Partitioning is deterministic: see
+ * `DOMAIN_RELAY_TYPE_PREFIXES` in ./outbox-routing.ts. The claim runs in
+ * READ COMMITTED with SKIP LOCKED and commits before the enqueue (roadmap
+ * 4.7); the worker marks the row DONE or FAILED.
+ */
 @Injectable()
 export class OutboxRelayService implements OnApplicationBootstrap {
   private readonly logger = new Logger(OutboxRelayService.name);
+  private isProcessing = false;
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly claims: OutboxClaimService,
     @InjectQueue('system-events') private readonly eventQueue: Queue,
-    private readonly eventsConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
-    private readonly schedulerRegistry: SchedulerRegistry
+    private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('EventsOutboxRelayService schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.eventsOutboxRelayCron, () => {
-      this.relayEvents();
+      void this.relayEvents();
     });
     this.schedulerRegistry.addCronJob('EventsOutboxRelayService', job);
     job.start();
   }
 
-  async relayEvents() {
-    const batchSize = this.eventsConfig.outboxProcessorBatchSize;
-    
+  /** Relays every shop's pending events; runs as the system tenant because the outbox spans shops. */
+  relayEvents(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.relayEventsAsSystem());
+  }
+
+  private async relayEventsAsSystem(): Promise<void> {
+    // Overlapping ticks on one pod are pointless; SKIP LOCKED covers other pods.
+    if (this.isProcessing) return;
+    this.isProcessing = true;
+
     try {
-      await this.prisma.$transaction(async (tx) => {
-        // 1. Fetch pending events with SKIP LOCKED
-        // Using raw SQL to leverage row-level locking for multi-pod concurrency
-        const events: any[] = await tx.$queryRaw`
-          SELECT id, type, payload, status 
-          FROM OutboxEvent 
-          WHERE status = 'PENDING' 
-          ORDER BY createdAt ASC 
-          LIMIT ${batchSize} 
-          FOR UPDATE SKIP LOCKED
-        `;
+      const rows = await this.claims.claim(buildSystemEventsTypePredicate());
+      if (rows.length === 0) return;
+      this.logger.debug(`Relaying ${rows.length} outbox events to system-events...`);
 
-        if (events.length === 0) return;
-
-        this.logger.debug(`Relaying ${events.length} outbox events...`);
-
-        // 2. Enqueue into BullMQ
-        const jobs = events.map(event => {
-          const rawPayload = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
-          const correlationId = rawPayload.correlationId || 'legacy-event';
-          return {
-            name: event.type,
-            data: {
-              eventId: event.id,
-              correlationId,
-              payload: rawPayload
-            },
-            opts: {
-              jobId: event.id, // Guarantee exactly-once enqueue via BullMQ jobId deduplication
-            }
-          };
-        });
-
-        // If BullMQ fails or Redis is down, this throws and the transaction rolls back safely
-        await this.eventQueue.addBulk(jobs);
-
-        // 3. Update status to DONE
-        const eventIds = events.map(e => e.id);
-        await tx.$executeRaw`
-          UPDATE OutboxEvent 
-          SET status = 'DONE', processedAt = NOW(3)
-          WHERE id IN (${Prisma.join(eventIds)})
-        `;
+      const jobs = rows.map((row) => {
+        const job = buildSystemEventJob(row);
+        if (!job.data.shopId) {
+          // The processor will mark the row FAILED; log here so the source is visible.
+          this.logger.warn(`OutboxEvent ${row.id} (${row.type}) has no shopId column or payload.shopId`);
+        }
+        return { ...job, opts: { jobId: this.claims.jobIdFor(row) } };
       });
-    } catch (error: any) {
-      this.logger.error(`Failed to relay outbox events: ${error.message}`);
+
+      try {
+        // Outside the claim transaction: a Redis failure hands the rows back instead of holding row locks.
+        await this.eventQueue.addBulk(jobs);
+      } catch (error) {
+        await this.claims.release(rows.map((r) => r.id));
+        throw error;
+      }
+    } catch (error) {
+      this.logger.error(`Failed to relay outbox events: ${(error as Error).message}`);
+    } finally {
+      this.isProcessing = false;
     }
   }
 }

@@ -9,7 +9,7 @@ export class SupplierCreditAllocationService {
    * Allocates a portion of a Supplier Credit Note to a specific Vendor Bill.
    * Decrements outstandingAmount on Vendor Bill.
    */
-  async processAllocation(tx: Prisma.TransactionClient, shopId: string, creditNote: any, vendorBillId: string, allocationAmount: number) {
+  async processAllocation(tx: Prisma.TransactionClient, shopId: string, creditNote: any, vendorBillId: string, allocationAmount: number, actorId?: string) {
     const vendorBill = await tx.vendorBill.findUnique({
       where: { id: vendorBillId, shopId }
     });
@@ -39,14 +39,23 @@ export class SupplierCreditAllocationService {
       }
     });
 
-    // 2. Reduce Vendor Bill Outstanding
+    // 2. Reduce Vendor Bill Outstanding and settle its status (roadmap 4.2):
+    //    a bill whose balance the credit clears is PAID, otherwise it is
+    //    PARTIALLY_PAID, exactly as a cash instalment would leave it.
+    const outstandingAfter = outstandingBill.minus(allocation);
+    const billStatus = outstandingAfter.lte(0) ? 'PAID' : 'PARTIALLY_PAID';
     await tx.vendorBill.update({
       where: { id: vendorBillId },
       data: {
-        outstandingAmount: { decrement: allocationAmount }
-        // Depending on accounting logic, this may also be tracked in paidAmount or a separate allocatedAmount
+        outstandingAmount: { decrement: allocationAmount },
+        status: billStatus,
       }
     });
+    if (billStatus !== vendorBill.status) {
+      await tx.vendorBillStatusHistory.create({
+        data: { vendorBillId, shopId, status: billStatus, actorId: actorId ?? null, notes: `Credit note ${creditNote.creditNumber} applied: ${allocation.toFixed(2)}` }
+      });
+    }
 
     // 3. Reduce Credit Note Remaining Balance
     await tx.supplierCreditNote.update({

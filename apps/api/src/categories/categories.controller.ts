@@ -1,14 +1,11 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, HttpCode } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto, UpdateCategoryDto } from './dto/create-category.dto';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
-import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
 
 @Controller('categories')
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
@@ -19,9 +16,10 @@ export class CategoriesController {
   }
 
   @Get()
+  @PagedList()
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER, Role.CASHIER, Role.VIEWER)
-  findAll() {
-    return this.categoriesService.findAll();
+  findAll(@Query() query: ListQueryDto) {
+    return this.categoriesService.findAll(query);
   }
 
   @Get(':id')

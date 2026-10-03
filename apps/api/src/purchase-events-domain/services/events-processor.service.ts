@@ -5,6 +5,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { EventsDeliveryService } from './events-delivery.service';
 import { EventsDlqService } from './events-dlq.service';
 import { EventsWebhookService } from './events-webhook.service';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { OutboxClaimService } from '../../common/outbox/outbox-claim.service';
+
+const MAX_ERROR_LENGTH = 191;
 
 @Processor('purchase-events')
 export class EventsProcessorService extends WorkerHost {
@@ -14,48 +18,42 @@ export class EventsProcessorService extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly delivery: EventsDeliveryService,
     private readonly dlq: EventsDlqService,
-    private readonly webhooks: EventsWebhookService
+    private readonly webhooks: EventsWebhookService,
+    private readonly tenantContext: TenantContextService,
+    private readonly claims: OutboxClaimService,
   ) {
     super();
   }
 
-  async process(job: Job<any, any, string>): Promise<any> {
+  /** The event row names its shop; the lookup itself must span shops, so the job runs as the system tenant. */
+  process(job: Job<any, any, string>): Promise<any> {
+    return this.tenantContext.runAsSuperAdmin(() => this.processAsSystem(job));
+  }
+
+  private async processAsSystem(job: Job<any, any, string>): Promise<any> {
     this.logger.debug(`Processing Outbox routing job ${job.id}`);
-    
-    // In a true implementation, this worker queries OutboxEvent where status=PENDING continuously
-    // We simulate processing a single Outbox ID passed in the job data.
-    const eventId = job.data.outboxEventId;
+    const eventId: string | undefined = job.data?.outboxEventId;
     if (!eventId) return;
 
+    // The relay hands the row over CLAIMED (roadmap 4.7); a row already DONE
+    // or FAILED is a replayed job and is skipped.
     const outboxRecord = await this.prisma.outboxEvent.findUnique({ where: { id: eventId } });
-    if (!outboxRecord || outboxRecord.status !== 'PENDING') return;
+    if (!outboxRecord || !['PENDING', 'PROCESSING', 'CLAIMED'].includes(outboxRecord.status)) return;
 
     try {
-      // 1. Deliver Internally
-      await this.delivery.routeInternalEvent(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload);
-      
-      // 2. Deliver Externally via true Webhook Dispatcher
+      // 1. Deliver internally (listeners), then externally (webhook-delivery queue).
+      await this.delivery.routeInternalEvent(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload, outboxRecord.entityId, outboxRecord.correlationId);
       await this.webhooks.dispatchWebhooksForEvent(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload);
-      
-      // 2. Mark complete
-      await this.prisma.outboxEvent.update({
-        where: { id: eventId },
-        data: { status: 'DONE', processedAt: new Date() }
-      });
-      
+
+      // 2. The worker ends the row.
+      await this.claims.markDone(eventId);
     } catch (error: any) {
-      this.logger.error(`Delivery failed for outbox ${eventId}`, error.stack);
-      
-      const MAX_RETRIES = 3;
-      if (outboxRecord.retryCount >= MAX_RETRIES) {
-         await this.dlq.moveToDeadLetter(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload, error.message);
-      } else {
-         await this.prisma.outboxEvent.update({
-           where: { id: eventId },
-           data: { retryCount: { increment: 1 } }
-         });
-         // Job will naturally fail and BullMQ handles exponential backoff
-         throw error;
+      const message = String(error?.message ?? error).slice(0, MAX_ERROR_LENGTH);
+      this.logger.error(`Delivery failed for outbox ${eventId}: ${message}`, error?.stack);
+      // Backoff and retry through the relay; dead-letter once the retries are spent.
+      const outcome = await this.claims.scheduleRetry(eventId, message);
+      if (outcome === 'FAILED') {
+        await this.dlq.moveToDeadLetter(outboxRecord.shopId, outboxRecord.id, outboxRecord.type, outboxRecord.payload, message);
       }
     }
   }

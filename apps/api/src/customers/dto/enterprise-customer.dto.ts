@@ -1,6 +1,6 @@
 import { IsEmail, IsEnum, IsNumber, IsOptional, IsString, MaxLength, ValidateNested, IsBoolean, IsArray } from 'class-validator';
 import { Type } from 'class-transformer';
-import { CustomerType, CustomerLifecycleStatus, ContactRole, AddressType, KycStatus } from '../domain/enums';
+import { CustomerType, CustomerLifecycleStatus, ContactRole, AddressType } from '../domain/enums';
 
 export class CustomerProfileDto {
   @IsOptional() @IsString() companyName?: string;

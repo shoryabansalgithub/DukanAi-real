@@ -1,11 +1,8 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { LedgerCalculationService } from './services/ledger-calculation.service';
 import { LedgerIntegrityService } from './services/ledger-integrity.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('stock-ledger')
 export class StockLedgerController {
   constructor(

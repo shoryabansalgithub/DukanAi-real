@@ -1,11 +1,12 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
-import { EventsFeatureConfig } from '../../config/domains/features/events-feature.config';
 import { CronConfig } from '../../config/domains/cron.config';
+import { buildPurchaseEventsTypePredicate } from '../../common/outbox/outbox-routing';
+import { OutboxClaimService } from '../../common/outbox/outbox-claim.service';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
 @Injectable()
 export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
@@ -13,73 +14,56 @@ export class PurchaseOutboxRelayCron implements OnApplicationBootstrap {
   private isProcessing = false;
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly claims: OutboxClaimService,
     @InjectQueue('purchase-events') private readonly purchaseEventsQueue: Queue,
-    private readonly eventsConfig: EventsFeatureConfig,
     private readonly cronConfig: CronConfig,
-    private readonly schedulerRegistry: SchedulerRegistry
+    private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   onApplicationBootstrap() {
+    if (!this.cronConfig.enabled) {
+      this.logger.warn('PurchaseOutboxRelayCron schedule not registered: CRON_ENABLED=false');
+      return;
+    }
     const job = new CronJob(this.cronConfig.purchaseOutboxRelayCron, () => {
-      this.relayPendingEvents();
+      void this.relayPendingEvents();
     });
     this.schedulerRegistry.addCronJob('PurchaseOutboxRelayCron', job);
     job.start();
   }
 
   /**
-   * Sweeps the OutboxEvent table for PENDING purchase events and relays them to BullMQ.
+   * Claims a batch of PENDING purchase events (the `PURCHASE_RELAY_TYPE_PREFIXES`
+   * family, oldest first) and enqueues them after the claim committed
+   * (roadmap 4.7). The `purchase-events` worker sets DONE / FAILED. The outbox
+   * spans shops, so the sweep runs as the system tenant.
    */
-  async relayPendingEvents() {
+  relayPendingEvents(): Promise<void> {
+    return this.tenantContext.runAsSuperAdmin(() => this.relayPendingEventsAsSystem());
+  }
+
+  private async relayPendingEventsAsSystem(): Promise<void> {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
-    const batchSize = this.eventsConfig.outboxProcessorBatchSize;
-
     try {
-      await this.prisma.$transaction(async (tx) => {
-        // 1. Fetch pending events with SKIP LOCKED
-        const events: any[] = await tx.$queryRaw`
-          SELECT id, type, payload, status, retryCount 
-          FROM OutboxEvent 
-          WHERE status = 'PENDING' 
-            AND (type LIKE 'Purchase%' OR type LIKE 'GRN%' OR type LIKE 'VendorBill%' OR type LIKE 'SupplierCredit%')
-          ORDER BY createdAt ASC 
-          LIMIT ${batchSize} 
-          FOR UPDATE SKIP LOCKED
-        `;
+      const rows = await this.claims.claim(buildPurchaseEventsTypePredicate());
+      if (rows.length === 0) return;
+      this.logger.debug(`Found ${rows.length} PENDING purchase events to relay.`);
 
-        if (events.length === 0) return;
+      const jobs = rows.map((row) => ({
+        name: row.type,
+        data: { outboxEventId: row.id, shopId: row.shopId, type: row.type, retryCount: row.retryCount },
+        opts: { jobId: this.claims.jobIdFor(row) },
+      }));
 
-        this.logger.debug(`Found ${events.length} PENDING purchase events to relay.`);
-
-        // 2. Enqueue into BullMQ
-        const jobs = events.map(event => {
-          return {
-            name: event.type,
-            data: {
-              outboxEventId: event.id,
-              ...event
-            },
-            opts: {
-              jobId: event.id, // BullMQ deduplication key ensures exactly-once enqueue
-            }
-          };
-        });
-
-        // If BullMQ fails or Redis is down, this throws and the transaction rolls back safely
+      try {
         await this.purchaseEventsQueue.addBulk(jobs);
-
-        // 3. Update status to DONE
-        const eventIds = events.map(e => e.id);
-        const { Prisma } = await import('@prisma/client');
-        await tx.$executeRaw`
-          UPDATE OutboxEvent 
-          SET status = 'DONE', processedAt = NOW(3)
-          WHERE id IN (${Prisma.join(eventIds)})
-        `;
-      });
+      } catch (error) {
+        await this.claims.release(rows.map((r) => r.id));
+        throw error;
+      }
     } catch (err) {
       this.logger.error(`Outbox Processor encountered an error: ${(err as Error).message}`);
     } finally {

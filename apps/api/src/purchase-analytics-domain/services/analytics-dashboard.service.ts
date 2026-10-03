@@ -22,7 +22,7 @@ export class AnalyticsDashboardService {
     const cached = await this.cacheManager.get(cacheKey);
     if (cached) return cached;
 
-    let snapshot = await this.prisma.purchaseAnalyticsSnapshot.findUnique({
+    const snapshot = await this.prisma.purchaseAnalyticsSnapshot.findUnique({
       where: { shopId_date: { shopId, date: normalizedDate } }
     });
 

@@ -17,7 +17,6 @@ describe('EnterpriseConfigModule', () => {
       REDIS_URL: 'redis://localhost:6379',
       JWT_SECRET: 'secret',
       JWT_EXPIRES_IN: '1h',
-      JWT_REFRESH_SECRET: 'refresh',
       JWT_REFRESH_EXPIRES_IN: '1d',
       STORAGE_ROOT: '/tmp',
       S3_REGION: 'us-east-1',

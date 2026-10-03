@@ -554,7 +554,6 @@ All 27 queues depend on `REDIS_URL` via `BullModule.forRootAsync()`:
 | `media-processing` | ProductMediaModule | Image/video processing |
 | `search-indexing` | ProductSearchModule | Search index updates |
 | `product-validation` | ProductValidationModule | Product data validation |
-| `barcode-bulk` | ProductIdentityModule | Bulk barcode generation |
 | `webhook-delivery` | ProductEventsModule | Webhook dispatch |
 | `import-job` | ImportExportModule | CSV/Excel import |
 | `analytics-aggregation-queue` | AnalyticsDomainModule | Analytics rollups |

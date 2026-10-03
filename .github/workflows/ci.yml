@@ -1,0 +1,218 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # apps/api/.env.test targets these; the service containers below expose them on localhost.
+  TEST_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test?connection_limit=25&pool_timeout=120
+  TEST_REDIS_URL: redis://127.0.0.1:6379/1
+
+jobs:
+  build:
+    name: Build and type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # turbo builds in dependency order: invoice-math -> api -> web.
+      - run: npx turbo run build
+      - run: npx turbo run type-check
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # lint depends on ^build (type-aware API rules need invoice-math/dist).
+      - run: npx turbo run lint
+      # Phase 7 exit gate: no high or critical advisory in production dependencies.
+      - run: npm audit --omit=dev --audit-level=high
+      # Roadmap 7.4: runtime artifacts (uploads, storage documents, turbo daemon logs) are never tracked.
+      - run: bash scripts/check-tracked-artifacts.sh
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # invoice-math + api unit suites (web has no unit suite).
+      - run: npx turbo run test
+      - name: API boot regression (test:e2e)
+        working-directory: apps/api
+        run: npm run test:e2e
+
+  integration:
+    name: Integration tests (MySQL 8 + Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: dukaanai_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ppassword"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx turbo run build --filter=@dukaanai/invoice-math
+      - name: Applied migrations are immutable
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
+          bash apps/api/scripts/check-migrations-immutable.sh "origin/${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
+      - name: Migrate test database
+        working-directory: apps/api
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - name: Verify migrations match schema.prisma
+        working-directory: apps/api
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - name: Integration suites
+        working-directory: apps/api
+        run: npm run test:integration
+      # Roadmap 7.7: the restore drill rehearses backup.sh + restore.sh against
+      # the MySQL 8 service, on the data the suites just wrote (mysqldump and
+      # mysql 8 come with the runner image).
+      - name: Backup and restore drill (MySQL 8)
+        run: bash scripts/db/restore-drill.sh
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+  e2e:
+    name: Browser tests (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: dukaanai_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -ppassword"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Compiled API boots faster than `nest start`; playwright.config.ts starts it via E2E_API_COMMAND.
+      - run: npx turbo run build --filter=api
+      - name: Migrate test database
+        working-directory: apps/api
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+      - name: Install Chromium
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: Playwright
+        working-directory: apps/web
+        run: npm run test:e2e
+        env:
+          CI: 'true'
+          E2E_API_COMMAND: node dist/main
+          E2E_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test
+      # Roadmap 6.9: the same pages without the auth bypass (real sign-in, role gating).
+      - name: Playwright (real auth)
+        working-directory: apps/web
+        run: npm run test:e2e:auth
+        env:
+          CI: 'true'
+          E2E_API_COMMAND: node dist/main
+          E2E_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report
+            apps/web/playwright-report-auth
+          retention-days: 7
+
+  deploy:
+    name: Deployment (compose smoke)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      # Phase 7 exit gate (roadmap 7.3): fresh clone -> images built from the
+      # Dockerfiles -> `docker compose up` -> migrations -> login -> a sale,
+      # then a graceful stop of the API (SIGTERM, readiness 503, exit 0).
+      # Roadmap 7.6: the alert rules and the example scrape config must parse
+      # before they can be mounted into Prometheus.
+      - name: Alert rules are valid (promtool)
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check rules /rules/alerts.yml
+          docker run --rm -v "$PWD/deploy/prometheus:/rules:ro" --entrypoint promtool prom/prometheus:v3.5.0 check config /rules/prometheus.yml
+      - name: Fresh clone -> compose up -> migrate -> login -> sale
+        run: bash scripts/compose-smoke.sh
+      - name: Container logs
+        if: failure()
+        run: docker compose logs --no-color --tail=200

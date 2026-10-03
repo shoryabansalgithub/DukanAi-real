@@ -5,6 +5,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import { Inject } from '@nestjs/common';
 import type { Cache } from 'cache-manager';
+import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
+import { jobContext } from '../iam/tenant-context/job-context';
 
 @Processor('search-indexing')
 @Injectable()
@@ -14,11 +16,18 @@ export class IndexingWorker extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
-  async process(job: Job<any, any, string>): Promise<any> {
+  process(job: Job<any, any, string>): Promise<any> {
+    const shopId = job.data?.shopId;
+    if (typeof shopId !== 'string' || !shopId) throw new Error(`Search indexing job ${String(job.id)} has no shopId`);
+    return this.tenantContext.runWithContext(jobContext(shopId, String(job.id)), () => this.processForShop(job));
+  }
+
+  private async processForShop(job: Job<any, any, string>): Promise<any> {
     switch (job.name) {
       case 'full-reindex':
         return this.handleFullReindex(job.data);

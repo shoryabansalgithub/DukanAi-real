@@ -27,10 +27,12 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-floating-promises': 'warn',
-      '@typescript-eslint/no-unsafe-argument': 'warn',
       '@typescript-eslint/ban-ts-comment': 'off',
-      '@typescript-eslint/no-floating-promises': 'off',
+      // A promise nobody awaits or handles is a swallowed failure; use `void` for
+      // deliberate fire-and-forget calls whose callee catches its own errors.
+      '@typescript-eslint/no-floating-promises': 'error',
+      // Off until the `any`-typed request bodies are replaced with DTOs (roadmap
+      // phase 1/4): turning it on today reports ~265 sites.
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',

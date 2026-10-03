@@ -23,7 +23,7 @@ export class LedgerCalculationService {
       orderBy: { periodEnd: 'desc' }
     });
 
-    let balance = latestSnapshot ? latestSnapshot.closingBalance.toNumber() : 0;
+    const balance = latestSnapshot ? latestSnapshot.closingBalance.toNumber() : 0;
     const sinceDate = latestSnapshot ? latestSnapshot.periodEnd : new Date(0); // Epoch if no snapshot
 
     // 2. Sum all ledger entries strictly AFTER the snapshot and BEFORE the point in time

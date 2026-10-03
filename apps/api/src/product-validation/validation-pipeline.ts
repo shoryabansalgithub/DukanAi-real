@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ValidationRuleEngine, ValidationRuleConfig } from './validation-rule.engine';
+import { ValidationRuleEngine } from './validation-rule.engine';
 import { QualityScoreEngine } from './quality-score.engine';
 import { ValidationSeverity, Product, ProductVariant, MediaReference } from '@prisma/client';
 

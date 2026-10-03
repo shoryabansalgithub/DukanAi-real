@@ -1,7 +1,8 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateStockCountSessionDto } from '../dto/stock-count.dto';
 import { CountSessionStatus } from '@prisma/client';
+import { assertOwned } from '../../prisma/tenant-ownership';
 
 @Injectable()
 export class StockCountService {
@@ -16,6 +17,8 @@ export class StockCountService {
    */
   async startCountSession(shopId: string, dto: CreateStockCountSessionDto) {
     return this.prisma.$transaction(async (tx) => {
+      await assertOwned(tx, 'warehouse', dto.warehouseId, shopId);
+      await assertOwned(tx, 'user', dto.assignedToUserId, shopId, { isDeleted: false });
       
       const session = await tx.stockCountSession.create({
         data: {

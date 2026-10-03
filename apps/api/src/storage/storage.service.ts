@@ -1,10 +1,10 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
-  UnauthorizedException,
   Inject
 } from '@nestjs/common';
 import { StorageConfig } from '../config/domains/storage.config';
@@ -14,19 +14,23 @@ import archiver from 'archiver';
 import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { StorageCustomerDirectory } from './storage-security.constants';
 import { DeleteStorageFileDto } from './dto/storage.dto';
 import { StoragePathBuilder } from './storage-path.builder';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertOwned } from '../prisma/tenant-ownership';
 
 type AuditLevel = 'info' | 'error';
 
+/** `path` is shop-relative (`Backups/Daily/backup_2026_10_03.zip`); responses never carry an absolute path (roadmap 7.5). */
 export interface BackupResult {
   success: true;
   path: string;
   size: number;
 }
+
+/** Walk-in customers have no row; their evidence is filed under this id. */
+export const WALK_IN_CUSTOMER_ID = 'Walk-in';
 
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
@@ -56,16 +60,47 @@ export class StorageService {
   }
 
   /**
-   * Enforces that the requested customer belongs to the requested shop.
+   * The customer named in the route must belong to the caller's shop
+   * (roadmap 7.5): a foreign or unknown id is 404 like every other lookup of
+   * another shop's row (`assertOwned`), so other shops' ids are never
+   * confirmed. `Walk-in` names the no-row customer of counter sales.
    */
   private async validateCustomerOwnership(customerId: string): Promise<void> {
-    const shopId = this.tenantContext.getShopId();
-    const customer = await this.prisma.customer.findUnique({
-      where: { id: customerId },
-      select: { shopId: true },
-    });
-    if (!customer || customer.shopId !== shopId) {
-      throw new UnauthorizedException('Customer does not exist or does not belong to your shop');
+    if (customerId === WALK_IN_CUSTOMER_ID) return;
+    await assertOwned(this.prisma, 'customer', customerId, this.tenantContext.getShopId());
+  }
+
+  /**
+   * Billing evidence is written once (roadmap 7.5): the file is created
+   * exclusively (`wx`), so a second upload for the same invoice or bill
+   * cannot replace what was stored. Every target of a request is checked
+   * before the first byte is written, so a duplicate leaves nothing behind;
+   * the exclusive flag is the final guard against a concurrent write.
+   */
+  private async assertNoneExist(targets: string[]): Promise<void> {
+    for (const target of targets) {
+      if (await fs.pathExists(target)) {
+        throw new ConflictException({
+          message: `${path.basename(target)} is already stored; billing evidence is never overwritten`,
+          code: 'STORAGE_EVIDENCE_EXISTS',
+          details: { file: path.basename(target) },
+        });
+      }
+    }
+  }
+
+  private async writeEvidence(target: string, data: Buffer | string): Promise<void> {
+    try {
+      await fs.writeFile(target, data, { flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new ConflictException({
+          message: `${path.basename(target)} is already stored; billing evidence is never overwritten`,
+          code: 'STORAGE_EVIDENCE_EXISTS',
+          details: { file: path.basename(target) },
+        });
+      }
+      throw error;
     }
   }
 
@@ -91,6 +126,7 @@ export class StorageService {
     customerId: string,
   ): Promise<string> {
     const shopId = this.tenantContext.getShopId();
+    await this.validateCustomerOwnership(customerId);
     const customerPath = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, 'Profile');
     
     await fs.ensureDir(customerPath);
@@ -109,7 +145,7 @@ export class StorageService {
     }
 
     await this.logAction(`Created customer folder customer=${customerId}`, 'info');
-    return customerPath; // Returning full path for local reference
+    return this.storagePathBuilder.relativeToShop(shopId, customerPath);
   }
 
   async updateCustomerIndex(
@@ -156,11 +192,15 @@ export class StorageService {
     await fs.ensureDir(invoiceDir);
 
     const baseName = `INV-${invoiceId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-    await fs.writeFile(path.join(invoiceDir, `${baseName}.pdf`), pdfFile.buffer);
-    await fs.writeJson(path.join(invoiceDir, `${baseName}.json`), jsonContent, { spaces: 2 });
+    const pdfPath = path.join(invoiceDir, `${baseName}.pdf`);
+    const jsonPath = path.join(invoiceDir, `${baseName}.json`);
+    const previewPath = path.join(invoiceDir, `${baseName}-preview.jpg`);
+    await this.assertNoneExist([pdfPath, jsonPath, ...(thumbnailFile ? [previewPath] : [])]);
+    await this.writeEvidence(pdfPath, pdfFile.buffer);
+    await this.writeEvidence(jsonPath, JSON.stringify(jsonContent, null, 2));
 
     if (thumbnailFile) {
-      await fs.writeFile(path.join(invoiceDir, `${baseName}-preview.jpg`), thumbnailFile.buffer);
+      await this.writeEvidence(previewPath, thumbnailFile.buffer);
     }
 
     const registryPath = this.storagePathBuilder.getSystemFile(shopId, 'invoice_registry.json');
@@ -187,38 +227,28 @@ export class StorageService {
     thumbnailFile: Express.Multer.File | undefined,
   ): Promise<void> {
     const shopId = this.tenantContext.getShopId();
-    // Walk-ins might bypass customer ownership if customerId is explicitly 'Walk-in'
-    if (customerId !== 'Walk-in') {
-      await this.validateCustomerOwnership(customerId);
-    }
+    await this.validateCustomerOwnership(customerId);
 
     const baseName = `BILL-${billId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
     
     const photoDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.OriginalPhotos);
     const billsDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.Bills);
-    
-    await fs.ensureDir(photoDir);
-    await fs.ensureDir(billsDir);
-    
-    await fs.writeFile(path.join(photoDir, `${baseName}.jpg`), imageFile.buffer);
-    await fs.writeFile(path.join(billsDir, `${baseName}.jpg`), imageFile.buffer);
+    const pdfDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.PDFs);
+    const ocrDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.OCR);
 
-    if (thumbnailFile) {
-      await fs.writeFile(path.join(billsDir, `${baseName}-thumb.jpg`), thumbnailFile.buffer);
-    }
+    // Every file of this bill, checked before the first write (roadmap 7.5).
+    const writes: Array<[string, Buffer | string]> = [
+      [path.join(photoDir, `${baseName}.jpg`), imageFile.buffer],
+      [path.join(billsDir, `${baseName}.jpg`), imageFile.buffer],
+    ];
+    if (thumbnailFile) writes.push([path.join(billsDir, `${baseName}-thumb.jpg`), thumbnailFile.buffer]);
+    if (pdfFile) writes.push([path.join(pdfDir, `${baseName}.pdf`), pdfFile.buffer], [path.join(billsDir, `${baseName}.pdf`), pdfFile.buffer]);
+    if (ocrText) writes.push([path.join(ocrDir, `${baseName}.txt`), ocrText], [path.join(billsDir, `${baseName}.txt`), ocrText]);
 
-    if (pdfFile) {
-      const pdfDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.PDFs);
-      await fs.ensureDir(pdfDir);
-      await fs.writeFile(path.join(pdfDir, `${baseName}.pdf`), pdfFile.buffer);
-      await fs.writeFile(path.join(billsDir, `${baseName}.pdf`), pdfFile.buffer);
-    }
-
-    if (ocrText) {
-      const ocrDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.OCR);
-      await fs.ensureDir(ocrDir);
-      await fs.writeFile(path.join(ocrDir, `${baseName}.txt`), ocrText);
-      await fs.writeFile(path.join(billsDir, `${baseName}.txt`), ocrText);
+    await this.assertNoneExist(writes.map(([target]) => target));
+    for (const [target, data] of writes) {
+      await fs.ensureDir(path.dirname(target));
+      await this.writeEvidence(target, data);
     }
 
     await this.logAction(`Stored captured bill bill=${billId} customer=${customerId}`, 'info');
@@ -252,10 +282,12 @@ export class StorageService {
     const statementsDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.Statements);
     await fs.ensureDir(statementsDir);
 
+    // One file per generated statement: a statement regenerated for the same
+    // month lands beside the earlier one instead of replacing it (roadmap 7.5).
     const month = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).toUpperCase().replace(' ', '-');
-    const fileName = `STATEMENT-${month}.pdf`;
+    const fileName = `STATEMENT-${month}-${new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15)}-${crypto.randomBytes(4).toString('hex')}.pdf`;
 
-    await fs.writeFile(path.join(statementsDir, fileName), pdfFile.buffer);
+    await this.writeEvidence(path.join(statementsDir, fileName), pdfFile.buffer);
     await this.logAction(`Stored statement customer=${customerId} file=${fileName}`, 'info');
   }
 
@@ -290,7 +322,7 @@ export class StorageService {
     try {
       await fs.move(originalFilePath, deletedFilePath, { overwrite: false });
       await this.logAction(`Soft deleted file customer=${customerId} category=${dto.category} file=${safeFileName}`, 'info');
-      return { success: true, newPath: deletedFilePath };
+      return { success: true, newPath: this.storagePathBuilder.relativeToShop(shopId, deletedFilePath) };
     } catch (error) {
       await this.logAction(`Failed to delete file customer=${customerId} file=${safeFileName}`, 'error');
       throw error;
@@ -315,7 +347,7 @@ export class StorageService {
       output.on('close', () => {
         const size = archive.pointer();
         this.logAction(`Created backup type=${type} file=${path.basename(backupPath)} size=${size}`, 'info')
-          .then(() => resolve({ success: true, path: backupPath, size }))
+          .then(() => resolve({ success: true, path: this.storagePathBuilder.relativeToShop(shopId, backupPath), size }))
           .catch(reject);
       });
 

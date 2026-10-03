@@ -1,38 +1,44 @@
 import { Injectable } from '@nestjs/common';
+import { IsBoolean, IsIn, IsInt, Min } from 'class-validator';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { IsOptional, IsNumber, IsBoolean, IsString } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { BooleanFromEnv, IntegerFromEnv, StringFromEnv } from '../hydrate-from-env';
 
+export const BULL_BACKOFF_TYPES = ['exponential', 'fixed'] as const;
+export type BullBackoffType = (typeof BULL_BACKOFF_TYPES)[number];
+
+/**
+ * Default job options for the BullMQ queues. Hydrated with `hydrateFromEnv`:
+ * booleans accept true/false spellings only (the old implicit conversion
+ * turned the string "false" into true), an unset or blank variable keeps the
+ * default, and anything else fails boot.
+ */
 @Injectable()
-@ConfigDomain({ owner: 'Bull', feature: 'Configuration', version: '1.0.0', description: 'BullConfig Domain' })
+@ConfigDomain({ owner: 'Bull', feature: 'Configuration', version: '2.0.0', description: 'BullConfig Domain' })
 export class BullConfig {
-  @IsOptional()
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 3))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('BULL_ATTEMPTS')
   defaultAttempts: number = 3;
 
-  @IsOptional()
-  @IsString()
-  @Transform(({ value }) => value || 'exponential')
+  @IsIn(BULL_BACKOFF_TYPES)
+  @StringFromEnv()
   @EnvVariable('BULL_BACKOFF_TYPE')
-  backoffType: string = 'exponential';
+  backoffType: BullBackoffType = 'exponential';
 
-  @IsOptional()
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 1000))
+  @IsInt()
+  @Min(0)
+  @IntegerFromEnv()
   @EnvVariable('BULL_BACKOFF_DELAY')
   backoffDelay: number = 1000;
 
-  @IsOptional()
   @IsBoolean()
-  @Transform(({ value }) => value !== 'false')
+  @BooleanFromEnv()
   @EnvVariable('BULL_REMOVE_ON_COMPLETE')
   removeOnComplete: boolean = true;
 
-  @IsOptional()
   @IsBoolean()
-  @Transform(({ value }) => value === 'true')
+  @BooleanFromEnv()
   @EnvVariable('BULL_REMOVE_ON_FAIL')
   removeOnFail: boolean = false;
 }

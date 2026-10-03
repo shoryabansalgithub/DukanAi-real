@@ -29,15 +29,16 @@ export class EventsDlqService {
     });
   }
 
-  async getDeadLetters(shopId: string, limit: number) {
+  async getDeadLetters(shopId: string, limit: number, offset: number = 0) {
     return this.prisma.purchaseDeadLetter.findMany({
       where: { shopId, status: 'ACTIVE' },
       take: limit,
-      orderBy: { createdAt: 'desc' }
+      skip: offset,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }]
     });
   }
 
-  async retryDeadLetter(shopId: string, deadLetterId: string) {
+  async retryDeadLetter(_shopId: string, _deadLetterId: string) {
     // Moves back to Outbox status PENDING, sets DLQ to RESOLVED
     return { success: true, message: 'Re-queued to Outbox' };
   }

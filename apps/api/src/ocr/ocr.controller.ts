@@ -1,33 +1,26 @@
-import { Controller, Post, UseInterceptors, UploadedFile, Body, UseGuards, BadRequestException, Request } from '@nestjs/common';
+import { Controller, Post, UseInterceptors, UploadedFile, Body, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { OcrService } from './ocr.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RolesGuard } from '../auth/roles.guard';
-import { Roles } from '../auth/roles.decorator';
-import { Role } from '@prisma/client';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
+import { OcrService } from './ocr.service';
+import { Roles } from '../auth/roles.decorator';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { CurrentShop } from '../iam/decorators/current-shop.decorator';
+import { ScanBillDto } from './dto/scan-bill.dto';
 
 @ApiTags('ocr')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER)
 @ApiBearerAuth()
 @Controller('ocr')
 export class OcrController {
   constructor(private readonly ocrService: OcrService) {}
 
+  /** Upload limits and the image-only filter come from `OcrModule`'s multer registration (roadmap 4.4). */
+  @Roles(...MANAGEMENT_ROLES)
   @Post('scan-bill')
   @UseInterceptors(FileInterceptor('file'))
-  async scanHandwrittenBill(
-    @UploadedFile() file: Express.Multer.File,
-    @Body('documentType') documentType: string,
-    @Request() req: any,
-  ) {
+  async scanHandwrittenBill(@CurrentShop() shopId: string, @UploadedFile() file: Express.Multer.File | undefined, @Body() body: ScanBillDto) {
     if (!file) {
-      throw new BadRequestException('No file provided');
+      throw new BadRequestException({ message: 'No file provided; send the image as the "file" part.', code: 'OCR_FILE_MISSING' });
     }
-
-    // Pass the file buffer to the real Gemini OCR service
-    const result = await this.ocrService.processDocument(file.buffer, documentType);
-    return result;
+    return this.ocrService.processDocument(shopId, file.buffer, body.documentType ?? 'BILL');
   }
 }

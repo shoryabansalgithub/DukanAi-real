@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ParsingEngineService } from './parsing-engine.service';
-import { JobStatus, ImportMode, ProductUnit } from '@prisma/client';
+import { JobStatus, ProductUnit } from '@prisma/client';
 import { ProductValidationService } from '../product-validation/product-validation.service';
 
 @Injectable()

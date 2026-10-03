@@ -1,0 +1,70 @@
+# Roadmap 5.8: POS checkout, dashboard summary and login at 3x the expected
+# peak. See load/README.md for the assumptions and how the numbers are read.
+#
+# Expected peak (assumption, per shop fleet on one API instance):
+#   checkout 5/s, dashboard poll 10/s, login 1/s  ->  x3 = 15 / 30 / 3 per second.
+# Scenario weights give that mix at an arrival rate of 48 virtual users/s.
+config:
+  target: "{{ $processEnvironment.LOAD_TARGET }}"
+  processor: "./processor.js"
+  phases:
+    - name: warm-up
+      duration: 20
+      arrivalRate: 8
+    - name: 3x-peak
+      duration: 60
+      arrivalRate: 48
+  http:
+    timeout: 30
+    pool: 64
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+      stripQueryString: true
+  # The gate (status codes, transport errors, p95, delivered load) is applied by
+  # summarize.mjs on the JSON report: artillery's expect/ensure plugins are not
+  # loaded here, so a check written in this file would be silently ignored.
+
+scenarios:
+  - name: checkout
+    weight: 15
+    beforeScenario: loadState
+    flow:
+      - function: newCheckout
+      - post:
+          name: checkout
+          url: /api/billing/invoice
+          headers:
+            authorization: "Bearer {{ token }}"
+            content-type: application/json
+          json:
+            idempotencyKey: "{{ idempotencyKey }}"
+            items:
+              - productId: "{{ productId }}"
+                quantity: "{{ quantity }}"
+            payments:
+              - tender: CASH
+                amount: "{{ amount }}"
+
+  - name: dashboard
+    weight: 30
+    beforeScenario: loadState
+    flow:
+      - get:
+          name: dashboard-summary
+          url: /api/dashboard/summary
+          headers:
+            authorization: "Bearer {{ token }}"
+
+  - name: login
+    weight: 3
+    beforeScenario: loadState
+    flow:
+      - post:
+          name: login
+          url: /api/auth/login
+          headers:
+            content-type: application/json
+          json:
+            email: "{{ email }}"
+            password: "{{ password }}"

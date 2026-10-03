@@ -4,6 +4,7 @@ import { TransferOwnershipDto } from './dto/transfer-ownership.dto';
 import * as bcrypt from 'bcrypt';
 import { Role } from '@prisma/client';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
+import { SHOP_PROFILE_FIELDS, UpdateShopProfileDto } from './dto/update-shop-profile.dto';
 
 @Injectable()
 export class ShopsService {
@@ -34,18 +35,21 @@ export class ShopsService {
     return shop;
   }
 
-  async updateShopProfile(
-    shopId: string,
-    data: { name?: string; address?: string; city?: string; state?: string; pincode?: string; phone?: string; email?: string; gstin?: string },
-  ) {
-    const { gstin, ...shopFields } = data;
-    const cleanShopFields = Object.fromEntries(
-      Object.entries(shopFields).filter(([, value]) => value !== undefined),
-    );
+  /**
+   * Writes only the profile columns named in SHOP_PROFILE_FIELDS. The body is a
+   * validated UpdateShopProfileDto, and the Prisma `data` object is built field
+   * by field: a request can never reach relations such as `users` or `owner`.
+   */
+  async updateShopProfile(shopId: string, dto: UpdateShopProfileDto) {
+    const shopFields: Partial<Pick<UpdateShopProfileDto, (typeof SHOP_PROFILE_FIELDS)[number]>> = {};
+    for (const field of SHOP_PROFILE_FIELDS) {
+      if (dto[field] !== undefined) shopFields[field] = dto[field];
+    }
+    const gstin = dto.gstin;
 
     await this.prisma.$transaction(async (tx) => {
-      if (Object.keys(cleanShopFields).length > 0) {
-        await tx.shop.update({ where: { id: shopId }, data: cleanShopFields });
+      if (Object.keys(shopFields).length > 0) {
+        await tx.shop.update({ where: { id: shopId }, data: shopFields });
       }
       if (gstin !== undefined) {
         await tx.shopSettings.upsert({

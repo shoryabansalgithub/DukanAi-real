@@ -1,0 +1,27 @@
+# Example Prometheus configuration for the DukaanAI API (roadmap 7.6).
+#
+# The API exposes `GET /api/metrics` (Prometheus text format) on its own
+# port; keep that port on the internal network. When METRICS_TOKEN is set the
+# scrape must carry it as a bearer token: put the value, and nothing else, in
+# the credentials file below. `docker compose --profile ops up prometheus`
+# runs this file against the compose stack.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: dukaanai-api
+    metrics_path: /api/metrics
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/dukaanai-metrics-token
+    static_configs:
+      - targets: ["api:3002"]

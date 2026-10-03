@@ -1,16 +1,46 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Card } from '@/components/ui/Card';
 import { 
   Camera, X, Zap, Image as ImageIcon, ScanLine, FileText, CheckCircle2, 
-  User, UploadCloud, Database, HardDrive, ShieldCheck
+  User, FolderOpen, ShieldCheck
 } from 'lucide-react';
-import { customersApi } from '@/lib/api-client';
+import { customersApi, storageApi, WALK_IN_CUSTOMER } from '@/lib/api-client';
+import { describeApiError } from '@/lib/api-error';
+import { jpegToPdf } from '@/lib/jpeg-pdf';
+import { dataUrlToBlob } from '@/lib/data-url';
 import { useToast } from '@/components/ui/Toast';
 import type { Customer } from '@/types';
 import { useRouter } from 'next/navigation';
+import { PENDING_SCAN_KEY } from '@/lib/smart-capture';
 
+const JPEG_QUALITY = 0.9;
+
+/** A JPEG data URL from a captured frame; the storage route accepts JPEG and PNG only. */
+async function blobToJpegDataUrl(file: Blob): Promise<string> {
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return canvas.toDataURL('image/jpeg', JPEG_QUALITY);
+}
+
+function newBillId(): string {
+  // Hyphen last in the character class: Tailwind scans this file and reads a leading-hyphen bracket as an arbitrary property.
+  const stamp = new Date().toISOString().replace(/[:.TZ-]/g, '').slice(0, 14);
+  const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID().slice(0, 8) : Math.random().toString(36).slice(2, 10);
+  return `${stamp}-${suffix}`;
+}
+
+/**
+ * Smart Bill Capture (roadmap 6.1). A photo of a bill, from the camera or the
+ * gallery, is stored through `POST /storage/bills/:customerId/:billId` in the
+ * shop's document storage: the original JPEG always, plus a PDF rendition
+ * built in the browser when asked. Nothing is claimed that the API did not do.
+ */
 export default function SmartCapturePage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -22,20 +52,22 @@ export default function SmartCapturePage() {
   // Camera & Capture State
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
-  const [backupFolderPath, setBackupFolderPath] = useState<string>('D:/DukaanAI_Backups');
+  const [torchOn, setTorchOn] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
   const fetchCustomers = async () => {
     setLoading(true);
     setError(null);
 
     try {
       const data = await customersApi.list();
-      setCustomers(data);
+      setCustomers(data.items);
     } catch (err) {
       console.error('Error fetching customers', err);
       setCustomers([]);
@@ -49,21 +81,14 @@ export default function SmartCapturePage() {
     void fetchCustomers();
   }, []);
 
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setTorchOn(false);
+  }, []);
 
-  const selectFolder = async () => {
-    try {
-      if ('showDirectoryPicker' in window) {
-        // @ts-ignore
-        const dirHandle = await window.showDirectoryPicker();
-        setBackupFolderPath(`[Local Drive]:/${dirHandle.name}`);
-        toast(`Local backup folder set to ${dirHandle.name}`, 'success');
-      } else {
-        toast('Your browser does not support selecting local folders.', 'error');
-      }
-    } catch (err) {
-      console.error('Folder selection cancelled or failed', err);
-    }
-  };
+  // The camera never outlives the page.
+  useEffect(() => stopStream, [stopStream]);
 
   const openCamera = async () => {
     setIsCameraOpen(true);
@@ -73,24 +98,38 @@ export default function SmartCapturePage() {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
       });
-      setCameraStream(stream);
+      streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
       }
     } catch (err) {
       console.error('Error accessing camera:', err);
-      toast('Camera permission denied or not available.', 'error');
-      setIsCameraOpen(false);
+      toast('Camera permission denied or not available. You can pick a photo from the gallery instead.', 'error');
+      setIsCameraOpen(true);
     }
   };
 
   const closeCamera = () => {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(track => track.stop());
-    }
-    setCameraStream(null);
+    stopStream();
     setIsCameraOpen(false);
     setCapturedImage(null);
+  };
+
+  /** The torch is a real constraint on the video track where the device offers one. */
+  const toggleTorch = async () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    const capabilities = track?.getCapabilities?.() as (MediaTrackCapabilities & { torch?: boolean }) | undefined;
+    if (!track || !capabilities?.torch) {
+      toast('This camera has no flash the browser can control.', 'info');
+      return;
+    }
+    try {
+      await track.applyConstraints({ advanced: [{ torch: !torchOn } as MediaTrackConstraintSet] });
+      setTorchOn((on) => !on);
+    } catch (err) {
+      console.error('Torch toggle failed', err);
+      toast('Could not switch the flash.', 'error');
+    }
   };
 
   const capturePhoto = () => {
@@ -100,50 +139,71 @@ export default function SmartCapturePage() {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
-      if (ctx) {
+      if (ctx && canvas.width > 0) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageUrl = canvas.toDataURL('image/jpeg', 0.9);
-        setCapturedImage(imageUrl);
-        // Stop stream after capture to freeze frame
-        if (cameraStream) {
-          cameraStream.getTracks().forEach(track => track.stop());
-        }
+        setCapturedImage(canvas.toDataURL('image/jpeg', JPEG_QUALITY));
+        // Stop the stream after capture to freeze the frame.
+        stopStream();
+      } else {
+        toast('The camera has not delivered a frame yet. Try again in a moment.', 'error');
       }
     }
   };
 
-  const saveAction = (action: 'photo' | 'pdf' | 'ocr') => {
-    setIsProcessing(true);
-    
-    // If OCR, redirect to AI Scanner
+  const pickFromGallery = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const dataUrl = await blobToJpegDataUrl(file);
+      stopStream();
+      setSuccessMsg('');
+      setIsCameraOpen(true);
+      setCapturedImage(dataUrl);
+    } catch (err) {
+      console.error('Could not read the picked image', err);
+      toast('That file is not an image the browser can read.', 'error');
+    }
+  };
+
+  const customerName = () => customers.find((c) => String(c.id) === selectedCustomer)?.name ?? 'Walk-in / General';
+
+  const saveAction = async (action: 'photo' | 'pdf' | 'ocr') => {
+    if (!capturedImage) return;
+
+    // OCR: hand the capture to the AI scanner, which calls /ocr/scan-bill.
     if (action === 'ocr') {
-      setTimeout(() => {
-        toast('Sending to AI Invoice Scanner...', 'info');
-        router.push('/ai-scanner');
-      }, 1500);
+      try {
+        sessionStorage.setItem(PENDING_SCAN_KEY, capturedImage);
+      } catch {
+        toast('The photo is too large to hand over to the scanner; save it here and upload it on the scanner page instead.', 'error');
+        return;
+      }
+      closeCamera();
+      router.push('/ai-scanner');
       return;
     }
 
-    // Simulate complex secure saving and local backup
-    setTimeout(() => {
-      let custName = 'Unknown';
-      if (selectedCustomer) {
-        const c = customers.find(c => c.id.toString() === selectedCustomer);
-        if (c) custName = c.name;
+    setIsProcessing(true);
+    const billId = newBillId();
+    const customerId = selectedCustomer || WALK_IN_CUSTOMER;
+    try {
+      const image = dataUrlToBlob(capturedImage);
+      let pdf: Blob | undefined;
+      if (action === 'pdf') {
+        pdf = new Blob([jpegToPdf(new Uint8Array(await image.arrayBuffer()))], { type: 'application/pdf' });
       }
-      
-      const year = new Date().getFullYear();
-      let msg = '';
-      const baseDir = backupFolderPath.replace(/\/$/, '');
-      if (action === 'photo') msg = `Original JPG safely backed up to ${baseDir}/Customers/${custName}/Bills/${year}/Original_Photos/`;
-      if (action === 'pdf') msg = `Converted PDF safely backed up to ${baseDir}/Customers/${custName}/Bills/${year}/PDFs/`;
-
-      setSuccessMsg(msg);
-      toast('Capture saved and backed up successfully!', 'success');
-      setIsProcessing(false);
+      await storageApi.storeCapturedBill(selectedCustomer || null, billId, image, { pdf });
+      const where = `${customerName()} › Bills › BILL-${billId}`;
+      setSuccessMsg(action === 'pdf' ? `Original photo and PDF stored under ${where}.` : `Original photo stored under ${where}.`);
+      toast('Bill stored in the shop document storage', 'success');
       setCapturedImage(null);
       closeCamera();
-    }, 2000);
+    } catch (err) {
+      toast(describeApiError(err, `Storing the bill (POST /storage/bills/${customerId}/…)`), 'error');
+    } finally {
+      setIsProcessing(false);
+    }
   };
   if (loading) {
     return (
@@ -183,12 +243,11 @@ export default function SmartCapturePage() {
       </div>
 
       {successMsg && (
-        <div className="bg-green-50 border border-green-200 text-green-800 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-in fade-in slide-in-from-top-4">
+        <div data-testid="capture-success" className="bg-green-50 border border-green-200 text-green-800 p-4 rounded-2xl flex items-start gap-3 shadow-sm animate-in fade-in slide-in-from-top-4">
           <CheckCircle2 className="text-green-500 mt-0.5" size={20} />
           <div>
-            <h4 className="font-bold">Successfully Stored & Backed Up</h4>
+            <h4 className="font-bold">Stored</h4>
             <p className="text-sm mt-1">{successMsg}</p>
-            <p className="text-xs text-green-600 mt-2 flex items-center gap-1"><Database size={12}/> Synced to MongoDB Atlas & AWS S3.</p>
           </div>
         </div>
       )}
@@ -214,32 +273,19 @@ export default function SmartCapturePage() {
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
-            <p className="text-xs text-gray-500 mt-2">Linking a bill automatically places it in their specific offline backup folder.</p>
+            <p className="text-xs text-gray-500 mt-2">A linked bill is filed under that customer&apos;s folder in the shop document storage.</p>
           </div>
 
           <div className="space-y-4 pt-4 border-t border-gray-100">
-            <h3 className="text-sm font-bold text-gray-800 mb-2">Storage Architecture Enabled:</h3>
+            <h3 className="text-sm font-bold text-gray-800 mb-2">Where a capture goes:</h3>
             <div className="flex items-center gap-3 text-sm text-gray-600 bg-gray-50 p-3 rounded-xl border border-gray-100">
-              <Database size={16} className="text-green-500"/> MongoDB Atlas (Metadata & Customer Link)
+              <FolderOpen size={16} className="text-blue-500"/> Shop document storage › Customers › <span className="font-semibold">{customerName()}</span> › Bills
             </div>
             <div className="flex items-center gap-3 text-sm text-gray-600 bg-gray-50 p-3 rounded-xl border border-gray-100">
-              <UploadCloud size={16} className="text-orange-500"/> AWS S3 (Original Images & PDFs)
+              <ImageIcon size={16} className="text-green-500"/> Original JPEG always; a PDF rendition when you choose &quot;Convert to PDF&quot;
             </div>
-            <div className="flex flex-col gap-2 bg-gray-50 p-3 rounded-xl border border-gray-100">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3 text-sm text-gray-600">
-                  <HardDrive size={16} className="text-blue-500"/> Local Hard Disk Backup
-                </div>
-                <button 
-                  onClick={selectFolder}
-                  className="text-xs font-bold text-[#3b82f6] border border-[#3b82f6] px-2 py-1 rounded hover:bg-blue-50 transition-colors"
-                >
-                  Change Folder
-                </button>
-              </div>
-              <p className="text-[10px] text-gray-500 font-mono mt-1 break-all bg-white p-1.5 rounded border border-gray-200">
-                {backupFolderPath}
-              </p>
+            <div className="flex items-center gap-3 text-sm text-gray-600 bg-gray-50 p-3 rounded-xl border border-gray-100">
+              <ShieldCheck size={16} className="text-purple-500"/> Only your shop&apos;s signed-in staff can store or read them
             </div>
           </div>
         </Card>
@@ -264,10 +310,25 @@ export default function SmartCapturePage() {
 
           <div className="mt-8 flex gap-3 relative z-10">
             <span className="bg-white/10 backdrop-blur-md text-xs font-bold px-3 py-1.5 rounded-full border border-white/10">Portrait Auto-Focus</span>
-            <span className="bg-white/10 backdrop-blur-md text-xs font-bold px-3 py-1.5 rounded-full border border-white/10">Image Enhancement</span>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); galleryInputRef.current?.click(); }}
+              className="bg-white/10 backdrop-blur-md text-xs font-bold px-3 py-1.5 rounded-full border border-white/10 hover:bg-white/20 transition-colors"
+            >
+              Or pick from gallery
+            </button>
           </div>
         </div>
       </div>
+
+      <input
+        ref={galleryInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        className="hidden"
+        data-testid="gallery-input"
+        onChange={(e) => void pickFromGallery(e)}
+      />
 
       {/* CAMERA MODAL OVERLAY */}
       {isCameraOpen && (
@@ -278,9 +339,9 @@ export default function SmartCapturePage() {
               <h3 className="text-white font-bold text-lg flex items-center gap-2">
                 <Camera size={20} className="text-[#3b82f6]" /> Smart Capture
               </h3>
-              {selectedCustomer && <p className="text-gray-400 text-xs mt-1">Linking to: {customers.find(c => c.id.toString() === selectedCustomer)?.name}</p>}
+              {selectedCustomer && <p className="text-gray-400 text-xs mt-1">Linking to: {customerName()}</p>}
             </div>
-            <button onClick={closeCamera} className="w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white transition-colors">
+            <button onClick={closeCamera} aria-label="Close camera" className="w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white transition-colors">
               <X size={20} />
             </button>
           </div>
@@ -321,19 +382,22 @@ export default function SmartCapturePage() {
             {!capturedImage ? (
               <div className="flex items-center justify-center gap-12 max-w-md mx-auto pb-4">
                 <button 
-                  onClick={() => toast('Flash enabled', 'info')}
-                  className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors"
+                  onClick={() => void toggleTorch()}
+                  aria-label={torchOn ? 'Turn flash off' : 'Turn flash on'}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center text-white transition-colors ${torchOn ? 'bg-yellow-500/40' : 'bg-white/10 hover:bg-white/20'}`}
                 >
                   <Zap size={20} />
                 </button>
                 <button 
                   onClick={capturePhoto}
+                  aria-label="Take photo"
                   className="w-20 h-20 rounded-full border-4 border-white p-1 flex items-center justify-center group"
                 >
                   <div className="w-full h-full bg-white rounded-full group-hover:scale-90 transition-transform shadow-[0_0_20px_rgba(255,255,255,0.8)]" />
                 </button>
                 <button 
-                  onClick={() => toast('Opening gallery...', 'info')}
+                  onClick={() => galleryInputRef.current?.click()}
+                  aria-label="Pick from gallery"
                   className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center text-white hover:bg-white/20 transition-colors"
                 >
                   <ImageIcon size={20} />
@@ -344,41 +408,41 @@ export default function SmartCapturePage() {
                 {isProcessing ? (
                   <div className="flex flex-col items-center justify-center py-8">
                     <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white mb-6"></div>
-                    <p className="text-white font-bold text-lg">Encrypting & Saving Safely...</p>
-                    <p className="text-gray-400 text-sm mt-2 flex items-center gap-2"><ShieldCheck size={14}/> Backing up to Local D:/ Drive, S3, & Atlas</p>
+                    <p className="text-white font-bold text-lg">Uploading to the shop document storage…</p>
+                    <p className="text-gray-400 text-sm mt-2 flex items-center gap-2"><ShieldCheck size={14}/> Filed under {customerName()} › Bills</p>
                   </div>
                 ) : (
                   <>
                     <div className="flex justify-between items-center mb-6 px-2">
-                      <button onClick={() => setCapturedImage(null)} className="text-white hover:text-red-400 font-bold text-sm bg-white/10 px-4 py-2 rounded-lg transition-colors">Retake Photo</button>
+                      <button onClick={() => { setCapturedImage(null); void openCamera(); }} className="text-white hover:text-red-400 font-bold text-sm bg-white/10 px-4 py-2 rounded-lg transition-colors">Retake Photo</button>
                       <h4 className="text-white font-bold text-sm bg-[#3b82f6]/20 text-[#3b82f6] px-4 py-2 rounded-lg border border-[#3b82f6]/30">Choose Storage Option</h4>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       {/* Option 1 */}
-                      <button onClick={() => saveAction('photo')} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-blue-500 transition-all shadow-lg group">
+                      <button onClick={() => void saveAction('photo')} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-blue-500 transition-all shadow-lg group">
                         <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center group-hover:scale-110 transition-transform">
                           <ImageIcon size={24} className="text-blue-400" />
                         </div>
                         <span className="font-bold text-base">Save Original Photo</span>
-                        <span className="text-xs text-gray-400 text-center leading-relaxed">Securely store the untouched JPG image forever. Best for Hindi handwriting.</span>
+                        <span className="text-xs text-gray-400 text-center leading-relaxed">Stores the untouched JPG in the shop document storage. Best for Hindi handwriting.</span>
                       </button>
                       
                       {/* Option 2 */}
-                      <button onClick={() => saveAction('pdf')} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-red-500 transition-all shadow-lg group">
+                      <button onClick={() => void saveAction('pdf')} className="bg-gray-900 hover:bg-gray-800 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-gray-700 hover:border-red-500 transition-all shadow-lg group">
                         <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center group-hover:scale-110 transition-transform">
                           <FileText size={24} className="text-red-400" />
                         </div>
                         <span className="font-bold text-base">Convert to PDF</span>
-                        <span className="text-xs text-gray-400 text-center leading-relaxed">Converts image to a clean printable PDF document automatically.</span>
+                        <span className="text-xs text-gray-400 text-center leading-relaxed">Stores the photo and a printable one-page PDF of it.</span>
                       </button>
 
                       {/* Option 3 */}
-                      <button onClick={() => saveAction('ocr')} className="bg-[#1e1b4b] hover:bg-purple-900 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-[#8B5CF6]/50 shadow-[0_0_20px_rgba(139,92,246,0.15)] hover:shadow-[0_0_30px_rgba(139,92,246,0.3)] transition-all group">
+                      <button onClick={() => void saveAction('ocr')} className="bg-[#1e1b4b] hover:bg-purple-900 text-white rounded-2xl p-5 flex flex-col items-center justify-center gap-3 border border-[#8B5CF6]/50 shadow-[0_0_20px_rgba(139,92,246,0.15)] hover:shadow-[0_0_30px_rgba(139,92,246,0.3)] transition-all group">
                         <div className="w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center group-hover:scale-110 transition-transform">
                           <ScanLine size={24} className="text-[#a78bfa]" />
                         </div>
                         <span className="font-bold text-base">Try OCR Extraction</span>
-                        <span className="text-xs text-purple-300 text-center leading-relaxed">Experimental AI parsing. Fails safely to Original Photo if handwriting is too rough.</span>
+                        <span className="text-xs text-purple-300 text-center leading-relaxed">Opens the AI scanner with this photo; the photo is not stored until you save it there or here.</span>
                       </button>
                     </div>
                   </>

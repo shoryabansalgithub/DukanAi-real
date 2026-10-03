@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CountSessionStatus } from '@prisma/client';
+import { CountSessionStatus, Prisma } from '@prisma/client';
 
 @Injectable()
 export class VarianceService {
@@ -25,8 +25,8 @@ export class VarianceService {
 
     if (!countItem) throw new NotFoundException('Inventory Item is not part of this Count Session.');
 
-    // The core calculation:
-    const variance = countedQuantity - countItem.expectedQuantity.toNumber();
+    // The core calculation, in decimal arithmetic (quantities carry 3 dp):
+    const variance = new Prisma.Decimal(countedQuantity).minus(countItem.expectedQuantity);
 
     await this.prisma.stockCountItem.update({
       where: { id: countItem.id },
@@ -38,6 +38,6 @@ export class VarianceService {
 
     this.logger.debug(`Calculated Variance for ${inventoryItemId}: Expected ${countItem.expectedQuantity}, Counted ${countedQuantity}, Variance: ${variance}`);
 
-    return { inventoryItemId, variance };
+    return { inventoryItemId, variance: variance.toNumber() };
   }
 }

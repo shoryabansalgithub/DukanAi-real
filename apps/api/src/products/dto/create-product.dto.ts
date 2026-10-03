@@ -1,5 +1,5 @@
-import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, IsArray, ValidateNested } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsString, IsOptional, IsNumber, IsBoolean, IsEnum, MaxLength, Min, Max } from 'class-validator';
+import { PartialType } from '@nestjs/swagger';
 import { ProductType, ProductStatus, ProductUnit, GstRate } from '@prisma/client';
 
 export class CreateProductDto {
@@ -10,11 +10,16 @@ export class CreateProductDto {
   @IsOptional()
   slug?: string;
 
-  @IsString()
-  sku: string;
-
+  /** Unique per shop among live products; generated as `SKU-000001` when absent (roadmap 6.2). */
   @IsString()
   @IsOptional()
+  @MaxLength(64)
+  sku?: string;
+
+  /** Unique per shop across Product, ProductBarcode and ProductVariant (409 BARCODE_IN_USE). */
+  @IsString()
+  @IsOptional()
+  @MaxLength(64)
   barcode?: string;
 
   @IsString()
@@ -45,6 +50,13 @@ export class CreateProductDto {
   @IsOptional()
   gstRate?: GstRate;
 
+  /** Cess percentage on the taxable amount (0-100); part of every POS line's tax. */
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  @Max(100)
+  @IsOptional()
+  cessRate?: number;
+
   @IsString()
   @IsOptional()
   hsnCode?: string;
@@ -56,7 +68,7 @@ export class CreateProductDto {
   @IsString()
   @IsOptional()
   supplierId?: string;
-  
+
   @IsString()
   @IsOptional()
   brandId?: string;
@@ -73,4 +85,5 @@ export class CreateProductDto {
   isActive?: boolean;
 }
 
-export class UpdateProductDto extends CreateProductDto {}
+/** PATCH payload: every field optional, same validation rules as create. */
+export class UpdateProductDto extends PartialType(CreateProductDto) {}

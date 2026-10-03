@@ -1,0 +1,31 @@
+# Build context for apps/api/Dockerfile and apps/web/Dockerfile (context = repo root).
+# Dependencies are installed from the lockfile inside the image; outputs are rebuilt.
+.git
+.github
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/test-results
+**/test-results-auth
+**/playwright-report
+**/playwright-report-auth
+**/*.tsbuildinfo
+**/*.log
+# Secrets and runtime data never enter an image; env comes from the orchestrator.
+.env
+**/.env
+**/.env.local
+**/.env.*.local
+apps/api/data
+apps/api/uploads
+dump.rdb
+# Not needed to build or run the servers.
+apps/api/test
+apps/api/load
+apps/web/e2e
+apps/web/e2e-auth
+docs
+*.md
+!apps/api/prisma/MIGRATIONS.md

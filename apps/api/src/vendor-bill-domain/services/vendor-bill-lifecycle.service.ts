@@ -10,7 +10,8 @@ export class VendorBillLifecycleService {
       PENDING_APPROVAL: ['APPROVED', 'REJECTED'],
       APPROVED: ['POSTED'],
       POSTED: ['PARTIALLY_PAID', 'PAID'],
-      PARTIALLY_PAID: ['PAID'],
+      // A bill may be paid in several instalments (roadmap 4.2): PARTIALLY_PAID stays PARTIALLY_PAID until the last one.
+      PARTIALLY_PAID: ['PARTIALLY_PAID', 'PAID'],
       PAID: ['CLOSED'],
       CLOSED: ['ARCHIVED'],
       REJECTED: ['ARCHIVED'],

@@ -24,6 +24,28 @@ export function parseAuthDisabled(
   return undefined;
 }
 
+/** Environments in which `AUTH_DISABLED=true` is accepted at all. */
+const BYPASS_ENVIRONMENTS = new Set(['development', 'test']);
+
+/**
+ * The bypass is a local-demo and test-harness switch. Production, and a
+ * process that never said which environment it is, must not honour it: the
+ * config factory refuses to boot and `AuthBypassService.isEnabled` stays
+ * false either way.
+ */
+export function authBypassPermitted(nodeEnv: string | undefined): boolean {
+  return nodeEnv !== undefined && BYPASS_ENVIRONMENTS.has(nodeEnv);
+}
+
+/** Boot-time check for the AuthConfig factory: throws when the bypass is requested where it is not permitted. */
+export function assertAuthBypassPermitted(authDisabled: boolean | undefined, nodeEnv: string | undefined): void {
+  if (authDisabled === true && !authBypassPermitted(nodeEnv)) {
+    throw new Error(
+      `AUTH_DISABLED=true is only accepted when NODE_ENV is development or test (NODE_ENV=${JSON.stringify(nodeEnv)}). Remove the flag or set it in an untracked .env.local of a development machine.`,
+    );
+  }
+}
+
 /**
  * Authentication configuration domain.
  *

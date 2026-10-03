@@ -104,11 +104,14 @@ API now detects this at boot with a schema probe, logs a loud
 `SCHEMA DRIFT DETECTED` error, and refuses to start. The fix is always:
 
 ```bash
-cd apps/api && npx prisma db push
+cd apps/api && npx prisma migrate deploy
 ```
 
-Run it after every `git pull` that changes `prisma/schema.prisma` (make sure
-`DATABASE_URL` in your environment points at your local database).
+Run it after every `git pull` that adds a migration (make sure `DATABASE_URL`
+in your environment points at your local database). Never `prisma db push`:
+it bypasses the migration history, and the ledger triggers and data fixes
+only ship as migrations. A failed or edited migration is settled with
+`prisma migrate resolve`; see `apps/api/prisma/MIGRATIONS.md`.
 
 ### Seeding demo data
 
@@ -193,10 +196,10 @@ Set both flags together, and never enable them for a production deployment.
 ### 🔧 PHASE 5: Production Optimization
 - [ ] Performance optimization
 - [ ] Redis caching
-- [ ] Docker containerization
+- [x] Docker containerization (`docker compose up`, see docs/DEPLOYMENT.md)
 - [ ] CI/CD pipeline
 - [ ] Security hardening
-- [ ] Monitoring setup
+- [x] Monitoring setup (`/api/metrics`, alert rules, error tracking: see docs/OBSERVABILITY.md)
 
 ## 🎨 UI Components
 
@@ -282,6 +285,9 @@ Use the checklist in [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md). Googl
 ## 📚 Documentation
 
 - [Tech Stack Architecture](./TECH_STACK_ARCHITECTURE.md) - Detailed tech decisions
+- [Deployment](./docs/DEPLOYMENT.md) - Images, probes, shutdown, compose from a fresh clone
+- [Observability](./docs/OBSERVABILITY.md) - JSON logs, `/api/metrics`, error tracking, alert runbook
+- [Backups and restore](./docs/BACKUP_RESTORE.md) - MySQL 8 backup, restore, the rehearsed drill
 - [Component Library](./docs/COMPONENTS.md) - Coming soon
 - [API Documentation](./docs/API.md) - Coming soon
 - [Database Schema](./docs/DATABASE.md) - Coming soon

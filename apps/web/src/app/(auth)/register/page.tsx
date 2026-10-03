@@ -1,11 +1,11 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn, useSession } from 'next-auth/react';
 import { motion } from 'framer-motion';
-import { Lock, Mail, User, Store, ArrowRight, AlertCircle } from 'lucide-react';
+import { Lock, Mail, User, Store, ArrowRight, AlertCircle, KeyRound } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 
 import { clientConfig } from '@/config/env';
@@ -15,16 +15,38 @@ const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 export const dynamic = 'force-dynamic';
 const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
 
+/** An invitation code is 64 hex characters (the API refuses anything else). */
+const INVITE_TOKEN = /^[0-9a-f]{64}$/;
+
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function RegisterForm() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [shopName, setShopName] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { status } = useSession();
   const { toast } = useToast();
+
+  // Roadmap 6.1: the invitation email links here with `?invite=<code>`; the
+  // invitee joins the inviter's shop instead of creating a new one. The code
+  // can also be pasted by hand.
+  useEffect(() => {
+    const fromLink = (searchParams.get('invite') ?? '').trim().toLowerCase();
+    if (fromLink) setInviteToken(fromLink);
+  }, [searchParams]);
+  const joining = inviteToken.length > 0;
 
   useEffect(() => {
     if (status === 'authenticated') {
@@ -35,20 +57,32 @@ export default function RegisterPage() {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (joining && !INVITE_TOKEN.test(inviteToken)) {
+      setError('The invitation code must be the 64-character code from your invitation email.');
+      return;
+    }
     setLoading(true);
 
     try {
-      const res = await fetch(`${API_URL}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password, shopName }),
-      });
+      const res = joining
+        ? await fetch(`${API_URL}/invitations/accept`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: inviteToken, name, password }),
+          })
+        : await fetch(`${API_URL}/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, email, password, shopName }),
+          });
 
       const data = await res.json();
 
       if (!res.ok) {
         if (res.status === 409) {
           setError('An account with this email already exists.');
+        } else if (joining && res.status === 404) {
+          setError('This invitation code is invalid or has expired. Ask the shop owner for a new invitation.');
         } else if (data?.message) {
           setError(Array.isArray(data.message) ? data.message.join('. ') : data.message);
         } else {
@@ -57,8 +91,10 @@ export default function RegisterPage() {
         return;
       }
 
+      // An accepted invitation answers the created account, whose email is the invited address.
+      const signInEmail = joining ? String(data?.email ?? '') : email;
       const result = await signIn('credentials', {
-        email,
+        email: signInEmail,
         password,
         redirect: false,
       });
@@ -69,7 +105,7 @@ export default function RegisterPage() {
         return;
       }
 
-      toast('Your store is ready!', 'success');
+      toast(joining ? 'Welcome aboard! You have joined the shop.' : 'Your store is ready!', 'success');
       router.push('/dashboard');
     } catch (err) {
       console.error(`Registration request to ${API_URL}/auth/register failed:`, err);
@@ -113,10 +149,10 @@ export default function RegisterPage() {
         {/* --- Header --- */}
         <div className="text-center mb-8">
           <h1 className="text-2xl font-black text-gray-900 tracking-tight">
-            Create your store
+            {joining ? 'Join your shop' : 'Create your store'}
           </h1>
           <p className="text-sm text-gray-500 mt-2 font-medium">
-            Set up your DukaanAI account in seconds
+            {joining ? 'Set a name and password for the account you were invited to' : 'Set up your DukaanAI account in seconds'}
           </p>
         </div>
 
@@ -133,7 +169,7 @@ export default function RegisterPage() {
         )}
 
         {/* --- Google sign-up --- */}
-        {googleOAuthEnabled && <button
+        {googleOAuthEnabled && !joining && <button
           type="button"
           onClick={handleGoogleSignup}
           disabled={loading}
@@ -149,7 +185,7 @@ export default function RegisterPage() {
         </button>}
 
         {/* --- Divider --- */}
-        {googleOAuthEnabled && <div className="flex items-center gap-3 my-6">
+        {googleOAuthEnabled && !joining && <div className="flex items-center gap-3 my-6">
           <div className="flex-1 h-px bg-gray-200" />
           <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
             or
@@ -159,6 +195,25 @@ export default function RegisterPage() {
 
         {/* --- Registration form --- */}
         <form onSubmit={handleRegister} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+              Invitation Code <span className="normal-case font-medium text-gray-400">(only if you were invited)</span>
+            </label>
+            <div className="relative">
+              <KeyRound size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                value={inviteToken}
+                onChange={(e) => setInviteToken(e.target.value.trim().toLowerCase())}
+                placeholder="Paste the code from your invitation email"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="Invitation code"
+                className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all text-gray-800 font-mono"
+              />
+            </div>
+          </div>
+
           <div>
             <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
               Full Name
@@ -177,41 +232,45 @@ export default function RegisterPage() {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
-              Shop Name
-            </label>
-            <div className="relative">
-              <Store size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                value={shopName}
-                onChange={(e) => setShopName(e.target.value)}
-                placeholder="Kumar General Store"
-                autoComplete="organization"
-                className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all text-gray-800"
-                required
-              />
+          {!joining && (
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+                Shop Name
+              </label>
+              <div className="relative">
+                <Store size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={shopName}
+                  onChange={(e) => setShopName(e.target.value)}
+                  placeholder="Kumar General Store"
+                  autoComplete="organization"
+                  className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all text-gray-800"
+                  required
+                />
+              </div>
             </div>
-          </div>
+          )}
 
-          <div>
-            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
-              Email Address
-            </label>
-            <div className="relative">
-              <Mail size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="rajesh@example.com"
-                autoComplete="email"
-                className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all text-gray-800"
-                required
-              />
+          {!joining && (
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+                Email Address
+              </label>
+              <div className="relative">
+                <Mail size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="rajesh@example.com"
+                  autoComplete="email"
+                  className="w-full pl-11 pr-4 py-3 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500 transition-all text-gray-800"
+                  required
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <div>
             <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
@@ -237,7 +296,7 @@ export default function RegisterPage() {
             disabled={loading}
             className="w-full bg-[#8B5CF6] hover:bg-[#7C3AED] text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-purple-500/30 flex items-center justify-center gap-2 disabled:opacity-70 group mt-2"
           >
-            {loading ? 'Creating your store…' : 'Create Store'}
+            {loading ? (joining ? 'Joining…' : 'Creating your store…') : joining ? 'Join Shop' : 'Create Store'}
             {!loading && (
               <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
             )}
