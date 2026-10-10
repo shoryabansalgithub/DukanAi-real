@@ -11,10 +11,12 @@ import { EventsReplayService } from './services/events-replay.service';
 import { EventsStatisticsService } from './services/events-statistics.service';
 import { EventsProcessorService } from './services/events-processor.service';
 import { PurchaseOutboxRelayCron } from './workers/purchase-outbox-relay.cron';
+import { OutboxModule } from '../common/outbox/outbox.module';
 
 @Module({
   imports: [
     PrismaModule,
+    OutboxModule,
     BullModule.registerQueue(
       { name: 'purchase-events' },
       { name: 'webhook-delivery' },

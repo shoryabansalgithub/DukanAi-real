@@ -1,0 +1,299 @@
+# DukaanAI from a fresh clone (roadmap 7.3):
+#
+#   cp .env.example .env            # then set JWT_SECRET and NEXTAUTH_SECRET
+#   docker compose up --build -d --wait
+#
+# Boot order: mysql and redis become healthy -> `migrate` runs
+# `prisma migrate deploy` once and exits 0 (the release step; the API never
+# migrates on its own) -> api starts and is healthy once its readiness probe
+# passes -> web starts. `scripts/compose-smoke.sh` drives this end to end
+# (migrations, register, login, a sale, a graceful stop).
+#
+# Secrets come from .env (git-ignored); every other value has a local default.
+# Production deployments keep the same images and release step and supply the
+# environment from their orchestrator: see docs/DEPLOYMENT.md.
+name: dukaanai
+
+# The monitoring stack (profile "ops": Prometheus, Alertmanager, blackbox
+# probes, Loki, Alloy, Grafana; roadmap 7.6, 9.10) lives in one file both
+# this stack and docker-compose.prod.yml include.
+include:
+  - path: deploy/observability/compose.yml
+    project_directory: .
+
+services:
+  mysql:
+    image: mysql:8.0
+    # Migrations create the ledger immutability triggers; with binary logging on
+    # (MySQL 8 default) a non-SUPER user may only do so with this flag. The
+    # binary log is what restore.sh --to rolls a dump forward with (roadmap
+    # 9.2): the server keeps 7 days of it, the db-ops archive the long memory.
+    command: ["mysqld", "--log-bin-trust-function-creators=1", "--binlog-expire-logs-seconds=604800"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-local-only}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-dukaanai}
+      MYSQL_USER: ${MYSQL_USER:-dukaanai}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dukaanai-local-only}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Append-only so queued BullMQ jobs and outbox claims survive a restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Release step: applies pending migrations and exits. Re-run on every
+  # deploy (`docker compose run --rm migrate`); it is a no-op when nothing is pending.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      args: &release-args
+        # The release the image reports (GET /api/health, build_info, error
+        # tracking) and its commit: release images carry their version tag
+        # (roadmap 9.21); here the root .env's values, blank = none.
+        APP_RELEASE: ${APP_RELEASE:-}
+        APP_REVISION: ${APP_REVISION:-}
+    image: dukaanai-api
+    command: ["/app/node_modules/.bin/prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: mysql://${MYSQL_USER:-dukaanai}:${MYSQL_PASSWORD:-dukaanai-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: dukaanai-api
+    environment:
+      NODE_ENV: production
+      PORT: "3002"
+      # Browser origin(s) allowed by CORS and the socket adapter.
+      FRONTEND_URL: ${WEB_ORIGIN:-http://localhost:3000}
+      DATABASE_URL: mysql://${MYSQL_USER:-dukaanai}:${MYSQL_PASSWORD:-dukaanai-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}?connection_limit=${API_DB_CONNECTION_LIMIT:-20}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (32+ characters, e.g. `openssl rand -hex 32`)}
+      # The web server forwards the browser's address on sign-in: one hop.
+      TRUST_PROXY: "1"
+      STORAGE_ROOT: /var/lib/dukaanai/storage
+      UPLOAD_TEMP_DIR: uploads/tmp
+      # Shutdown: readiness flips to 503 on SIGTERM, in-flight work finishes,
+      # then BullMQ, Redis and Prisma close; stop_grace_period exceeds the sum.
+      SHUTDOWN_DRAIN_DELAY_MS: "0"
+      SHUTDOWN_TIMEOUT_MS: "30000"
+      SMTP_URL: ${SMTP_URL:-}
+      EMAIL_FROM: ${EMAIL_FROM:-DukaanAI <no-reply@dukaanai.local>}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # The same client id as the web's: the API accepts only id tokens issued
+      # for it (blank = Google sign-in off, POST /auth/google answers 503).
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      # Observability (roadmap 7.6): JSON logs at this level, GET /api/metrics
+      # (bearer token when METRICS_TOKEN is set), error tracking once SENTRY_DSN is set.
+      LOG_LEVEL: ${LOG_LEVEL:-log}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+      # APP_RELEASE is the image's own (a build argument above): an entry here,
+      # even a blank one, would replace what a release image says it is.
+      # Backup monitoring (roadmap 9.4): the backup jobs' status stamps, read
+      # on every metrics scrape (backup_last_success_timestamp_seconds{kind}).
+      BACKUP_STATUS_DIR: /var/lib/dukaanai/backups/status
+    ports:
+      - "${API_PORT:-3002}:3002"
+    volumes:
+      - api-storage:/var/lib/dukaanai/storage
+      - api-uploads:/app/apps/api/uploads
+      - db-backups:/var/lib/dukaanai/backups:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Readiness (database + Redis + not draining), not just liveness: `web`
+      # starts, and `--wait` returns, only when the API can serve a request.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/api/health/ready').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+    stop_grace_period: 40s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Inlined into the browser bundle: the API URL as the browser sees it.
+        NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
+        APP_RELEASE: ${APP_RELEASE:-}
+        APP_REVISION: ${APP_REVISION:-}
+    image: dukaanai-web
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?Set NEXTAUTH_SECRET in .env (32+ characters, e.g. `openssl rand -hex 32`)}
+      NEXTAUTH_URL: ${WEB_ORIGIN:-http://localhost:3000}
+      # The browser-facing API URL, resolved at run time (roadmap 9.9): the
+      # page's <meta name="dukaanai-api-url"> and the CSP connect-src read
+      # it. Without it the image's build-time value is served, which pointed
+      # browsers behind the edge at http://localhost:3002 (roadmap 9.18).
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
+      # The server reads this one at runtime too (Content-Security-Policy connect-src).
+      NEXT_PUBLIC_API_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
+      # Sign-in and token refresh go to the API over the compose network.
+      API_INTERNAL_URL: http://api:3002/api
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  # Backups (roadmap 7.7, 9.2, 9.3, 9.4; profile "ops"): a MySQL 8 client
+  # container (deploy/db-ops/Dockerfile: the Debian clients incl. mysqlbinlog,
+  # GNU tar, rclone) with the scripts mounted; dumps land in the db-backups
+  # volume, the binary-log archive in its binlog/ directory, the documents
+  # archives in documents/, the status stamps in status/ (which the API reads
+  # for the backup metric). Schedule from the host's cron; objectives and what
+  # each copy covers: docs/DATA_SAFETY.md.
+  #   0 2 * * *    docker compose --profile ops run --rm db-ops backup                  # nightly dump
+  #   */5 * * * *  docker compose --profile ops run --rm db-ops binlog-archive --flush  # 5-minute recovery point
+  #   10 2 * * *   docker compose --profile ops run --rm db-ops documents-backup        # evidence + product images
+  #   30 2 * * *   docker compose --profile ops run --rm db-ops offsite push            # encrypted copy elsewhere
+  #   docker compose --profile ops run --rm db-ops list | status
+  #   docker compose --profile ops run --rm db-ops restore /backups/<file>.sql.gz --yes [--to "YYYY-MM-DD HH:MM:SS"]
+  # It connects as root: recording the dump's binary-log position, reading
+  # the logs and FLUSH BINARY LOGS need RELOAD, REPLICATION CLIENT and
+  # REPLICATION SLAVE, which the application user does not have. The restore
+  # drill (scripts/db/restore-drill.sh) needs CREATE DATABASE as well: run it
+  # from a checkout with DATABASE_URL on the root user (docs/BACKUP_RESTORE.md).
+  db-ops:
+    build:
+      context: .
+      dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args
+    image: dukaanai-db-ops
+    profiles: ["ops"]
+    environment:
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BINLOG_ARCHIVE_DIR: /backups/binlog
+      BINLOG_ARCHIVE_KEEP_DAYS: ${BINLOG_ARCHIVE_KEEP_DAYS:-7}
+      # Documents (roadmap 9.3): the API's storage root and product images, read-only.
+      STORAGE_ROOT: /data/storage
+      MEDIA_DIR: /data/uploads/media
+      DOCUMENTS_BACKUP_DIR: /backups/documents
+      DOCUMENTS_BACKUP_KEEP: ${DOCUMENTS_BACKUP_KEEP:-14}
+      # Off-site copies (roadmap 9.4): an rclone target and the encryption key
+      # from .env; blank = `db-ops offsite` refuses with the reason.
+      OFFSITE_REMOTE: ${OFFSITE_REMOTE:-}
+      OFFSITE_CRYPT_PASSWORD: ${OFFSITE_CRYPT_PASSWORD:-}
+      OFFSITE_CRYPT_SALT: ${OFFSITE_CRYPT_SALT:-}
+      OFFSITE_KEEP_DAYS: ${OFFSITE_KEEP_DAYS:-30}
+    volumes:
+      - ./scripts:/scripts:ro
+      - db-backups:/backups
+      - api-storage:/data/storage:ro
+      - api-uploads:/data/uploads:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  # The 5-minute archive as a service instead of a cron line (profile "ops"):
+  #   docker compose --profile ops up -d binlog-archiver
+  # runs `binlog-archive --flush` every BINLOG_ARCHIVE_INTERVAL_SECONDS (300).
+  binlog-archiver:
+    build:
+      context: .
+      dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args
+    image: dukaanai-db-ops
+    profiles: ["ops"]
+    command: ["archive-loop"]
+    environment:
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root-local-only}@mysql:3306/${MYSQL_DATABASE:-dukaanai}
+      BACKUP_DIR: /backups
+      BINLOG_ARCHIVE_DIR: /backups/binlog
+      BINLOG_ARCHIVE_KEEP_DAYS: ${BINLOG_ARCHIVE_KEEP_DAYS:-7}
+      BINLOG_ARCHIVE_INTERVAL_SECONDS: ${BINLOG_ARCHIVE_INTERVAL_SECONDS:-300}
+    volumes:
+      - ./scripts:/scripts:ro
+      - db-backups:/backups
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The edge (roadmap 9.8; profile "edge"): Caddy terminates HTTPS for both
+  # hostnames, redirects HTTP, forwards the client address (the API runs with
+  # TRUST_PROXY=1) and hides /api/metrics from the internet. Locally the
+  # certificates come from Caddy's own CA (EDGE_TLS_LINE="tls internal");
+  # with real DNS names and ports 80/443 reachable they come from Let's
+  # Encrypt. docker-compose.prod.yml runs the same service unconditionally.
+  #   docker compose --profile edge up -d edge     -> https://app.localhost
+  edge:
+    image: caddy:2.10.2-alpine
+    profiles: ["edge"]
+    environment:
+      WEB_HOST: ${WEB_HOST:-app.localhost}
+      API_HOST: ${API_HOST:-api.localhost}
+      EDGE_TLS_LINE: ${EDGE_TLS_LINE:-tls internal}
+      EDGE_MAX_BODY: ${EDGE_MAX_BODY:-64MB}
+      EDGE_UPSTREAM_TIMEOUT: ${EDGE_UPSTREAM_TIMEOUT:-60s}
+      EDGE_BLOCKED_IPS: ${EDGE_BLOCKED_IPS:-0.0.0.0/32}
+    ports:
+      - "${EDGE_HTTP_PORT:-80}:80"
+      - "${EDGE_HTTPS_PORT:-443}:443"
+      - "${EDGE_HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  redis-data:
+  api-storage:
+  api-uploads:
+  db-backups:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,72 @@
+# The web (Next.js standalone). Stateless: scale it freely. It reaches the
+# API inside the cluster through API_INTERNAL_URL and forwards the client
+# address it received from the Ingress on sign-in (one proxy hop).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dukaanai-web
+  labels:
+    app.kubernetes.io/name: dukaanai-web
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dukaanai-web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dukaanai-web
+        app.kubernetes.io/part-of: dukaanai
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: dukaanai-web
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: HOSTNAME
+              value: 0.0.0.0
+            - name: NEXTAUTH_URL
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: WEB_ORIGIN } }
+            # Read at run time by the web server (the root layout hands it to
+            # the browser): one image per release for every environment.
+            - name: API_PUBLIC_URL
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: API_PUBLIC_URL } }
+            - name: API_INTERNAL_URL
+              value: http://dukaanai-api:3002/api
+            - name: NEXTAUTH_SECRET
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: NEXTAUTH_SECRET } }
+            - name: GOOGLE_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GOOGLE_CLIENT_ID } }
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GOOGLE_CLIENT_SECRET } }
+          startupProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { memory: 512Mi }

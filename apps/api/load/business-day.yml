@@ -1,0 +1,96 @@
+# Roadmap 9.17: a simulated business day. This file is the PLAN that
+# load/business-day.mjs executes against a running deployment (two API
+# instances or a staging stack): how many shops and cashiers, the shape of
+# the day, the mix of documents, the stock receipts, the shift changes, the
+# browser sessions and the two failures injected mid-run. Every number here
+# can be overridden by a BUSINESS_DAY_* variable (see load/README.md).
+#
+# Shop time is compressed: `day.hours` hours of trading are played in
+# `day.minutes` real minutes, so every interval below is scaled by the same
+# factor (8 h -> 90 min is 5.33x faster than life).
+
+day:
+  hours: 8            # trading hours simulated (opening to closing)
+  minutes: 90         # real minutes the day is compressed into (BUSINESS_DAY_MINUTES)
+  shops: 10           # BUSINESS_DAY_SHOPS
+  cashiersPerShop: 3  # API sessions billing at the counter (BUSINESS_DAY_CASHIERS)
+  # Browser sessions per shop through the UI (Playwright, e2e-load/business-day.spec.ts):
+  # an owner on the dashboard who also cancels and records payments, and a
+  # cashier on the POS who bills, returns and runs the shift banner.
+  uiSessionsPerShop: 2
+
+# Sales per cashier per shop hour, hour by hour: a slow opening, the lunch
+# peak, an afternoon lull and the evening peak before closing. The sum (104)
+# is one cashier's day; three cashiers in ten shops bill about 3,100 sales.
+profile: [6, 10, 14, 18, 16, 10, 14, 16]
+
+mix:
+  tender:             # percent of sales by tender
+    cash: 55
+    upi: 30
+    credit: 15        # udhar on a customer with a credit limit (CREDIT_LIMIT_EXCEEDED is a refusal, not a failure)
+  discounted: 30      # percent of sales carrying a discount
+  lineDiscountPercents: [5, 10]   # inside a cashier's authority (BILLING_CASHIER_MAX_DISCOUNT_PERCENT = 10)
+  invoiceDiscountPercent: 5
+  managerDiscountPercent: 15      # above it: billed by the manager, as the contract requires
+  withCustomer: 30    # percent of cash/UPI sales attached to a customer
+  linesPerSale: [1, 4]
+  quantityPerLine: [1, 3]
+  # Other documents per 100 cashier sales.
+  perHundredSales:
+    returns: 6        # one unit of one line of the cashier's own recent sale, cash or UPI refund
+    cancellations: 3  # by the manager (MANAGER+ only), a sale of the day with no returns
+    repayments: 5     # a credit customer pays part of the outstanding balance, cash or UPI
+    managerSales: 4   # sales billed by the manager with the above-authority discount
+
+catalogue:
+  # One catalogue per shop: eight everyday products across the GST slabs,
+  # plus one scarce product whose stock runs out during the day so
+  # INSUFFICIENT_STOCK is exercised as the 409 it is.
+  products:
+    - { name: 'Tea 250 g',        gstRate: FIVE,        costPrice: 90,  sellingPrice: 120, mrp: 130, unit: PCS }
+    - { name: 'Sugar 1 kg',       gstRate: ZERO,        costPrice: 38,  sellingPrice: 45,  mrp: 48,  unit: KG }
+    - { name: 'Biscuits',         gstRate: EIGHTEEN,    costPrice: 22,  sellingPrice: 30,  mrp: 30,  unit: PCS }
+    - { name: 'Shampoo 180 ml',   gstRate: EIGHTEEN,    costPrice: 140, sellingPrice: 180, mrp: 199, unit: PCS }
+    - { name: 'Rice 5 kg',        gstRate: ZERO,        costPrice: 270, sellingPrice: 320, mrp: 340, unit: PCS }
+    - { name: 'Cold drink 750 ml', gstRate: TWENTYEIGHT, costPrice: 30, sellingPrice: 40,  mrp: 40,  unit: PCS }
+    - { name: 'Bath soap',        gstRate: EIGHTEEN,    costPrice: 26,  sellingPrice: 35,  mrp: 36,  unit: PCS }
+    - { name: 'Milk 1 L',         gstRate: ZERO,        costPrice: 52,  sellingPrice: 60,  mrp: 60,  unit: PCS }
+  openingStock: 5000
+  scarce: { name: 'Premium ghee 1 kg', gstRate: TWELVE, costPrice: 520, sellingPrice: 650, mrp: 699, unit: PCS, openingStock: 25 }
+  customers:
+    credit: 6         # creditLimit below, created by the manager (MANAGER+ only)
+    creditLimit: 50000
+    plain: 4
+
+receipts:
+  # Stock receipts through the procurement chain: the owner raises a purchase
+  # order, submits it, the manager approves it (separation of duties), the
+  # owner creates the goods receipt against the order, receives, inspects
+  # (PASS) and accepts, which stocks the goods and posts the payable.
+  at: [0.15, 0.55]    # fractions of the day
+  lines: 3            # products per receipt
+  quantity: [50, 200]
+
+shifts:
+  openingCash: 2000
+  # One cashier per shop closes and reopens the drawer half way through the day.
+  midDayChangeAt: 0.5
+
+dashboard:
+  pollSeconds: 30          # the owner's dashboard: four reads (summary, kpis, trends, insights)
+  notificationsSeconds: 60 # the navbar bell
+  listsEveryMinutes: 10    # the invoice and customer lists
+
+chaos:
+  # Two failures injected through the hook commands (BUSINESS_DAY_CHAOS_*):
+  redisRestartAt: 0.35     # Redis restarted once (caches, throttle counters and queues reconnect)
+  apiKillAt: 0.6           # one API instance killed (SIGKILL) ...
+  apiDownSeconds: 90       # ... and started again after this long; sessions fail over meanwhile
+  burstBeforeKill: 6       # checkouts started at the doomed instance just before the kill, so documents are in flight
+  burstLeadMs: 60          # how long before the kill the burst starts
+
+gate:
+  api5xx: 0                # answers of 5xx from the API itself (an edge's 502 during the kill is not one)
+  lostOrDuplicatedInvoices: 0
+  reconciliationDrift: 0

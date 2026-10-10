@@ -1,4 +1,5 @@
-import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { TenderType } from '@prisma/client';
+import { IsBoolean, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Length, Max, Min } from 'class-validator';
 
 export class CreateSupplierDto {
   @IsString() @IsNotEmpty() name: string;
@@ -25,5 +26,11 @@ export class UpdateSupplierDto {
 }
 
 export class RecordSupplierPaymentDto {
-  @IsNumber() @Min(0.01) amount: number;
+  @IsNumber() @Min(0.01) @Max(99_999_999.99) amount: number;
+  /** CASH leaves the drawer (CR CASH); anything else credits BANK. */
+  @IsEnum(TenderType) @IsOptional() tender?: TenderType;
+  @IsString() @IsOptional() @Length(1, 191) reference?: string;
+  /** Replaying the same key returns the recorded payment instead of paying twice. */
+  @IsString() @IsOptional() @Length(8, 191) idempotencyKey?: string;
+  @IsString() @IsOptional() @Length(1, 191) notes?: string;
 }

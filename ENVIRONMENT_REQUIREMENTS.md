@@ -1,33 +1,57 @@
 # Environment Requirements
 
-To securely operate `v1.0.0-rc1`, the hosting infrastructure must fulfill the following rigid specifications.
+What the hosting infrastructure must provide to run the API and the web app.
+The variable-by-variable reference is `apps/api/.env.example` (every variable
+the API reads, with its default; `src/config/env-example.spec.ts` keeps it
+complete) and `apps/web/.env.example`; the deployment runbook is
+`docs/DEPLOYMENT.md`.
 
 ## 1. Relational Database
-**Engine:** MySQL 8.0+
-- **Privileges:** The `DATABASE_URL` user must possess explicit privileges to `CREATE TRIGGER` and `DROP TRIGGER`. Prisma migrations heavily rely on this for Ledger Immutability guarantees.
-- **Connection Limits:** Set `connection_limit` carefully inside the Prisma connection string to prevent `OutboxRelayService` and API scaling from starving the pool.
-- **Isolation Level:** `ReadCommitted` or stronger. (Prisma explicitly manages this natively inside `$transaction` blocks).
+**Engine:** MySQL 8.0+ (production). Development and CI may run MariaDB 10.11,
+but the two differ (`AGENTS.md`, "Build and run sharp edges"): test raw SQL
+on MySQL 8.
+- **Privileges:** the `DATABASE_URL` user needs `CREATE TRIGGER` / `DROP
+  TRIGGER` (the ledger immutability triggers ship as migrations) and, for the
+  migration replay test, `CREATE DATABASE` on the test server.
+- **Connection limits:** set `?connection_limit=` in `DATABASE_URL` per API
+  instance so the relays and the request pool cannot starve each other.
+- **Isolation:** the API sets `READ COMMITTED` on its own transactions; the
+  server default may stay `REPEATABLE READ`.
+- **Migrations:** `prisma migrate deploy` is the release step (compose
+  `migrate` service, or a Kubernetes Job) and runs before the new API starts.
+  Never `prisma db push`.
 
-## 2. In-Memory Cache & Broker
-**Engine:** Redis 6.2+
-- **High Availability:** A clustered or sentinel architecture is recommended but not mandatory. The API operates gracefully in "degraded mode" if Redis goes offline, utilizing native MySQL locks.
-- **Persistence:** Volatile. No AOF/RDB configuration is strictly necessary. The `InventoryReconService` automatically rewrites dropped states from MySQL.
-- **Eviction Policy:** `allkeys-lru` or `volatile-lru` is acceptable.
+## 2. Redis
+**Engine:** Redis 6.2+ (7 in the reference compose stack, AOF on).
+- `REDIS_URL` is required in every environment (`redis://` or `rediss://`;
+  the path is the database index). It carries BullMQ, the shared cache, the
+  cron locks, the throttler counters and the advisory stock hints.
+- **Degradation:** the cache, throttler and stock hints fall back to
+  per-process state when Redis is unreachable and recover when it returns;
+  queued work waits. Redis never decides money or stock.
+- **Persistence:** optional. Every cached or queued value is rebuilt from
+  MySQL (`InventoryReconService`, the outbox relays).
 
 ## 3. Node.js Runtime
-**Engine:** Node.js v18.17.x or v20.x
-- **Async Hooks:** Deeply utilizes `node:async_hooks` via `AsyncLocalStorage` for `Correlation ID` distributed tracing. V8 engine stability on Node 18+ is required.
-- **Memory Boundaries:** Set standard `--max-old-space-size` depending on container capacity to ensure BullMQ workers can process spikes.
+**Engine:** Node.js 22 (`.nvmrc`; `engines` floor 22.12 in every
+`package.json`; the Docker images pin the same major).
+- `AsyncLocalStorage` carries the tenant context and the correlation id.
+- Set `--max-old-space-size` to the container's capacity; every API instance
+  also runs every BullMQ worker.
 
-## 4. Environment Variables Map
-| Variable | Required? | Usage Specification |
+## 4. Required variables (production)
+| Variable | App | Rule |
 | :--- | :--- | :--- |
-| `DATABASE_URL` | **YES** | MySQL connection string. Must target a database schema user with Trigger permissions. |
-| `PORT` | NO | Express server binding. Defaults to `3001`. |
-| `FRONTEND_URL` | **YES** | Comma-separated list of CORS-approved domains. |
-| `REDIS_URL` | **YES in production** | BullMQ connection string. Production startup rejects a missing or malformed value; development may run without Redis for local API work, but queued work is unavailable. |
-| `NODE_ENV` | NO | Use `production` to disable Swagger and optimize performance mappings. |
-| `JWT_SECRET` | **YES** | Signature key for Bearer tokens. |
-| `JWT_EXPIRES_IN` | **YES** | Default access-token validity. |
-| `JWT_REFRESH_SECRET` | **YES** | Signature key for refresh-rotation tokens. |
-| `JWT_REFRESH_EXPIRES_IN` | **YES** | Default refresh-token validity. |
+| `NODE_ENV` | API, web | Required; `production` (the start scripts pin it, a bare process refuses to boot). Disables Swagger and query logging; refuses `LOG_LEVEL=debug`, a relative `STORAGE_ROOT`, placeholder secrets and `AUTH_DISABLED`. |
+| `DATABASE_URL` | API | MySQL 8 connection string with `connection_limit`. |
+| `REDIS_URL` | API | See §2. |
+| `JWT_SECRET` | API | 32+ characters, no template value (boot refuses otherwise). HS256. There is no refresh secret: refresh tokens are opaque and stored hashed (`JWT_REFRESH_EXPIRES_IN` and `SESSION_ABSOLUTE_LIFETIME` bound them). |
+| `FRONTEND_URL` | API | Comma-separated absolute browser origins (CORS and sockets). |
+| `STORAGE_ROOT` | API | Absolute path on a persistent volume (billing evidence). |
+| `PORT` | API | Defaults to `3002`. |
+| `NEXTAUTH_SECRET`, `NEXTAUTH_URL` | web | 32+ character secret; the web's public origin. |
+| `NEXT_PUBLIC_API_URL` | web | The API as the browser reaches it; inlined at build time and read at runtime for the CSP. |
+| `SMTP_URL` | API | Required for invitations and password reset in production (503 otherwise). |
+
+Optional integrations (`GEMINI_API_KEY`, `S3_*`, Google OAuth, `SENTRY_DSN`,
+`METRICS_TOKEN`) are off until set; `.env.example` documents each.

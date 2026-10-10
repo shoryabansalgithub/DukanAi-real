@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { attributeMatrixProblem, countCombinations, MAX_VARIANT_COMBINATIONS } from './dto/generate-variants.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
@@ -47,12 +48,15 @@ export class ProductVariantsService {
       });
       if (!product) throw new NotFoundException('Product not found');
 
-      // Cartesian product logic
-      const keys = Object.keys(attributes);
-      const valuesArray = keys.map(k => attributes[k]);
+      // Roadmap 5.2: the matrix is bounded before it is expanded (the DTO checks the same; this guards direct callers).
+      const problem = attributeMatrixProblem(attributes);
+      if (problem) {
+        throw new BadRequestException({ message: problem, code: countCombinations(attributes) > MAX_VARIANT_COMBINATIONS ? 'VARIANT_MATRIX_TOO_LARGE' : 'VARIANT_MATRIX_INVALID' });
+      }
 
-      const cartesian = (...a: any[]) => a.reduce((a, b) => a.flatMap((d: any) => b.map((e: any) => [d, e].flat())));
-      const combinations = valuesArray.length > 1 ? cartesian(...valuesArray) : valuesArray[0].map(v => [v]);
+      // Cartesian product of the value lists, in attribute order.
+      const keys = Object.keys(attributes);
+      const combinations = keys.reduce<string[][]>((acc, key) => acc.flatMap((prefix) => attributes[key].map((value) => [...prefix, value])), [[]]);
 
       return this.prisma.$transaction(async (tx) => {
           // 1. Bulk Create Variants

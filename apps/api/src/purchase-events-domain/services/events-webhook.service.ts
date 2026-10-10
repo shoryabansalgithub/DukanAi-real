@@ -30,7 +30,8 @@ export class EventsWebhookService {
           data: {
             endpointId: endpoint.id,
             eventId: outboxEventId,
-            payload
+            payload,
+            shopId,
           },
           opts: {
             jobId: `webhook-${endpoint.id}-${outboxEventId}`

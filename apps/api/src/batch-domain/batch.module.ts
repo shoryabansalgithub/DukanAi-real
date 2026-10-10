@@ -4,6 +4,7 @@ import { InventoryDomainModule } from '../inventory-domain/inventory-domain.modu
 import { BatchService } from './services/batch.service';
 import { BatchAllocationService } from './services/batch-allocation.service';
 import { ExpiryService } from './services/expiry.service';
+import { BatchExpirySweepScheduler } from './services/batch-expiry-sweep.scheduler';
 import { RecallService } from './services/recall.service';
 import { BatchController } from './batch.controller';
 
@@ -14,6 +15,7 @@ import { BatchController } from './batch.controller';
     BatchService,
     BatchAllocationService,
     ExpiryService,
+    BatchExpirySweepScheduler,
     RecallService
   ],
   exports: [

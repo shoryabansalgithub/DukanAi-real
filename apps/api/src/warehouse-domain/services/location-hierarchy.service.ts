@@ -1,7 +1,10 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { rethrowUniqueViolation } from '../../common/db/unique-violation';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { CreateLocationDto } from '../dto/warehouse.dto';
+import { assertOwned } from '../../prisma/tenant-ownership';
+import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class LocationHierarchyService {
@@ -15,16 +18,11 @@ export class LocationHierarchyService {
    */
   async createLocation(dto: CreateLocationDto) {
     const shopId = this.tenantContext.getShopId();
+    await assertOwned(this.prisma, 'warehouse', dto.warehouseId, shopId, { isDeleted: false });
 
-    // Prevent duplicate codes within same warehouse
-    const existing = await this.prisma.location.findUnique({
-      where: {
-        shopId_warehouseId_code_deletedAt: {
-          shopId, warehouseId: dto.warehouseId, code: dto.code, deletedAt: null as any
-        }
-      }
-    });
-    if (existing) throw new BadRequestException(`Code ${dto.code} already exists in this warehouse.`);
+    // Friendly pre-check; the unique index (shopId, warehouseId, code, deletedToken) is the guard.
+    const existing = await this.prisma.location.findFirst({ where: { shopId, warehouseId: dto.warehouseId, code: dto.code, isDeleted: false }, select: { id: true } });
+    if (existing) throw new ConflictException({ message: `Code ${dto.code} already exists in this warehouse.`, code: 'LOCATION_CODE_IN_USE', details: { locationId: existing.id } });
 
     let path = `/${dto.warehouseId}`;
     let depth = 0;
@@ -41,30 +39,32 @@ export class LocationHierarchyService {
       path = `/${dto.warehouseId}/${dto.code}`;
     }
 
-    return this.prisma.location.create({
-      data: {
-        ...dto,
-        shopId,
-        path,
-        depth
-      }
-    });
+    try {
+      return await this.prisma.location.create({
+        data: {
+          ...dto,
+          shopId,
+          path,
+          depth
+        }
+      });
+    } catch (error) {
+      rethrowUniqueViolation(error, [{ index: 'Location_shopId_warehouseId_code', code: 'LOCATION_CODE_IN_USE', message: `Code ${dto.code} already exists in this warehouse.` }]);
+    }
   }
 
   /**
    * Finds all locations inside a specific parent via ultra-fast prefix matching
    */
-  async getSubtree(warehouseId: string, parentPath: string) {
+  async getSubtree(warehouseId: string, parentPath: string, query?: ListQueryDto) {
     const shopId = this.tenantContext.getShopId();
+    const { skip, take } = pageArgs(query);
     // Because path is indexed (shopId, path), a LIKE query with trailing wildcard uses the index perfectly.
-    return this.prisma.location.findMany({
-      where: {
-        shopId,
-        warehouseId,
-        path: { startsWith: parentPath },
-        isDeleted: false
-      },
-      orderBy: { path: 'asc' }
-    });
+    const where = { shopId, warehouseId, path: { startsWith: parentPath }, isDeleted: false };
+    const [items, total] = await Promise.all([
+      this.prisma.location.findMany({ where, orderBy: [{ path: 'asc' }, { id: 'asc' }], skip, take }),
+      this.prisma.location.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 }

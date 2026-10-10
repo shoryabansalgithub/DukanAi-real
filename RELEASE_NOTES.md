@@ -1,4 +1,12 @@
 # DukaanAI Release Notes
+
+> **Historical, superseded.** These are the v1.0.0-rc1 notes of June 2026 (never
+> tagged in git). Several claims below did not hold or later stopped holding
+> (the outbox could lose an event that used up its retries; see "Corrections to
+> the v1.0.0-rc1 and v1.0.0-rc2 entries" in `CHANGELOG.md`). Release notes are
+> now the `CHANGELOG.md` section
+> of each version, published on the GitHub release of its tag (`RELEASE.md`).
+
 **Version:** `v1.0.0-rc1` (Sprint 1 Release Candidate)
 
 ## Executive Summary

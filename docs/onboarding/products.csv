@@ -1,0 +1,3 @@
+sku,name,category,barcode,hsnCode,unit,gstRate,cessRate,costPrice,sellingPrice,mrp,wholesalePrice,reorderPoint,type,description
+RICE-BAS-5KG,India Gate Basmati Rice 5 kg,Rice & Grains,8901234567890,10063020,PCS,5,0,560,599,650,580,5,SIMPLE,
+SOAP-LUX-100G,Lux Soap 100 g,Personal Care,8901030712345,34011110,PCS,18,0,28.50,32,35,30,24,SIMPLE,

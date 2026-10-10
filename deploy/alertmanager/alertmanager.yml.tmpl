@@ -1,0 +1,113 @@
+# Alertmanager configuration TEMPLATE (roadmap 9.10): render.sh turns it into
+# /alertmanager/alertmanager.yml from the ALERT_* environment at container
+# start (compose `alertmanager` service), writing the secrets into files the
+# *_file fields below read. Lines prefixed `#@email`, `#@slack`, `#@pagerduty`
+# and `#@smtpauth` are enabled only when their variable is set, so the same
+# template serves email-only, Slack-only and paged setups.
+#
+#   ALERT_EMAIL_TO          who receives every alert by mail (comma-separated)
+#   ALERT_EMAIL_FROM        the sender                      (alerts@example.com)
+#   ALERT_SMTP_SMARTHOST    host:port of the SMTP relay       (smtp.example.com:587)
+#   ALERT_SMTP_USERNAME / ALERT_SMTP_PASSWORD   its credentials (blank = no auth)
+#   ALERT_SLACK_WEBHOOK_URL an incoming-webhook URL; ALERT_SLACK_CHANNEL (#ops-alerts)
+#   ALERT_PAGERDUTY_ROUTING_KEY  an Events API v2 integration key: critical alerts page
+#   ALERT_TIMEZONE          the shop day (Asia/Kolkata): warnings are held out of hours
+#
+# Routing: severity=critical pages the on-call (PagerDuty when configured,
+# else Slack + email at once, repeated hourly until resolved) AND goes to the
+# team channel; severity=warning goes to the team channel and is held
+# between 22:00 and 08:00 and on Sunday, delivered when the window ends.
+# While the API is down every warning is inhibited (one page, not twelve).
+# The on-call rota lives in PagerDuty (or docs/OBSERVABILITY.md, "On-call").
+# Validate a rendered file: amtool check-config FILE; see the routing with
+# amtool config routes test --config.file FILE severity=critical.
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: '__ALERT_SMTP_SMARTHOST__'
+  smtp_from: '__ALERT_EMAIL_FROM__'
+  smtp_require_tls: __ALERT_SMTP_REQUIRE_TLS__
+  #@smtpauth smtp_auth_username: '__ALERT_SMTP_USERNAME__'
+  #@smtpauth smtp_auth_password_file: __SECRETS_DIR__/smtp-password
+
+time_intervals:
+  - name: out-of-hours
+    time_intervals:
+      - times:
+          - start_time: '00:00'
+            end_time: '08:00'
+          - start_time: '22:00'
+            end_time: '24:00'
+        location: '__ALERT_TIMEZONE__'
+      - weekdays: ['sunday']
+        location: '__ALERT_TIMEZONE__'
+
+route:
+  receiver: team
+  group_by: [alertname, severity]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Critical: page the on-call and tell the team, repeated hourly until resolved.
+    - matchers: ['severity="critical"']
+      receiver: oncall
+      repeat_interval: 1h
+      continue: true
+    - matchers: ['severity="critical"']
+      receiver: team
+      repeat_interval: 1h
+    # Warnings wait for the working day.
+    - matchers: ['severity="warning"']
+      receiver: team
+      mute_time_intervals: [out-of-hours]
+
+inhibit_rules:
+  # An API that is down explains every warning about it.
+  - source_matchers: ['alertname="DukaanAiApiDown"']
+    target_matchers: ['severity="warning"']
+    equal: [job]
+  # An endpoint that is down from outside while the API is down is the same page.
+  - source_matchers: ['alertname="DukaanAiApiDown"']
+    target_matchers: ['alertname="DukaanAiEndpointDown"']
+  # A dependency the API cannot reach explains its failing readiness probe
+  # (roadmap 9.18: the Redis drill paged three times for one cause). The
+  # login page probe is not held back: the web can fail on its own.
+  - source_matchers: ['alertname="DukaanAiDependencyDown"']
+    target_matchers: ['alertname="DukaanAiEndpointDown"', 'instance=~".*/api/health/ready"']
+  # An expired certificate explains the failing probe of the same address
+  # (roadmap 9.18: the certificate drill paged "endpoint down" with no cause).
+  - source_matchers: ['alertname="DukaanAiCertificateExpired"']
+    target_matchers: ['alertname="DukaanAiEndpointDown"']
+    equal: [instance]
+
+receivers:
+  - name: oncall
+    #@pagerduty pagerduty_configs:
+    #@pagerduty   - routing_key_file: __SECRETS_DIR__/pagerduty-routing-key
+    #@pagerduty     severity: critical
+    #@pagerduty     send_resolved: true
+    #@pagerduty     description: '{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+    #@pagerduty     links:
+    #@pagerduty       - href: '{{ .CommonAnnotations.runbook_url }}'
+    #@pagerduty         text: 'Runbook (docs/RUNBOOKS.md)'
+    #@slack slack_configs:
+    #@slack   - api_url_file: __SECRETS_DIR__/slack-webhook
+    #@slack     channel: '__ALERT_SLACK_CHANNEL__'
+    #@slack     send_resolved: true
+    #@slack     title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
+    #@slack     title_link: '{{ .CommonAnnotations.runbook_url }}'
+    #@slack     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}Runbook: {{ .Annotations.runbook_url }}{{ "\n" }}{{ end }}'
+    #@email email_configs:
+    #@email   - to: '__ALERT_EMAIL_TO__'
+    #@email     send_resolved: true
+  - name: team
+    #@slack slack_configs:
+    #@slack   - api_url_file: __SECRETS_DIR__/slack-webhook
+    #@slack     channel: '__ALERT_SLACK_CHANNEL__'
+    #@slack     send_resolved: true
+    #@slack     title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
+    #@slack     title_link: '{{ .CommonAnnotations.runbook_url }}'
+    #@slack     text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}Runbook: {{ .Annotations.runbook_url }}{{ "\n" }}{{ end }}'
+    #@email email_configs:
+    #@email   - to: '__ALERT_EMAIL_TO__'
+    #@email     send_resolved: true

@@ -1,0 +1,25 @@
+{
+  "$comment": "Roadmap phase 2 boot matrix, shared by test/boot-regression.e2e-spec.ts (the built entrypoint) and scripts/certify/boot-matrix.sh (the release candidate image, roadmap 9.12). validProduction passes every configuration rule; each case overrides one variable (null = unset) and must refuse to start with [Bootstrap FATAL] and the reason, before anything dials the database or Redis.",
+  "fatalMarker": "\\[Bootstrap FATAL\\]",
+  "validProduction": {
+    "NODE_ENV": "production",
+    "PORT": "3999",
+    "FRONTEND_URL": "https://app.example.com",
+    "JWT_SECRET": "k9vP2xR7mQ4tW8zB1nL6cH3jF5dS0aY2eU4iO7pA9sD1fG3h",
+    "JWT_EXPIRES_IN": "1d",
+    "JWT_REFRESH_EXPIRES_IN": "7d",
+    "DATABASE_URL": "mysql://user:pass@127.0.0.1:3306/dukaanai",
+    "REDIS_URL": "redis://127.0.0.1:6379/0"
+  },
+  "cases": [
+    { "label": "no NODE_ENV", "env": { "NODE_ENV": null }, "reason": "NODE_ENV must be set to development, test or production" },
+    { "label": "a blank JWT_SECRET", "env": { "JWT_SECRET": "" }, "reason": "jwtSecret is not set", "note": "Blank rather than absent: with NODE_ENV=production the committed template fills an absent JWT_SECRET with its placeholder, which is the next case." },
+    { "label": "the committed placeholder JWT_SECRET", "env": { "JWT_SECRET": "___REPLACE_ME_IN_PRODUCTION___" }, "reason": "jwtSecret is a template placeholder" },
+    { "label": "a short JWT_SECRET", "env": { "JWT_SECRET": "tooshort" }, "reason": "jwtSecret is shorter than 32 characters" },
+    { "label": "a placeholder FRONTEND_URL", "env": { "FRONTEND_URL": "___REPLACE_ME_IN_PRODUCTION___" }, "reason": "frontendUrl is a template placeholder" },
+    { "label": "AUTH_DISABLED=true in production", "env": { "AUTH_DISABLED": "true" }, "reason": "AUTH_DISABLED=true is only accepted when NODE_ENV is development or test" },
+    { "label": "a relative STORAGE_ROOT", "env": { "STORAGE_ROOT": "./data/storage" }, "reason": "storageRoot is relative", "note": "Roadmap 7.5: a relative root would depend on the working directory of whoever starts the process." },
+    { "label": "LOG_LEVEL=debug in production", "env": { "LOG_LEVEL": "debug" }, "reason": "logLevel is \"debug\": production prints at most the \"log\" level", "note": "Roadmap 7.6: no debug output in production." },
+    { "label": "a placeholder SENTRY_DSN", "env": { "SENTRY_DSN": "___REPLACE_ME_IN_PRODUCTION___" }, "reason": "sentryDsn is a template placeholder", "note": "Roadmap 7.6: a placeholder DSN would silently disable error tracking." }
+  ]
+}

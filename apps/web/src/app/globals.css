@@ -89,3 +89,68 @@
     background-color: #111122; /* Very dark navy/indigo */
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Receipt printing (EXEC-006C). The receipt page renders into a body-level
+   `.receipt-print-root` portal; while it is mounted only that element prints,
+   sized by the page's own `@page` rule (roadmap 6.7: print CSS per page).
+   Everything marked `.print-hidden` is dropped on every page.
+   --------------------------------------------------------------------------- */
+/* Skeleton pulse (roadmap 6.8): the same 0.5 → 0.8 → 0.5 opacity cycle the
+   framer-motion loop produced, now a compositor-only CSS animation. */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+.skeleton-pulse {
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-pulse { animation: none; opacity: 0.6; }
+}
+
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Every page: the shell (sidebar, navbar, banners, toolbars) is dropped; the page's own <PrintPageStyle> sets @page. */
+  .print-hidden {
+    display: none !important;
+  }
+
+  /* Receipt page: only the 80 mm portal prints. */
+  body:has(.receipt-print-root) > *:not(.receipt-print-root) {
+    display: none !important;
+  }
+
+  .receipt-print-root {
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    z-index: auto !important;
+  }
+
+  .receipt-paper {
+    width: auto !important;
+    max-width: 72mm;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: 0 !important;
+  }
+
+  /* Documents (invoice detail): cards flatten to paper, no hover chrome. */
+  .print-document {
+    max-width: none !important;
+  }
+  .print-document .hoverable,
+  .print-document [class*='shadow'] {
+    box-shadow: none !important;
+  }
+}

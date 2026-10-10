@@ -1,0 +1,39 @@
+# One API replica, so every volume is ReadWriteOnce on the provider's disk
+# class (snapshot it on a schedule: docs/DEPLOYMENT.md, "Provider steps").
+# Several replicas need the documents in object storage behind
+# StoragePathBuilder (roadmap 9.7, not built) rather than ReadWriteMany.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dukaanai-storage
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dukaanai-uploads
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dukaanai-backups
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,0 +1,94 @@
+# Prometheus configuration for the DukaanAI monitoring stack (roadmap 7.6,
+# 9.10): the API scrape, the alert rules, Alertmanager as the delivery path
+# and the blackbox uptime probes. `docker compose --profile ops up -d`
+# (deploy/observability/compose.yml) runs it against the compose stack.
+#
+# The API exposes `GET /api/metrics` on its own port, hidden by the edge:
+# keep the scrape on the internal network. When METRICS_TOKEN is set the
+# scrape must carry it as a bearer token: put the value, and nothing else,
+# in the credentials file below and uncomment the block.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: dukaanai-api
+    metrics_path: /api/metrics
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/dukaanai-metrics-token
+    static_configs:
+      - targets: ["api:3002"]
+
+  # Uptime probes through the blackbox exporter, every minute: the readiness
+  # route (database + Redis + not draining) and the login page. The inner
+  # targets watch the containers; add the public URLs (through the edge) to
+  # watch what customers see. An external checker complements this one
+  # (docs/OBSERVABILITY.md, "Uptime checks").
+  - job_name: blackbox-http
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://api:3002/api/health/ready
+          # - https://api.example.com/api/health/ready
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: blackbox-login
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [http_login_page]
+    static_configs:
+      - targets:
+          - http://web:3000/login
+          # - https://app.example.com/login
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # The certificate of each public address, read whether or not it verifies
+  # (module tls_certificate): DukaanAiCertificateExpiring and
+  # DukaanAiCertificateExpired read this job, so an expired certificate pages
+  # as itself and holds back the EndpointDown of the same address. Only the
+  # public URLs serve a certificate; uncomment them with the ones above.
+  - job_name: blackbox-tls
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [tls_certificate]
+    static_configs:
+      - targets:
+          # - https://api.example.com/api/health/ready
+          # - https://app.example.com/login
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]

@@ -1,5 +1,4 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
 import { Prisma, AllocationStatus } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 
@@ -59,6 +58,7 @@ export class AllocationService {
           shopId,
           locationId: item.locationId,
           productId: item.productId,
+          variantId: item.variantId,
           quantity: allocateFromHere,
           mutationType: MutationType.RESERVATION,
           reason: `Reservation allocation: ${reservationItemId}`,

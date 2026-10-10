@@ -3,6 +3,7 @@ import { Notification, NotificationType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateNotificationDto } from './dto/notification.dto';
+import { ListQueryDto, pageArgs, PagedResult } from '../common/pagination';
 
 /** Shape the notifications page renders. */
 export interface NotificationView {
@@ -32,14 +33,16 @@ export class NotificationsService {
     private readonly tenantContext: TenantContextService,
   ) {}
 
-  async findAll(): Promise<NotificationView[]> {
+  /** Newest first, hard-capped page (roadmap 5.6; the former fixed `take: 100` is now the default page). */
+  async findAll(query?: ListQueryDto): Promise<PagedResult<NotificationView>> {
     // shopId is injected by the tenant Prisma extension.
-    const notifications = await this.prisma.notification.findMany({
-      where: { isDeleted: false },
-      orderBy: { createdAt: 'desc' },
-      take: 100,
-    });
-    return notifications.map(toView);
+    const { skip, take } = pageArgs(query);
+    const where = { isDeleted: false };
+    const [notifications, total] = await Promise.all([
+      this.prisma.notification.findMany({ where, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], skip, take }),
+      this.prisma.notification.count({ where }),
+    ]);
+    return { items: notifications.map(toView), total, skip, take };
   }
 
   async create(dto: CreateNotificationDto): Promise<NotificationView> {

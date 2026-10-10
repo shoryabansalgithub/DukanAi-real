@@ -1,5 +1,5 @@
 import { validateSync } from 'class-validator';
-import { AuthConfig, parseAuthDisabled } from './auth.config';
+import { assertAuthBypassPermitted, AuthConfig, authBypassPermitted, parseAuthDisabled } from './auth.config';
 
 describe('parseAuthDisabled — secure by default', () => {
   it('defaults to false when unset', () => {
@@ -49,5 +49,22 @@ describe('AuthConfig validation', () => {
     // @IsBoolean so the EnterpriseConfigModule refuses to boot.
     expect(validateSync(make(undefined)).length).toBeGreaterThan(0);
     expect(validateSync(make('maybe')).length).toBeGreaterThan(0);
+  });
+});
+
+describe('AUTH_DISABLED is a development/test switch only', () => {
+  it.each(['development', 'test'])('is permitted under NODE_ENV=%s', (env) => {
+    expect(authBypassPermitted(env)).toBe(true);
+    expect(() => assertAuthBypassPermitted(true, env)).not.toThrow();
+  });
+
+  it.each([['production'], [undefined], [''], ['staging']])('refuses to boot with the bypass under NODE_ENV=%j', (env) => {
+    expect(authBypassPermitted(env)).toBe(false);
+    expect(() => assertAuthBypassPermitted(true, env)).toThrow(/AUTH_DISABLED=true is only accepted when NODE_ENV is development or test/);
+  });
+
+  it('never complains while the bypass is off', () => {
+    expect(() => assertAuthBypassPermitted(false, 'production')).not.toThrow();
+    expect(() => assertAuthBypassPermitted(undefined, undefined)).not.toThrow();
   });
 });

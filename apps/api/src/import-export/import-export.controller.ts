@@ -1,65 +1,106 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Req, BadRequestException, UseInterceptors, UploadedFile } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, BadRequestException, UseInterceptors, UploadedFile, NotFoundException, Query, Header, Res } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { FileStorageService } from './file-storage.service';
-import { PrismaService } from '../prisma/prisma.service';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import type { Response } from 'express';
+import { ImportKind, ImportMode } from '@prisma/client';
+import { UploadCleanupInterceptor } from '../common/upload/upload-cleanup.interceptor';
+import { CurrentShop, CurrentUser } from '../iam/decorators';
 import { ImportExportFeatureConfig } from '../config/domains/features/import-export-feature.config';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { ListQueryDto, PagedList } from '../common/pagination';
+import { ImportRowsQueryDto, UploadImportDto } from './dto/upload-import.dto';
+import { assertImportFileContent } from './import-upload';
+import { importKindFromSlug, IMPORT_KIND_SLUGS, templateCsv } from './import-columns';
+import { ImportExportService } from './import-export.service';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
+/**
+ * Onboarding imports (roadmap 4.1, 9.20): products, customers with their
+ * opening udhar, and opening stock. The shop comes from the verified
+ * session and the job carries it, and the uploading user, to the worker.
+ * `dryRun=true` validates and plans every row and writes only the report;
+ * `POST /imports/jobs/:id/apply` then runs that file for real.
+ */
 @Controller('imports')
 export class ImportExportController {
   constructor(
-    private readonly storageService: FileStorageService,
-    private readonly prisma: PrismaService,
-    @InjectQueue('import-job') private readonly importQueue: Queue,
+    private readonly imports: ImportExportService,
     private readonly importExportFeatureConfig: ImportExportFeatureConfig,
   ) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('products/upload')
-  @UseInterceptors(FileInterceptor('file'))
-  async uploadImportFile(
-    @UploadedFile() file: Express.Multer.File,
-    @Body('mode') mode: string = 'UPSERT',
-    @Req() req: any
-  ) {
-    if (!file) throw new BadRequestException('No file uploaded');
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
+  async uploadImportFile(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: UploadImportDto, @CurrentShop() shopId: string, @CurrentUser('id') userId: string) {
+    return this.upload(ImportKind.PRODUCTS, file, body, shopId, userId);
+  }
 
-    const filePath = await this.storageService.saveImportFile(req.shop.id, file);
+  @Roles(...MANAGEMENT_ROLES)
+  @Post('customers/upload')
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
+  async uploadCustomers(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: UploadImportDto, @CurrentShop() shopId: string, @CurrentUser('id') userId: string) {
+    return this.upload(ImportKind.CUSTOMERS, file, body, shopId, userId);
+  }
 
-    const job = await this.prisma.importJob.create({
-      data: {
-        shopId: req.shop.id,
-        fileName: file.originalname,
-        fileSize: file.size,
-        fileUrl: filePath,
-        format: file.originalname.endsWith('.csv') ? 'CSV' : 'JSON',
-        mode: mode as any,
-        status: 'PENDING'
-      }
-    });
+  @Roles(...MANAGEMENT_ROLES)
+  @Post('opening-stock/upload')
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
+  async uploadOpeningStock(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: UploadImportDto, @CurrentShop() shopId: string, @CurrentUser('id') userId: string) {
+    return this.upload(ImportKind.OPENING_STOCK, file, body, shopId, userId);
+  }
 
-    // Queue for background execution
-    await this.importQueue.add('process-import', { jobId: job.id });
+  /** The template a shop fills in: the header row and two sample rows (`docs/onboarding/<kind>.csv`). */
+  @Get('templates/:kind')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  template(@Param('kind') slug: string, @Res({ passthrough: true }) res: Response): string {
+    const kind = importKindFromSlug(slug);
+    if (!kind) throw new NotFoundException({ message: `No import template "${slug}"; use ${Object.values(IMPORT_KIND_SLUGS).join(', ')}.`, code: 'IMPORT_TEMPLATE_NOT_FOUND' });
+    res.setHeader('Content-Disposition', `attachment; filename="${IMPORT_KIND_SLUGS[kind]}.csv"`);
+    return templateCsv(kind);
+  }
 
-    return { message: 'Import queued successfully', jobId: job.id };
+  @Get('jobs')
+  @PagedList()
+  async listJobs(@Query() query: ListQueryDto, @CurrentShop() shopId: string) {
+    return this.imports.list(shopId, query);
   }
 
   @Get('jobs/:id')
-  async getJobStatus(@Param('id') id: string, @Req() req: any) {
-    return this.prisma.importJob.findUnique({
-      where: { id, shopId: req.shop.id }
-    });
+  async getJobStatus(@Param('id') id: string, @CurrentShop() shopId: string) {
+    return this.imports.get(shopId, id);
+  }
+
+  /** The per-row report: action, what changes, errors and warnings (`?status=ERROR|SUCCESS|SKIPPED`). */
+  @Get('jobs/:id/rows')
+  @PagedList()
+  async getJobRows(@Param('id') id: string, @Query() query: ImportRowsQueryDto, @CurrentShop() shopId: string) {
+    return this.imports.rows(shopId, id, query);
   }
 
   @Get('jobs/:id/errors')
-  async getJobErrors(@Param('id') id: string, @Req() req: any) {
-    return this.prisma.importJobRow.findMany({
-      where: { importJobId: id, status: 'ERROR', importJob: { shopId: req.shop.id } },
-      orderBy: { createdAt: 'desc' },
-      take: this.importExportFeatureConfig.exportListLimit
-    });
+  async getJobErrors(@Param('id') id: string, @CurrentShop() shopId: string) {
+    return this.imports.errors(shopId, id, this.importExportFeatureConfig.exportListLimit);
+  }
+
+  /** The whole report as a CSV download. */
+  @Get('jobs/:id/report')
+  @Header('Content-Type', 'text/csv; charset=utf-8')
+  async getJobReport(@Param('id') id: string, @CurrentShop() shopId: string, @Res({ passthrough: true }) res: Response): Promise<string> {
+    const report = await this.imports.reportCsv(shopId, id);
+    res.setHeader('Content-Disposition', `attachment; filename="${report.fileName}"`);
+    return report.csv;
+  }
+
+  /** Runs a finished dry run for real (a new job on the same file). */
+  @Roles(...MANAGEMENT_ROLES)
+  @Post('jobs/:id/apply')
+  async applyDryRun(@Param('id') id: string, @CurrentShop() shopId: string, @CurrentUser('id') userId: string) {
+    return this.imports.applyDryRun(shopId, id, userId);
+  }
+
+  private async upload(kind: ImportKind, file: Express.Multer.File | undefined, body: UploadImportDto, shopId: string, userId: string) {
+    if (!file) throw new BadRequestException('No file uploaded');
+    // The bytes must be text the parser can read (a binary renamed .csv is refused and discarded).
+    await assertImportFileContent(file);
+    return this.imports.queueUpload(kind, file, { mode: body.mode ?? ImportMode.UPSERT, dryRun: body.dryRun === 'true' }, shopId, userId);
   }
 }

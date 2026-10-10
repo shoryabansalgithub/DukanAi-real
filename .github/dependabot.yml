@@ -1,0 +1,32 @@
+# Roadmap 7.4 / 9.14: dependency and action updates arrive as pull requests,
+# grouped so a week's bumps are one review, never a floating tag or an
+# unreviewed lockfile change. github-actions moves the SHA pins (and their
+# version comments); npm moves the workspace dependencies, which the CI
+# `npm audit --omit=dev --audit-level=high` and the Trivy image gate guard.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # One npm manifest per workspace (the root and each app/package); Dependabot
+  # needs the directory of every package.json it should maintain.
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /apps/api
+      - /apps/web
+      - /packages/invoice-math
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Patch and minor bumps of production and dev dependencies in one PR per
+      # week; a major bump comes as its own PR so it is reviewed on its own.
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

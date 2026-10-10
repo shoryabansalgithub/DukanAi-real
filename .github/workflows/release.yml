@@ -1,0 +1,238 @@
+# Release images (roadmap 9.9): every push to main and every v* tag builds the
+# three images ONCE and pushes them to the GitHub Container Registry. Staging
+# runs a tag; production runs the same tag after the staging smoke passed.
+# Nothing is ever built on a server (docs/DEPLOYMENT.md, "Images and
+# promotion"; docs/STAGING.md). Only `docker build` / `docker push` with the
+# workflow's own token: no third-party action beyond the pinned checkout.
+#
+#   ghcr.io/<owner>/dukaanai-api:sha-<7 hex>      every build
+#   ghcr.io/<owner>/dukaanai-web:sha-<7 hex>
+#   ghcr.io/<owner>/dukaanai-db-ops:sha-<7 hex>
+#   ...:main                                    the newest main build
+#   ...:v1.2.3                                  a release tag
+#
+# A v* tag is a release only when scripts/release/release.mjs says so
+# (roadmap 9.21, RELEASE.md): a semantic version, the root package.json at
+# that version, a dated CHANGELOG.md section for it, above every earlier
+# release tag, and the commit on main. A version tag is published once: the
+# job refuses to rebuild a version the registry already holds. Every image
+# carries its release (APP_RELEASE: the tag, else sha-<7>) and commit as OCI
+# labels and in the environment, so GET /api/health and the build_info
+# metric say which release answers. On a tag the release notes are the
+# CHANGELOG.md section.
+#
+# On a v* tag (and on a manual run) the `certify` job then re-runs the
+# repository's checklist against the images just pushed, not the source tree
+# (roadmap 9.12, scripts/certify/certify.sh): boot matrix on the API image,
+# migrations on MySQL 8 and MariaDB, the compose stack from the images with
+# the business flow and the backup drills, the route walk, the security
+# suite and the browser suite over HTTP against the running images, the load
+# profile and the upload gate, the three restore drills. The evidence bundle
+# is a workflow artefact and, on a tag, an asset of the tag's release (created
+# as a draft when none exists, so the owner publishes after reading it).
+name: Release images
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: Build and push images (ghcr.io)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write # on a tag, the CycloneDX SBOMs are attached to the release (roadmap 9.14)
+      packages: write
+    outputs:
+      registry: ${{ steps.meta.outputs.registry }}
+      sha: ${{ steps.meta.outputs.sha }}
+      extra: ${{ steps.meta.outputs.extra }}
+      release: ${{ steps.meta.outputs.release }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0 # the release check reads every tag and origin/main
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      # Roadmap 9.21: nothing is built for a tag that is not a release.
+      - name: Release check (version tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node scripts/release/release.mjs check "$GITHUB_REF_NAME"
+      - name: Image names and tags
+        id: meta
+        run: |
+          owner="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          sha="sha-$(git rev-parse --short=7 HEAD)"
+          echo "registry=ghcr.io/${owner}" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          case "$GITHUB_REF" in
+            refs/tags/*) echo "extra=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"; echo "release=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT" ;;
+            refs/heads/main) echo "extra=main" >> "$GITHUB_OUTPUT"; echo "release=$sha" >> "$GITHUB_OUTPUT" ;;
+            *) echo "extra=" >> "$GITHUB_OUTPUT"; echo "release=$sha" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Log in to ghcr.io
+        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      # A version tag names one set of bits for good: staging and production run
+      # what certify certified. A re-run of certify alone ("Re-run failed jobs")
+      # does not come here; a fix is the next version (RELEASE.md). The registry
+      # is asked directly and its HTTP status decides: 404 is "not published",
+      # 200 "published", anything else stops the release. (`docker manifest
+      # inspect` reports an authorization failure as "no such manifest", which
+      # would read as "not published".)
+      - name: A published version is never rebuilt
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          VERSION: ${{ steps.meta.outputs.extra }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          repo="${REG#ghcr.io/}"
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            bearer="$(curl -fsS -u "$ACTOR:$TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo/$image:pull" \
+              | node -e 'let b="";process.stdin.on("data",(d)=>b+=d).on("end",()=>process.stdout.write(JSON.parse(b).token||""))')" || bearer=""
+            [ -n "$bearer" ] || { echo "::error::no registry token for $repo/$image: cannot tell whether $VERSION exists"; exit 1; }
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --head -H "Authorization: Bearer $bearer" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$repo/$image/manifests/$VERSION")" || code="000"
+            case "$code" in
+              404) echo "$REG/$image:$VERSION: not published yet" ;;
+              200) echo "::error::$REG/$image:$VERSION is already published; a version is never rebuilt or re-pushed (cut the next version, RELEASE.md)"; exit 1 ;;
+              *) echo "::error::cannot tell whether $REG/$image:$VERSION exists: the registry answered $code"; exit 1 ;;
+            esac
+          done
+      - name: Build the three images from the repository root
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          RELEASE: ${{ steps.meta.outputs.release }}
+          REVISION: ${{ steps.meta.outputs.revision }}
+        run: |
+          # The web image carries no public API URL: the running container sets API_PUBLIC_URL.
+          # APP_RELEASE / APP_REVISION become the OCI version / revision labels and the
+          # release GET /api/health and build_info report.
+          args=(--build-arg "APP_RELEASE=$RELEASE" --build-arg "APP_REVISION=$REVISION")
+          docker build -f apps/api/Dockerfile "${args[@]}" -t "$REG/dukaanai-api:$SHA" .
+          docker build -f apps/web/Dockerfile "${args[@]}" -t "$REG/dukaanai-web:$SHA" .
+          docker build -f deploy/db-ops/Dockerfile "${args[@]}" -t "$REG/dukaanai-db-ops:$SHA" .
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            docker image inspect --format "$image {{ index .Config.Labels \"org.opencontainers.image.version\" }} {{ index .Config.Labels \"org.opencontainers.image.revision\" }}" "$REG/$image:$SHA"
+          done
+      # Roadmap 9.14: a release image with a fixable HIGH/CRITICAL vulnerability is not pushed.
+      # Trivy is pinned by sha256 in the script (no third-party action).
+      - name: Vulnerability gate on the images (Trivy, fixable HIGH/CRITICAL)
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/certify/trivy-scan.sh gate "$REG/dukaanai-api:$SHA" "$REG/dukaanai-web:$SHA" "$REG/dukaanai-db-ops:$SHA"
+      - name: Push
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          EXTRA: ${{ steps.meta.outputs.extra }}
+        run: |
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            docker push "$REG/$image:$SHA"
+            if [ -n "$EXTRA" ]; then
+              docker tag "$REG/$image:$SHA" "$REG/$image:$EXTRA"
+              docker push "$REG/$image:$EXTRA"
+            fi
+          done
+          echo "Pushed $REG/dukaanai-{api,web,db-ops}:$SHA${EXTRA:+ and :$EXTRA}" >> "$GITHUB_STEP_SUMMARY"
+      # Roadmap 9.14: a CycloneDX SBOM per image is the release's bill of materials.
+      - name: Software bill of materials (CycloneDX) per image
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          SHA: ${{ steps.meta.outputs.sha }}
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          for image in api web db-ops; do
+            bash scripts/certify/trivy-scan.sh sbom "$REG/dukaanai-$image:$SHA" "$RUNNER_TEMP/sbom/sbom-dukaanai-$image.cdx.json"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: sbom-${{ steps.meta.outputs.sha }}
+          path: ${{ runner.temp }}/sbom
+          retention-days: 90
+          if-no-files-found: error
+      # The draft release is created here, with the CHANGELOG.md section as its notes.
+      - name: Attach the SBOMs to the release of the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES_FILE: ${{ runner.temp }}/release-notes.md
+        run: |
+          node scripts/release/release.mjs notes "${GITHUB_REF#refs/tags/}" > "$RELEASE_NOTES_FILE"
+          bash scripts/certify/attach-release.sh "${GITHUB_REF#refs/tags/}" "$RUNNER_TEMP"/sbom/sbom-*.cdx.json
+
+  certify:
+    name: Certify the release candidate images
+    needs: images
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write # the evidence bundle is attached to the tag's (draft) release
+      packages: read
+    env:
+      REG: ${{ needs.images.outputs.registry }}
+      SHA: ${{ needs.images.outputs.sha }}
+      LABEL: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || needs.images.outputs.sha }}
+      RELEASE: ${{ needs.images.outputs.release }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Log in to ghcr.io
+        run: printf '%s' "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull the images the previous job pushed (the candidates, by tag; the digests go into the bundle)
+        run: |
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do docker pull "$REG/$image:$SHA"; done
+      # The suites boot the fixture module from the checkout (same commit as
+      # the images) and send every request to the containers; the drills run
+      # the repository's scripts against the stack's MySQL (mysql, mysqldump
+      # and mysqlbinlog 8 come with the runner image).
+      - run: npm ci
+      - run: npx turbo run build --filter=@dukaanai/invoice-math
+      - name: Chromium for the browser suite
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: rclone for the off-site drill
+        run: sudo apt-get install -y -q rclone >/dev/null
+      - name: Certify
+        run: bash scripts/certify/certify.sh --api "$REG/dukaanai-api:$SHA" --web "$REG/dukaanai-web:$SHA" --db-ops "$REG/dukaanai-db-ops:$SHA" --out "$RUNNER_TEMP/certification" --label "$LABEL" --release "$RELEASE"
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/certification/SUMMARY.md" ]; then cat "$RUNNER_TEMP/certification/SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"; else echo "no SUMMARY.md was written" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: certification-${{ env.LABEL }}
+          path: ${{ runner.temp }}/certification
+          retention-days: 90
+          if-no-files-found: error
+      - name: Attach the evidence bundle to the release of the tag
+        if: always() && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/certification-$LABEL.tar.gz" certification
+          bash scripts/certify/attach-release.sh "$LABEL" "$RUNNER_TEMP/certification-$LABEL.tar.gz"

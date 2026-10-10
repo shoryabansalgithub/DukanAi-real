@@ -1,0 +1,3 @@
+# The filled-in secrets and the provider CA stay out of the repository.
+dukaanai-secrets.env
+db-ca.pem

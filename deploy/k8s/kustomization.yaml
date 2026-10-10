@@ -1,0 +1,33 @@
+# kubectl apply -k deploy/k8s   (after: cp dukaanai-secrets.env.example dukaanai-secrets.env and
+# editing it, the hosts in configmap.yaml / ingress.yaml, and newTag below
+# to the release to run). README.md.
+#
+# The images are the ones the release workflow pushed
+# (.github/workflows/release.yml): one build per commit, promoted by tag
+# (sha-<commit> or v<version>; docs/STAGING.md). Nothing is built here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dukaanai
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - pvc.yaml
+  - job-migrate.yaml
+  - deployment-api.yaml
+  - deployment-web.yaml
+  - services.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+secretGenerator:
+  - name: dukaanai-secrets
+    envs: [dukaanai-secrets.env]
+images:
+  - name: dukaanai-api
+    newName: ghcr.io/shoryabansalgithub/dukaanai-api
+    newTag: sha-0000000
+  - name: dukaanai-web
+    newName: ghcr.io/shoryabansalgithub/dukaanai-web
+    newTag: sha-0000000
+  - name: dukaanai-db-ops
+    newName: ghcr.io/shoryabansalgithub/dukaanai-db-ops
+    newTag: sha-0000000

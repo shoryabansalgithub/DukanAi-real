@@ -1,10 +1,10 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
-  UnauthorizedException,
   Inject
 } from '@nestjs/common';
 import { StorageConfig } from '../config/domains/storage.config';
@@ -14,19 +14,23 @@ import archiver from 'archiver';
 import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { SafeUserDto } from '../users/dto/safe-user.dto';
 import { StorageCustomerDirectory } from './storage-security.constants';
 import { DeleteStorageFileDto } from './dto/storage.dto';
 import { StoragePathBuilder } from './storage-path.builder';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertOwned } from '../prisma/tenant-ownership';
 
 type AuditLevel = 'info' | 'error';
 
+/** `path` is shop-relative (`Backups/Daily/backup_2026_10_03.zip`); responses never carry an absolute path (roadmap 7.5). */
 export interface BackupResult {
   success: true;
   path: string;
   size: number;
 }
+
+/** Walk-in customers have no row; their evidence is filed under this id. */
+export const WALK_IN_CUSTOMER_ID = 'Walk-in';
 
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
@@ -47,7 +51,7 @@ export class StorageService {
   ): Promise<void> {
     if (!(await fs.pathExists(filePath))) {
       await fs.ensureDir(path.dirname(filePath));
-      await fs.writeJson(filePath, defaultData, { spaces: 2 });
+      await this.writeJsonAtomic(filePath, defaultData);
     }
   }
 
@@ -56,16 +60,86 @@ export class StorageService {
   }
 
   /**
-   * Enforces that the requested customer belongs to the requested shop.
+   * The customer named in the route must belong to the caller's shop
+   * (roadmap 7.5): a foreign or unknown id is 404 like every other lookup of
+   * another shop's row (`assertOwned`), so other shops' ids are never
+   * confirmed. `Walk-in` names the no-row customer of counter sales.
    */
   private async validateCustomerOwnership(customerId: string): Promise<void> {
-    const shopId = this.tenantContext.getShopId();
-    const customer = await this.prisma.customer.findUnique({
-      where: { id: customerId },
-      select: { shopId: true },
-    });
-    if (!customer || customer.shopId !== shopId) {
-      throw new UnauthorizedException('Customer does not exist or does not belong to your shop');
+    if (customerId === WALK_IN_CUSTOMER_ID) return;
+    await assertOwned(this.prisma, 'customer', customerId, this.tenantContext.getShopId());
+  }
+
+  /**
+   * Billing evidence is written once (roadmap 7.5): the file is created
+   * exclusively (`wx`), so a second upload for the same invoice or bill
+   * cannot replace what was stored. Every target of a request is checked
+   * before the first byte is written, so a duplicate leaves nothing behind;
+   * the exclusive flag is the final guard against a concurrent write.
+   */
+  private async assertNoneExist(targets: string[]): Promise<void> {
+    for (const target of targets) {
+      if (await fs.pathExists(target)) {
+        throw new ConflictException({
+          message: `${path.basename(target)} is already stored; billing evidence is never overwritten`,
+          code: 'STORAGE_EVIDENCE_EXISTS',
+          details: { file: path.basename(target) },
+        });
+      }
+    }
+  }
+
+  private async writeEvidence(target: string, data: Buffer | string): Promise<void> {
+    try {
+      await fs.writeFile(target, data, { flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new ConflictException({
+          message: `${path.basename(target)} is already stored; billing evidence is never overwritten`,
+          code: 'STORAGE_EVIDENCE_EXISTS',
+          details: { file: path.basename(target) },
+        });
+      }
+      // `wx` created the file before the write failed (a full volume: roadmap
+      // 9.18). A truncated file left behind would answer every retry 409
+      // STORAGE_EVIDENCE_EXISTS for good; it is ours, so it goes.
+      await fs.remove(target).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * Every file of one request, or none: the targets were checked absent
+   * before the first byte, so a failure part-way (a full volume) removes the
+   * files this request already wrote and the same request can be repeated.
+   */
+  private async writeAllEvidence(writes: Array<[string, Buffer | string]>): Promise<void> {
+    const written: string[] = [];
+    try {
+      for (const [target, data] of writes) {
+        await fs.ensureDir(path.dirname(target));
+        await this.writeEvidence(target, data);
+        written.push(target);
+      }
+    } catch (error) {
+      await Promise.all(written.map((target) => fs.remove(target).catch(() => undefined)));
+      throw error;
+    }
+  }
+
+  /**
+   * JSON indexes are replaced whole through a temporary file and a rename,
+   * so a failed write (a full volume) leaves the previous index intact
+   * instead of a truncated file that the next reader takes for empty.
+   */
+  private async writeJsonAtomic(target: string, data: unknown): Promise<void> {
+    const temp = `${target}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await fs.writeFile(temp, JSON.stringify(data, null, 2));
+      await fs.rename(temp, target);
+    } catch (error) {
+      await fs.remove(temp).catch(() => undefined);
+      throw error;
     }
   }
 
@@ -76,40 +150,43 @@ export class StorageService {
     const shopId = this.tenantContext.getShopId();
     const fileName = `${level}_${new Date().toISOString().split('T')[0]}.log`;
     const logFile = this.storagePathBuilder.getLogFile(shopId, fileName);
-    
-    await fs.ensureDir(path.dirname(logFile));
+    await fs.ensureDir(path.dirname(logFile)).catch(() => undefined);
 
     const timestamp = new Date().toISOString();
     const actorInfo = ` actor=${this.getActor()}`;
     const logEntry = `[${timestamp}]${actorInfo} ${action}\n`;
-    
-    await fs.appendFile(logFile, logEntry);
+
     this.logger[level === 'info' ? 'log' : 'error'](`[Shop:${shopId}] ${action}${actorInfo}`);
+    // The shop's action log is a convenience copy of the line above (which
+    // reaches the log store): a full volume must not turn a document that
+    // was stored into an error (roadmap 9.18).
+    try {
+      await fs.appendFile(logFile, logEntry);
+    } catch (error) {
+      this.logger.warn(`[Shop:${shopId}] storage action log not written: ${(error as Error).message}`);
+    }
   }
 
   async createCustomerFolder(
     customerId: string,
   ): Promise<string> {
     const shopId = this.tenantContext.getShopId();
+    await this.validateCustomerOwnership(customerId);
     const customerPath = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, 'Profile');
     
     await fs.ensureDir(customerPath);
 
     const metaPath = path.join(customerPath, 'customer.meta.json');
     if (!(await fs.pathExists(metaPath))) {
-      await fs.writeJson(
-        metaPath,
-        {
-          customerId,
-          createdAt: new Date().toISOString().split('T')[0],
-          totalInvoices: 0,
-        },
-        { spaces: 2 },
-      );
+      await this.writeJsonAtomic(metaPath, {
+        customerId,
+        createdAt: new Date().toISOString().split('T')[0],
+        totalInvoices: 0,
+      });
     }
 
     await this.logAction(`Created customer folder customer=${customerId}`, 'info');
-    return customerPath; // Returning full path for local reference
+    return this.storagePathBuilder.relativeToShop(shopId, customerPath);
   }
 
   async updateCustomerIndex(
@@ -138,7 +215,7 @@ export class StorageService {
       });
     }
 
-    await fs.writeJson(indexPath, index, { spaces: 2 });
+    await this.writeJsonAtomic(indexPath, index);
     await this.logAction(`Updated customer index customer=${customerId}`, 'info');
   }
 
@@ -156,12 +233,15 @@ export class StorageService {
     await fs.ensureDir(invoiceDir);
 
     const baseName = `INV-${invoiceId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-    await fs.writeFile(path.join(invoiceDir, `${baseName}.pdf`), pdfFile.buffer);
-    await fs.writeJson(path.join(invoiceDir, `${baseName}.json`), jsonContent, { spaces: 2 });
-
-    if (thumbnailFile) {
-      await fs.writeFile(path.join(invoiceDir, `${baseName}-preview.jpg`), thumbnailFile.buffer);
-    }
+    const pdfPath = path.join(invoiceDir, `${baseName}.pdf`);
+    const jsonPath = path.join(invoiceDir, `${baseName}.json`);
+    const previewPath = path.join(invoiceDir, `${baseName}-preview.jpg`);
+    await this.assertNoneExist([pdfPath, jsonPath, ...(thumbnailFile ? [previewPath] : [])]);
+    await this.writeAllEvidence([
+      [pdfPath, pdfFile.buffer],
+      [jsonPath, JSON.stringify(jsonContent, null, 2)],
+      ...(thumbnailFile ? [[previewPath, thumbnailFile.buffer] as [string, Buffer]] : []),
+    ]);
 
     const registryPath = this.storagePathBuilder.getSystemFile(shopId, 'invoice_registry.json');
     await fs.ensureDir(path.dirname(registryPath));
@@ -174,7 +254,7 @@ export class StorageService {
       timestamp: new Date().toISOString(),
     });
     
-    await fs.writeJson(registryPath, registry, { spaces: 2 });
+    await this.writeJsonAtomic(registryPath, registry);
     await this.logAction(`Stored invoice invoice=${invoiceId} customer=${customerId}`, 'info');
   }
 
@@ -187,39 +267,26 @@ export class StorageService {
     thumbnailFile: Express.Multer.File | undefined,
   ): Promise<void> {
     const shopId = this.tenantContext.getShopId();
-    // Walk-ins might bypass customer ownership if customerId is explicitly 'Walk-in'
-    if (customerId !== 'Walk-in') {
-      await this.validateCustomerOwnership(customerId);
-    }
+    await this.validateCustomerOwnership(customerId);
 
     const baseName = `BILL-${billId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
     
     const photoDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.OriginalPhotos);
     const billsDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.Bills);
-    
-    await fs.ensureDir(photoDir);
-    await fs.ensureDir(billsDir);
-    
-    await fs.writeFile(path.join(photoDir, `${baseName}.jpg`), imageFile.buffer);
-    await fs.writeFile(path.join(billsDir, `${baseName}.jpg`), imageFile.buffer);
+    const pdfDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.PDFs);
+    const ocrDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.OCR);
 
-    if (thumbnailFile) {
-      await fs.writeFile(path.join(billsDir, `${baseName}-thumb.jpg`), thumbnailFile.buffer);
-    }
+    // Every file of this bill, checked before the first write (roadmap 7.5).
+    const writes: Array<[string, Buffer | string]> = [
+      [path.join(photoDir, `${baseName}.jpg`), imageFile.buffer],
+      [path.join(billsDir, `${baseName}.jpg`), imageFile.buffer],
+    ];
+    if (thumbnailFile) writes.push([path.join(billsDir, `${baseName}-thumb.jpg`), thumbnailFile.buffer]);
+    if (pdfFile) writes.push([path.join(pdfDir, `${baseName}.pdf`), pdfFile.buffer], [path.join(billsDir, `${baseName}.pdf`), pdfFile.buffer]);
+    if (ocrText) writes.push([path.join(ocrDir, `${baseName}.txt`), ocrText], [path.join(billsDir, `${baseName}.txt`), ocrText]);
 
-    if (pdfFile) {
-      const pdfDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.PDFs);
-      await fs.ensureDir(pdfDir);
-      await fs.writeFile(path.join(pdfDir, `${baseName}.pdf`), pdfFile.buffer);
-      await fs.writeFile(path.join(billsDir, `${baseName}.pdf`), pdfFile.buffer);
-    }
-
-    if (ocrText) {
-      const ocrDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.OCR);
-      await fs.ensureDir(ocrDir);
-      await fs.writeFile(path.join(ocrDir, `${baseName}.txt`), ocrText);
-      await fs.writeFile(path.join(billsDir, `${baseName}.txt`), ocrText);
-    }
+    await this.assertNoneExist(writes.map(([target]) => target));
+    await this.writeAllEvidence(writes);
 
     await this.logAction(`Stored captured bill bill=${billId} customer=${customerId}`, 'info');
   }
@@ -238,7 +305,7 @@ export class StorageService {
     const paymentId = crypto.randomBytes(8).toString('hex');
     const fileName = `PAYMENT-${dateStr}-${paymentId}.json`;
 
-    await fs.writeJson(path.join(paymentsDir, fileName), paymentData, { spaces: 2 });
+    await this.writeAllEvidence([[path.join(paymentsDir, fileName), JSON.stringify(paymentData, null, 2)]]);
     await this.logAction(`Stored payment customer=${customerId} file=${fileName}`, 'info');
   }
 
@@ -252,10 +319,12 @@ export class StorageService {
     const statementsDir = this.storagePathBuilder.getCustomerDirectory(shopId, customerId, StorageCustomerDirectory.Statements);
     await fs.ensureDir(statementsDir);
 
+    // One file per generated statement: a statement regenerated for the same
+    // month lands beside the earlier one instead of replacing it (roadmap 7.5).
     const month = new Date().toLocaleString('default', { month: 'short', year: 'numeric' }).toUpperCase().replace(' ', '-');
-    const fileName = `STATEMENT-${month}.pdf`;
+    const fileName = `STATEMENT-${month}-${new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15)}-${crypto.randomBytes(4).toString('hex')}.pdf`;
 
-    await fs.writeFile(path.join(statementsDir, fileName), pdfFile.buffer);
+    await this.writeEvidence(path.join(statementsDir, fileName), pdfFile.buffer);
     await this.logAction(`Stored statement customer=${customerId} file=${fileName}`, 'info');
   }
 
@@ -290,7 +359,7 @@ export class StorageService {
     try {
       await fs.move(originalFilePath, deletedFilePath, { overwrite: false });
       await this.logAction(`Soft deleted file customer=${customerId} category=${dto.category} file=${safeFileName}`, 'info');
-      return { success: true, newPath: deletedFilePath };
+      return { success: true, newPath: this.storagePathBuilder.relativeToShop(shopId, deletedFilePath) };
     } catch (error) {
       await this.logAction(`Failed to delete file customer=${customerId} file=${safeFileName}`, 'error');
       throw error;
@@ -315,16 +384,18 @@ export class StorageService {
       output.on('close', () => {
         const size = archive.pointer();
         this.logAction(`Created backup type=${type} file=${path.basename(backupPath)} size=${size}`, 'info')
-          .then(() => resolve({ success: true, path: backupPath, size }))
+          .then(() => resolve({ success: true, path: this.storagePathBuilder.relativeToShop(shopId, backupPath), size }))
           .catch(reject);
       });
 
-      output.on('error', reject);
-      archive.on('error', (error: Error) => {
-        this.logAction(`Backup error type=${type}: ${error.message}`, 'error')
-          .then(() => reject(error))
-          .catch(reject);
-      });
+      // A failed archive (a full volume) leaves no partial zip that looks like a backup.
+      const fail = (error: Error) => {
+        output.destroy();
+        void fs.remove(backupPath).catch(() => undefined);
+        void this.logAction(`Backup error type=${type}: ${error.message}`, 'error').finally(() => reject(error));
+      };
+      output.on('error', fail);
+      archive.on('error', fail);
 
       archive.pipe(output);
 

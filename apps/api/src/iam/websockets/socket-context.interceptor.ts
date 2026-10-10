@@ -1,5 +1,4 @@
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
-import { Observable } from 'rxjs';
 import { TenantContextService } from '../tenant-context/tenant-context.service';
 import { Socket } from 'socket.io';
 

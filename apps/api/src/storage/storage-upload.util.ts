@@ -12,6 +12,7 @@ import {
   TEXT_MIME_TYPES,
 } from './storage-security.constants';
 import { sanitizeStorageFileName } from './storage-path.util';
+import { contentMatchesDeclaredType, sniffMimeType } from '../common/upload/file-signature';
 
 type FileFilterCallback = (error: Error | null, acceptFile: boolean) => void;
 
@@ -71,6 +72,11 @@ export function validateUploadedFile(
 
   if (!policy.allowedMimeTypes.has(file.mimetype)) {
     throw new BadRequestException(`MIME type ${file.mimetype} is not allowed`);
+  }
+
+  // After the upload (the filter runs before any byte arrives): the content must be what the type claims.
+  if (file.buffer && !contentMatchesDeclaredType(sniffMimeType(file.buffer), file.mimetype)) {
+    throw new BadRequestException({ message: `File content does not match its declared type ${file.mimetype}`, code: 'STORAGE_CONTENT_MISMATCH' });
   }
 
   return file;

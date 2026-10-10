@@ -1,6 +1,12 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LedgerCalculationService } from './ledger-calculation.service';
+
+export interface IntegrityReport {
+  intact: boolean;
+  ledgerBalance: number;
+  cachedBalance: number;
+}
 
 @Injectable()
 export class LedgerIntegrityService {
@@ -8,34 +14,29 @@ export class LedgerIntegrityService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly calculator: LedgerCalculationService
+    private readonly calculator: LedgerCalculationService,
   ) {}
 
+  /** The live inventory item of the shop, or 404 `INVENTORY_ITEM_NOT_FOUND` (an unknown id is a client error, never a 500). */
+  async requireItem(shopId: string, inventoryItemId: string) {
+    const item = await this.prisma.inventoryItem.findFirst({ where: { id: inventoryItemId, shopId, isDeleted: false } });
+    if (!item) throw new NotFoundException({ message: `Inventory item ${inventoryItemId} not found`, code: 'INVENTORY_ITEM_NOT_FOUND' });
+    return item;
+  }
+
   /**
-   * Verifies that the mathematical sum of the ledger exactly matches 
-   * the cached value in InventoryItem.onHand.
-   * If a mismatch is found, it throws an Integrity Violation.
+   * Compares the ledger's computed balance with the cached `InventoryItem.onHand`.
+   * A mismatch is reported (and logged as an error for the operator), not thrown:
+   * the route is a diagnostic read, and the figures are what the operator needs.
    */
-  async verifyIntegrity(shopId: string, inventoryItemId: string): Promise<boolean> {
-    const item = await this.prisma.inventoryItem.findFirst({
-      where: { id: inventoryItemId, shopId, isDeleted: false }
-    });
-
-    if (!item) {
-      throw new InternalServerErrorException('Integrity Check Failed: Item not found.');
-    }
-
-    const calculatedLedgerBalance = await this.calculator.calculateBalanceAt(shopId, inventoryItemId);
+  async verifyIntegrity(shopId: string, inventoryItemId: string): Promise<IntegrityReport> {
+    const item = await this.requireItem(shopId, inventoryItemId);
+    const ledgerBalance = await this.calculator.calculateBalanceAt(shopId, inventoryItemId);
     const cachedBalance = item.onHand.toNumber();
-
-    if (calculatedLedgerBalance !== cachedBalance) {
-      const msg = `LEDGER INTEGRITY VIOLATION! Item ${inventoryItemId}. Ledger: ${calculatedLedgerBalance}, Cache: ${cachedBalance}`;
-      this.logger.error(msg);
-      
-      // In a real Fortune 500 system, this would trigger PagerDuty and a system lock for this item.
-      throw new InternalServerErrorException(msg);
+    const intact = ledgerBalance === cachedBalance;
+    if (!intact) {
+      this.logger.error(`Ledger integrity violation for inventory item ${inventoryItemId} of shop ${shopId}: ledger ${ledgerBalance}, cached ${cachedBalance}`);
     }
-
-    return true;
+    return { intact, ledgerBalance, cachedBalance };
   }
 }

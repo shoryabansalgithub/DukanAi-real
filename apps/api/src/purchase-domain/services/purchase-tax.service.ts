@@ -9,7 +9,7 @@ export class PurchaseTaxService {
   /**
    * Calculate taxes based on configuration (inclusive or exclusive).
    */
-  calculateTaxes(items: any[], mode: 'INCLUSIVE' | 'EXCLUSIVE', currency: string, exchangeRate: number) {
+  calculateTaxes(items: any[], mode: 'INCLUSIVE' | 'EXCLUSIVE', _currency: string, _exchangeRate: number) {
     this.logger.debug(`Calculating taxes in ${mode} mode`);
     
     return items.map(item => {

@@ -1,0 +1,48 @@
+# The API accepts connections only from the Ingress controller, the web pods
+# and the monitoring namespace (the scrape); the web only from the Ingress
+# controller. Namespaces are matched by the kubernetes.io/metadata.name
+# label every namespace carries; rename the two if the cluster's
+# ingress-nginx or Prometheus live elsewhere.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dukaanai-api
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dukaanai-api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dukaanai-web
+      ports:
+        - port: 3002
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dukaanai-web
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dukaanai-web
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 3000

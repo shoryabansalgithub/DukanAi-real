@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ListQueryDto, pageArgs } from '../common/pagination';
 
 @Injectable()
 export class IdentityAuditService {
@@ -53,20 +54,19 @@ export class IdentityAuditService {
   /**
    * Retrieves the immutable history of a specific barcode entity.
    */
-  async getBarcodeHistory(shopId: string, barcodeId: string) {
-    return this.prisma.barcodeHistory.findMany({
-      where: {
-        shopId,
-        barcodeId,
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      include: {
-        changedBy: {
-          select: { id: true, name: true, email: true },
-        },
-      },
-    });
+  async getBarcodeHistory(shopId: string, barcodeId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, barcodeId };
+    const [items, total] = await Promise.all([
+      this.prisma.barcodeHistory.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        include: { changedBy: { select: { id: true, name: true, email: true } } },
+        skip,
+        take,
+      }),
+      this.prisma.barcodeHistory.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 }

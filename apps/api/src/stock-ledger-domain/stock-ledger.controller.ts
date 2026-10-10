@@ -1,11 +1,8 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param } from '@nestjs/common';
 import { LedgerCalculationService } from './services/ledger-calculation.service';
 import { LedgerIntegrityService } from './services/ledger-integrity.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('stock-ledger')
 export class StockLedgerController {
   constructor(
@@ -17,6 +14,7 @@ export class StockLedgerController {
   @Get('balance/:inventoryItemId')
   async getCalculatedBalance(@Param('inventoryItemId') inventoryItemId: string) {
     const shopId = this.tenantContext.getShopId();
+    await this.ledgerIntegrity.requireItem(shopId, inventoryItemId);
     const balance = await this.ledgerCalc.calculateBalanceAt(shopId, inventoryItemId);
     return { inventoryItemId, calculatedBalance: balance };
   }
@@ -24,7 +22,7 @@ export class StockLedgerController {
   @Get('integrity/:inventoryItemId')
   async checkIntegrity(@Param('inventoryItemId') inventoryItemId: string) {
     const shopId = this.tenantContext.getShopId();
-    const isIntact = await this.ledgerIntegrity.verifyIntegrity(shopId, inventoryItemId);
-    return { inventoryItemId, integrity: isIntact ? 'VERIFIED' : 'FAILED' };
+    const report = await this.ledgerIntegrity.verifyIntegrity(shopId, inventoryItemId);
+    return { inventoryItemId, integrity: report.intact ? 'VERIFIED' : 'FAILED', ledgerBalance: report.ledgerBalance, cachedBalance: report.cachedBalance };
   }
 }

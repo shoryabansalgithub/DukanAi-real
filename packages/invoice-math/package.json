@@ -1,6 +1,9 @@
 {
   "name": "@dukaanai/invoice-math",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=22.12"
+  },
   "description": "Shared mathematical engine for DukaanAI billing",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +17,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "jest"
+    "test": "jest",
+    "type-check": "tsc --noEmit -p tsconfig.json",
+    "clean": "node -e \"for (const d of process.argv.slice(1)) require('fs').rmSync(d, { recursive: true, force: true })\" dist"
   },
   "dependencies": {
     "decimal.js": "^10.4.3"

@@ -1,10 +1,28 @@
 import { Injectable } from '@nestjs/common';
-import { InvoiceStatus, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RevenueEngine } from '../engines/revenue-engine';
+import { TrendEngine } from '../engines/trend-engine';
+import { completedInvoiceFilter, INVOICE_SIGN, IS_SALE, pctChange, percentShare, toDecimal, toInt, toMoney } from '../engines/invoice-sql';
+import { AnalyticsRange, businessDayLabel, MAX_TREND_DAYS, rangeDays, trailingBusinessDays } from '../analytics-range';
+import { ShopTimezoneService } from './shop-timezone.service';
 
-export type AnalyticsRange = 'today' | 'week' | 'month' | 'year';
+export type { AnalyticsRange } from '../analytics-range';
+
+export interface TrendPoint {
+  /** Chart label, e.g. `18 Sept`. */
+  date: string;
+  /** `YYYY-MM-DD` business date in the shop timezone. */
+  businessDate: string;
+  /** Net sales (sales minus returns). */
+  sales: number;
+}
 
 export interface AnalyticsPagePayload {
+  range: AnalyticsRange;
+  timezone: string;
+  from: string;
+  to: string;
   kpis: {
     totalRevenue: number;
     netProfit: number;
@@ -14,62 +32,56 @@ export interface AnalyticsPagePayload {
     profitChangePct: number | null;
     aovChangePct: number | null;
   };
-  revenueTrend: Array<{ date: string; sales: number }>;
+  revenueTrend: TrendPoint[];
   paymentModes: Array<{ name: string; value: number; amount: number }>;
   categorySales: Array<{ name: string; value: number; amount: number }>;
   topCustomers: Array<{ name: string; frequency: number; spent: number }>;
 }
 
-const RANGE_DAYS: Record<AnalyticsRange, number> = {
-  today: 1,
-  week: 7,
-  month: 30,
-  year: 365,
-};
-
-function pctChange(current: number, previous: number): number | null {
-  if (previous <= 0) return null;
-  return Math.round(((current - previous) / previous) * 1000) / 10;
-}
-
 /**
- * Aggregates live invoice data into the single payload the web analytics page
- * renders. All figures are computed directly from Invoice/InvoiceItem rows so
- * they never depend on background aggregation jobs having run.
+ * Single payload backing the web Reports & Analytics page. Ranges are whole
+ * business days in the shop timezone (today / last 7 / 30 / 365), every
+ * figure applies the SALE / SALES_RETURN / CANCELLED rules of contract §6 and
+ * nothing depends on background aggregation jobs.
  */
 @Injectable()
 export class AnalyticsPageService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly revenueEngine: RevenueEngine,
+    private readonly trendEngine: TrendEngine,
+    private readonly shopTimezone: ShopTimezoneService,
+  ) {}
 
-  async getAnalytics(shopId: string, range: AnalyticsRange): Promise<AnalyticsPagePayload> {
-    const days = RANGE_DAYS[range] ?? 7;
-    const now = new Date();
-    const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    const prevStart = new Date(start.getTime() - days * 24 * 60 * 60 * 1000);
+  async getAnalytics(shopId: string, rangeInput: string | undefined): Promise<AnalyticsPagePayload> {
+    const range: AnalyticsRange = rangeInput === 'today' || rangeInput === 'month' || rangeInput === 'year' ? rangeInput : 'week';
+    const timeZone = await this.shopTimezone.resolve(shopId);
+    const window = trailingBusinessDays(rangeDays(range), timeZone);
+    const { start, end, prevStart } = window;
 
-    const [current, previous, udhar, trend, paymentModes, categorySales, topCustomers] =
-      await Promise.all([
-        this.revenueAndProfit(shopId, start, now),
-        this.revenueAndProfit(shopId, prevStart, start),
-        this.prisma.customer.aggregate({
-          where: { isDeleted: false },
-          _sum: { outstandingBalance: true },
-        }),
-        this.revenueTrend(shopId, start, now),
-        this.paymentModes(shopId, start),
-        this.categorySales(shopId, start),
-        this.topCustomers(shopId, start),
-      ]);
+    const [current, previous, udhar, trend, paymentModes, categorySales, topCustomers] = await Promise.all([
+      this.revenueAndProfit(shopId, start, end),
+      this.revenueAndProfit(shopId, prevStart, start),
+      this.prisma.customer.aggregate({ where: { shopId, isDeleted: false }, _sum: { outstandingBalance: true } }),
+      this.trendSeries(shopId, start, end, timeZone),
+      this.paymentModes(shopId, start, end),
+      this.categorySales(shopId, start, end),
+      this.topCustomers(shopId, start, end),
+    ]);
 
-    const avgOrderValue = current.orders > 0 ? current.revenue / current.orders : 0;
-    const prevAov = previous.orders > 0 ? previous.revenue / previous.orders : 0;
+    const avgOrderValue = current.orders > 0 ? current.revenue.div(current.orders) : new Prisma.Decimal(0);
+    const prevAov = previous.orders > 0 ? previous.revenue.div(previous.orders) : new Prisma.Decimal(0);
 
     return {
+      range,
+      timezone: timeZone,
+      from: window.fromDate,
+      to: window.toDate,
       kpis: {
-        totalRevenue: current.revenue,
-        netProfit: current.profit,
-        udharOutstanding: Number(udhar._sum.outstandingBalance ?? 0),
-        avgOrderValue: Math.round(avgOrderValue),
+        totalRevenue: toMoney(current.revenue),
+        netProfit: toMoney(current.profit),
+        udharOutstanding: toMoney(udhar._sum.outstandingBalance ?? new Prisma.Decimal(0)),
+        avgOrderValue: avgOrderValue.toDecimalPlaces(0).toNumber(),
         revenueChangePct: pctChange(current.revenue, previous.revenue),
         profitChangePct: pctChange(current.profit, previous.profit),
         aovChangePct: pctChange(avgOrderValue, prevAov),
@@ -81,137 +93,80 @@ export class AnalyticsPageService {
     };
   }
 
-  private async revenueAndProfit(shopId: string, start: Date, end: Date) {
-    const rows = await this.prisma.$queryRaw<
-      Array<{ revenue: Prisma.Decimal | null; profit: Prisma.Decimal | null; orders: bigint }>
-    >`
-      SELECT
-        SUM(i.totalAmount) AS revenue,
-        COUNT(*) AS orders,
-        (
-          SELECT SUM((ii.sellingPrice * (1 - ii.discountPercent / 100) - ii.costPrice) * ii.quantity)
-          FROM InvoiceItem ii
-          INNER JOIN Invoice iv ON iv.id = ii.invoiceId
-          WHERE iv.shopId = ${shopId}
-            AND iv.status = ${InvoiceStatus.COMPLETED}
-            AND iv.isDeleted = false
-            AND iv.createdAt >= ${start}
-            AND iv.createdAt < ${end}
-            AND ii.isDeleted = false
-        ) AS profit
-      FROM Invoice i
-      WHERE i.shopId = ${shopId}
-        AND i.status = ${InvoiceStatus.COMPLETED}
-        AND i.isDeleted = false
-        AND i.createdAt >= ${start}
-        AND i.createdAt < ${end}
-    `;
-    const row = rows[0];
-    return {
-      revenue: Number(row?.revenue ?? 0),
-      profit: Number(row?.profit ?? 0),
-      orders: Number(row?.orders ?? 0),
-    };
+  /** Chart-ready daily net-sales series for the last `days` business days. */
+  async getTrendSeries(shopId: string, days: number): Promise<TrendPoint[]> {
+    const safeDays = Math.min(Math.max(Number.isFinite(days) ? Math.floor(days) : 30, 1), MAX_TREND_DAYS);
+    const timeZone = await this.shopTimezone.resolve(shopId);
+    const { start, end } = trailingBusinessDays(safeDays, timeZone);
+    return this.trendSeries(shopId, start, end, timeZone);
   }
 
-  /** Chart-ready daily revenue series for the last `days` days, computed live. */
-  async getTrendSeries(shopId: string, days: number) {
-    const now = new Date();
-    const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-    return this.revenueTrend(shopId, start, now);
-  }
-
-  private async revenueTrend(shopId: string, start: Date, end: Date) {
-    const rows = await this.prisma.$queryRaw<Array<{ day: string; sales: Prisma.Decimal }>>`
-      SELECT DATE_FORMAT(i.createdAt, '%Y-%m-%d') AS day, SUM(i.totalAmount) AS sales
-      FROM Invoice i
-      WHERE i.shopId = ${shopId}
-        AND i.status = ${InvoiceStatus.COMPLETED}
-        AND i.isDeleted = false
-        AND i.createdAt >= ${start}
-        AND i.createdAt < ${end}
-      GROUP BY day
-      ORDER BY day ASC
-    `;
-    const byDay = new Map(rows.map((r) => [r.day, Number(r.sales)]));
-
-    // Fill missing days with 0 so the chart draws a continuous curve.
-    const result: Array<{ date: string; sales: number }> = [];
-    const cursor = new Date(start);
-    cursor.setHours(0, 0, 0, 0);
-    while (cursor <= end) {
-      const key = cursor.toISOString().split('T')[0];
-      result.push({
-        date: cursor.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
-        sales: byDay.get(key) ?? 0,
-      });
-      cursor.setDate(cursor.getDate() + 1);
-    }
-    return result;
-  }
-
-  private async paymentModes(shopId: string, start: Date) {
-    const groups = await this.prisma.invoice.groupBy({
-      where: { status: InvoiceStatus.COMPLETED, isDeleted: false, createdAt: { gte: start } },
-      by: ['paymentMode'],
-      _sum: { totalAmount: true },
-    });
-    const total = groups.reduce((acc, g) => acc + Number(g._sum.totalAmount ?? 0), 0);
-    return groups
-      .map((g) => {
-        const amount = Number(g._sum.totalAmount ?? 0);
-        return {
-          name: g.paymentMode as string,
-          value: total > 0 ? Math.round((amount / total) * 100) : 0,
-          amount,
-        };
-      })
-      .sort((a, b) => b.amount - a.amount);
-  }
-
-  private async categorySales(shopId: string, start: Date) {
-    const rows = await this.prisma.$queryRaw<Array<{ name: string; total: Prisma.Decimal }>>`
-      SELECT COALESCE(c.name, 'Uncategorised') AS name, SUM(ii.totalAmount) AS total
-      FROM InvoiceItem ii
-      INNER JOIN Invoice i ON i.id = ii.invoiceId
-      INNER JOIN Product p ON p.id = ii.productId
-      LEFT JOIN Category c ON c.id = p.categoryId
-      WHERE i.shopId = ${shopId}
-        AND i.status = ${InvoiceStatus.COMPLETED}
-        AND i.isDeleted = false
-        AND i.createdAt >= ${start}
-        AND ii.isDeleted = false
-      GROUP BY c.name
-      ORDER BY total DESC
-      LIMIT 6
-    `;
-    const total = rows.reduce((acc, r) => acc + Number(r.total), 0);
-    return rows.map((r) => ({
-      name: r.name,
-      value: total > 0 ? Math.round((Number(r.total) / total) * 100) : 0,
-      amount: Number(r.total),
+  private async trendSeries(shopId: string, start: Date, end: Date, timeZone: string): Promise<TrendPoint[]> {
+    const series = await this.trendEngine.dailyNetSales(shopId, start, end, timeZone);
+    return series.map((day) => ({
+      date: businessDayLabel(day.businessDate),
+      businessDate: day.businessDate,
+      sales: toMoney(day.sales),
     }));
   }
 
-  private async topCustomers(shopId: string, start: Date) {
-    const rows = await this.prisma.$queryRaw<
-      Array<{ name: string; frequency: bigint; spent: Prisma.Decimal }>
-    >`
-      SELECT cu.name AS name, COUNT(*) AS frequency, SUM(i.totalAmount) AS spent
+  private async revenueAndProfit(shopId: string, start: Date, end: Date) {
+    const [totals, profit] = await Promise.all([
+      this.revenueEngine.totals(shopId, start, end),
+      this.revenueEngine.profit(shopId, start, end),
+    ]);
+    return { revenue: totals.netSales, profit, orders: totals.orders };
+  }
+
+  private async paymentModes(shopId: string, start: Date, end: Date) {
+    const buckets = await this.revenueEngine.paymentModeBuckets(shopId, start, end);
+    const total = buckets.reduce((acc, b) => acc.plus(b.amount), new Prisma.Decimal(0));
+    return buckets.map((bucket) => ({
+      name: bucket.mode,
+      value: percentShare(bucket.amount, total),
+      amount: toMoney(bucket.amount),
+    }));
+  }
+
+  private async categorySales(shopId: string, start: Date, end: Date) {
+    const rows = await this.prisma.$queryRaw<Array<{ name: string; total: unknown }>>`
+      SELECT COALESCE(c.name, 'Uncategorised') AS name,
+             COALESCE(SUM(${INVOICE_SIGN} * ii.totalAmount), 0) AS total
+      FROM InvoiceItem ii
+      INNER JOIN Invoice i ON i.id = ii.invoiceId
+      LEFT JOIN Product p ON p.id = ii.productId
+      LEFT JOIN Category c ON c.id = p.categoryId
+      WHERE ${completedInvoiceFilter(shopId, start, end)}
+        AND ii.isDeleted = false
+      GROUP BY c.id, c.name
+      ORDER BY total DESC
+      LIMIT 6
+    `;
+    const amounts = rows.map((row) => ({ name: row.name, amount: toDecimal(row.total) }));
+    const total = amounts.reduce((acc, r) => acc.plus(r.amount), new Prisma.Decimal(0));
+    return amounts.map((row) => ({
+      name: row.name,
+      value: percentShare(row.amount, total),
+      amount: toMoney(row.amount),
+    }));
+  }
+
+  private async topCustomers(shopId: string, start: Date, end: Date) {
+    const rows = await this.prisma.$queryRaw<Array<{ name: string; frequency: unknown; spent: unknown }>>`
+      SELECT cu.name AS name,
+             COALESCE(SUM(${IS_SALE}), 0) AS frequency,
+             COALESCE(SUM(${INVOICE_SIGN} * i.totalAmount), 0) AS spent
       FROM Invoice i
       INNER JOIN Customer cu ON cu.id = i.customerId
-      WHERE i.shopId = ${shopId}
-        AND i.status = ${InvoiceStatus.COMPLETED}
-        AND i.isDeleted = false
-        AND i.createdAt >= ${start}
+      WHERE ${completedInvoiceFilter(shopId, start, end)}
       GROUP BY cu.id, cu.name
       ORDER BY spent DESC
       LIMIT 5
     `;
-    return rows.map((r) => ({
-      name: r.name,
-      frequency: Number(r.frequency),
-      spent: Number(r.spent),
+    return rows.map((row) => ({
+      name: row.name,
+      frequency: toInt(row.frequency),
+      spent: toMoney(toDecimal(row.spent)),
     }));
   }
 }

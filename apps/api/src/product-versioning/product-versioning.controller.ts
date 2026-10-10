@@ -1,13 +1,11 @@
-import { Controller, Post, Body, Param, Get, Patch, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Param, Get, Patch } from '@nestjs/common';
 import { ProductVersioningService } from './product-versioning.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
-import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
+import type { JsonObject } from '../common/pipes/json-object.pipe';
+import { JsonObjectPipe } from '../common/pipes/json-object.pipe';
 
 @Controller('products/:productId/revisions')
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 export class ProductVersioningController {
   constructor(private readonly versioningService: ProductVersioningService) {}
 
@@ -19,7 +17,7 @@ export class ProductVersioningController {
 
   @Patch(':revId')
   @Roles(Role.ADMIN, Role.MANAGER, Role.OWNER)
-  saveDraft(@Param('revId') revId: string, @Body() data: any) {
+  saveDraft(@Param('revId') revId: string, @Body(JsonObjectPipe) data: JsonObject) {
     return this.versioningService.saveDraft(revId, data);
   }
 

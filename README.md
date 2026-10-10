@@ -73,7 +73,7 @@ DukaanAI/
 
 ### Prerequisites
 
-- Node.js 20 LTS
+- Node.js 22 (`.nvmrc`; the `engines` floor is 22.12)
 - MySQL 8+
 - Redis 6.2+
 - Google OAuth web-client credentials (only when Google sign-in is enabled)
@@ -84,16 +84,18 @@ DukaanAI/
 # Install dependencies from the repository root
 npm install
 
-# Create local environment files from the committed templates
-cp apps/api/.env.example apps/api/.env
+# Local overrides (secrets, your DATABASE_URL) go in the git-ignored .env.local;
+# the committed .env.development templates supply every other default.
+cp apps/api/.env.example apps/api/.env.local
 cp apps/web/.env.example apps/web/.env.local
 
 # Apply database migrations, then start API and web in separate terminals
+# (the start scripts pin NODE_ENV=development, so the .env.development templates apply)
 cd apps/api && npx prisma migrate deploy && npm run start:dev
 cd apps/web && npm run dev
 ```
 
-The API listens on `http://localhost:3001/api`; the web app listens on `http://localhost:3002` when started with its configured port. See [ENVIRONMENT_REQUIREMENTS.md](./ENVIRONMENT_REQUIREMENTS.md) and [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md) before deploying.
+The API listens on `http://localhost:3002/api` (`PORT`) and the web app on `http://localhost:3010` (`next dev -p 3010`; `FRONTEND_URL` and `NEXTAUTH_URL` in the development templates match). Every API variable is documented in `apps/api/.env.example`; see [ENVIRONMENT_REQUIREMENTS.md](./ENVIRONMENT_REQUIREMENTS.md) and [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md) before deploying.
 
 ### Keeping the database schema in sync
 
@@ -104,11 +106,14 @@ API now detects this at boot with a schema probe, logs a loud
 `SCHEMA DRIFT DETECTED` error, and refuses to start. The fix is always:
 
 ```bash
-cd apps/api && npx prisma db push
+cd apps/api && npx prisma migrate deploy
 ```
 
-Run it after every `git pull` that changes `prisma/schema.prisma` (make sure
-`DATABASE_URL` in your environment points at your local database).
+Run it after every `git pull` that adds a migration (make sure `DATABASE_URL`
+in your environment points at your local database). Never `prisma db push`:
+it bypasses the migration history, and the ledger triggers and data fixes
+only ship as migrations. A failed or edited migration is settled with
+`prisma migrate resolve`; see `apps/api/prisma/MIGRATIONS.md`.
 
 ### Seeding demo data
 
@@ -154,107 +159,34 @@ unrecognized value makes the API refuse to boot rather than guess.
 
 Set both flags together, and never enable them for a production deployment.
 
-## 📋 Development Phases
+## 📋 What is built
 
-### ✅ PHASE 1: Tech Stack Architecture
-- [x] Proposed production-grade tech stack
-- [x] Architectural decisions with reasoning
-- [x] Scalability strategy
-- [x] Folder structure
+The production-readiness roadmap (phases 0–8: authorization, tenant
+isolation, money and stock correctness, scaffolding repair, denial of
+service, web correctness, dependencies and deployment, observability and
+backups, data model, scripts, config and docs) is complete; `AGENTS.md`
+records every row with the files and tests that prove it, and
+`docs/POS_BILLING_CONTRACT.md` is the binding API contract.
 
-### ✅ PHASE 2: UI Implementation (CURRENT)
-- [x] Project scaffolding with Next.js
-- [x] Tailwind CSS setup
-- [x] Component library (shadcn/ui style)
-- [x] Reusable components
-- [x] Dashboard page
-- [x] Navigation (Sidebar + Navbar)
-- [x] Mock data
-- [x] Charts & visualizations
-- [x] Professional styling
-- [x] Responsive design
-- [x] Dark mode ready
+**API (NestJS, `apps/api`)**: POS billing (sales, cumulative returns,
+cancellations, repayments, one transaction each), shifts, customers and
+udhar, products, variants, categories, search, batches and expiry,
+reservations, stock counts, procurement (purchase orders → goods receipts →
+vendor bills → payments, purchase returns, credit notes), warehouses, a
+double-entry ledger, dashboards and CSV exports, nightly ABC/XYZ analytics
+and reorder recommendations, OCR bill scanning (Gemini), product media and
+imports, signed webhooks, notifications, staff invitations, sessions with
+rotating refresh tokens, Prometheus metrics, health probes and graceful
+shutdown.
 
-### ✅ Backend & authentication
+**Web (Next.js 16, `apps/web`)**: login, register (invitation join), forgot
+and reset password, dashboard, billing (POS), invoices and receipts,
+customers, products, inventory (batches, low stock), suppliers, expenses,
+shifts, employees, notifications, analytics, AI scanner, smart capture and
+settings. Every mutating action calls the API; there is no mock data.
 
-- [x] NestJS API and Prisma schema
-- [x] Credentials and Google OAuth authentication
-- [x] Server-side Google ID-token verification and rotating refresh tokens
-- [x] Tenant-scoped REST API endpoints and WebSocket authentication
-- [x] HMAC-signed webhook delivery with audit records
-
-### 🤖 PHASE 4: AI Features (After Backend)
-- [ ] AI Assistant chat
-- [ ] Voice billing
-- [ ] OCR invoice scanning
-- [ ] Predictive analytics
-- [ ] Smart recommendations
-
-### 🔧 PHASE 5: Production Optimization
-- [ ] Performance optimization
-- [ ] Redis caching
-- [ ] Docker containerization
-- [ ] CI/CD pipeline
-- [ ] Security hardening
-- [ ] Monitoring setup
-
-## 🎨 UI Components
-
-### Available Components
-
-**UI Elements:**
-- Button (primary, secondary, outline, ghost, danger)
-- Card (with header, footer, content)
-- Badge (colored variants)
-- Input (with validation)
-
-**Dashboard Components:**
-- StatCard (metrics with trends)
-- DataTable (sortable, filterable)
-- Charts (Sales, Bar, Pie - using Recharts)
-
-**Navigation:**
-- Sidebar (collapsible, responsive)
-- Navbar (theme toggle, notifications, profile)
-
-## 🎯 Features Implemented (Phase 2)
-
-### Dashboard Page ✅
-- Key metrics (Sales, Profit, Udhar, Stock)
-- Sales trend chart
-- Category distribution pie chart
-- AI Business Insights
-- Top customers list
-- Recent transactions table
-
-### Navigation ✅
-- Responsive sidebar
-- Top navbar with theme toggle
-- Active route highlighting
-- Mobile hamburger menu
-
-### Pages Created ✅
-- Dashboard (complete demo)
-- Billing (POS) - placeholder
-- Customers - placeholder
-- Inventory - placeholder
-- Analytics - placeholder
-- AI Assistant - placeholder
-- Database Manager - placeholder
-- Settings - placeholder
-
-## 🔄 Mock Data
-
-Pre-configured mock data for development:
-- Dashboard statistics
-- Sales data (weekly trends)
-- Products (7 items)
-- Customers (5 items)
-- Transactions (4 items)
-- Category breakdown
-- Payment modes
-
-Located in: `src/data/mockData.ts`
+**Not built**: an AI assistant, voice billing, variant-level POS pricing,
+tax-inclusive pricing, coupons, weighted-average or FIFO costing.
 
 ## 🎨 Design System
 
@@ -282,9 +214,14 @@ Use the checklist in [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md). Googl
 ## 📚 Documentation
 
 - [Tech Stack Architecture](./TECH_STACK_ARCHITECTURE.md) - Detailed tech decisions
-- [Component Library](./docs/COMPONENTS.md) - Coming soon
-- [API Documentation](./docs/API.md) - Coming soon
-- [Database Schema](./docs/DATABASE.md) - Coming soon
+- [Deployment](./docs/DEPLOYMENT.md) - Images, probes, shutdown, compose from a fresh clone
+- [Observability](./docs/OBSERVABILITY.md) - JSON logs, `/api/metrics`, error tracking, alert runbook
+- [Backups and restore](./docs/BACKUP_RESTORE.md) - MySQL 8 backup, restore, the rehearsed drill
+- [Data safety](./docs/DATA_SAFETY.md) - recovery objectives (RPO / RTO) per store, the data inventory, measured restore times, open gaps, the owner's sign-off
+- [POS / Billing API contract](./docs/POS_BILLING_CONTRACT.md) - the binding route, payload and consistency contract
+- [Environment architecture](./docs/architecture/environment-architecture.md) - env files, loading order, validation, queues; every API variable is in `apps/api/.env.example`
+- [Migrations runbook](./apps/api/prisma/MIGRATIONS.md) - `migrate deploy` / `migrate resolve`, rolling back a release
+- [Agent notes](./AGENTS.md) - architecture decisions and sharp edges, row by row
 
 ## 🤝 Contributing
 

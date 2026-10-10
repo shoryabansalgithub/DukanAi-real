@@ -1,48 +1,89 @@
-import { Controller, Post, Body, Get, Put, Delete, Param, Logger, Request, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, Req, Res } from '@nestjs/common';
+import type { Request, Response } from 'express';
+import { Role } from '@prisma/client';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CustomersService } from './customers.service';
 import { CustomerSearchService } from './services/customer-search.service';
-import { CreateEnterpriseCustomerDto } from './dto/enterprise-customer.dto';
+import { CreateCustomerDto, ListCustomersDto, PaginationDto, RecordPaymentDto, SearchCustomersDto, UpdateCustomerDto } from './dto/create-customer.dto';
+import { Roles } from '../auth/roles.decorator';
+import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
+import { SafeUserDto } from '../users/dto/safe-user.dto';
+import { BillingActor } from '../billing/billing.types';
 
+const POS_ROLES = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER, Role.CASHIER];
+const READ_ROLES = [...POS_ROLES, Role.VIEWER];
+const MANAGER_ROLES = [Role.OWNER, Role.ADMIN, Role.SUPER_ADMIN, Role.MANAGER];
+
+@ApiTags('customers')
+@ApiBearerAuth()
 @Controller('customers')
 export class CustomersController {
-  private readonly logger = new Logger(CustomersController.name);
-
   constructor(
     private readonly customersService: CustomersService,
-    private readonly searchService: CustomerSearchService
+    private readonly searchService: CustomerSearchService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
+  private actor(req: Request): BillingActor {
+    const user = req.user as SafeUserDto;
+    return { shopId: this.tenantContext.getShopId(), userId: user.id, role: user.role, ipAddress: req.ip, correlationId: this.tenantContext.getCorrelationId() };
+  }
+
   @Post()
-  async create(@Request() req: any, @Body() dto: CreateEnterpriseCustomerDto | any) {
-    return this.customersService.create(dto);
+  @Roles(...POS_ROLES)
+  create(@Req() req: Request, @Body() dto: CreateCustomerDto) {
+    return this.customersService.create(dto, this.actor(req));
   }
 
   @Get()
-  async findAll(@Query('skip') skip?: string, @Query('take') take?: string) {
-    return this.customersService.findAll(skip ? +skip : undefined, take ? +take : undefined);
+  @Roles(...READ_ROLES)
+  findAll(@Query() query: ListCustomersDto) {
+    return this.customersService.findAll(query);
   }
 
   @Post('search')
-  async search(@Request() req: any, @Body() body: { query: string, skip?: number, take?: number }) {
-    return this.searchService.search(req.user.shopId, body.query, body.skip, body.take);
+  @Roles(...READ_ROLES)
+  @HttpCode(HttpStatus.OK)
+  search(@Req() req: Request, @Body() body: SearchCustomersDto) {
+    return this.searchService.search(this.actor(req).shopId, body.query, body.skip, body.take);
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
+  @Roles(...READ_ROLES)
+  findOne(@Param('id') id: string) {
     return this.customersService.findOne(id);
   }
 
+  @Patch(':id')
+  @Roles(...POS_ROLES)
+  update(@Req() req: Request, @Param('id') id: string, @Body() dto: UpdateCustomerDto) {
+    return this.customersService.update(id, dto, this.actor(req));
+  }
+
+  @Get(':id/ledger')
+  @Roles(...READ_ROLES)
+  ledger(@Param('id') id: string, @Query() query: PaginationDto) {
+    return this.customersService.ledgerEntries(id, query);
+  }
+
+  @Get(':id/invoices')
+  @Roles(...READ_ROLES)
+  invoices(@Param('id') id: string, @Query() query: PaginationDto) {
+    return this.customersService.invoices(id, query);
+  }
+
   @Post(':id/payments')
-  async recordPayment(
-    @Param('id') id: string,
-    @Body() body: { amount: number; mode?: string; notes?: string },
-  ) {
-    return this.customersService.recordPayment(id, Number(body.amount), body.mode, body.notes);
+  @Roles(...POS_ROLES)
+  async recordPayment(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Param('id') id: string, @Body() dto: RecordPaymentDto) {
+    const result = await this.customersService.recordPayment(id, dto, this.actor(req));
+    res.status(result.replayed ? HttpStatus.OK : HttpStatus.CREATED);
+    return result;
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    return this.customersService.softDelete(id);
+  @Roles(...MANAGER_ROLES)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(@Req() req: Request, @Param('id') id: string) {
+    await this.customersService.softDelete(id, this.actor(req));
   }
 }
-

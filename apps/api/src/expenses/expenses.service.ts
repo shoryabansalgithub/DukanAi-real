@@ -3,6 +3,21 @@ import { Expense, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CreateExpenseDto, UpdateExpenseDto } from './dto/expense.dto';
+import { ListQueryDto, pageArgs, PagedResult } from '../common/pagination';
+import { safeTimeZone, toZonedParts, zonedDateToUtc } from '../common/time/business-day';
+
+/** `GET /expenses/summary` (roadmap 6.7). Money as numbers with 2 decimals. */
+export interface ExpenseSummary {
+  /** `YYYY-MM` of the shop's current business month. */
+  month: string;
+  /** Paid expenses dated in this month. */
+  paidThisMonth: number;
+  /** Every unpaid expense, whatever its date (a due is a due until it is settled). */
+  pendingTotal: number;
+  /** Largest category of this month (paid or pending), or null without expenses. */
+  largestCategory: { category: string; amount: number } | null;
+  countThisMonth: number;
+}
 
 /** Shape the expenses page renders. */
 export interface ExpenseView {
@@ -34,13 +49,42 @@ export class ExpensesService {
     private readonly tenantContext: TenantContextService,
   ) {}
 
-  async findAll(): Promise<ExpenseView[]> {
+  async summary(): Promise<ExpenseSummary> {
+    const shopId = this.tenantContext.getShopId();
+    const settings = await this.prisma.shopSettings.findUnique({ where: { shopId }, select: { timezone: true } });
+    const timeZone = safeTimeZone(settings?.timezone);
+    const parts = toZonedParts(new Date(), timeZone);
+    const start = zonedDateToUtc(parts.year, parts.month, 1, timeZone);
+    const end = parts.month === 12 ? zonedDateToUtc(parts.year + 1, 1, 1, timeZone) : zonedDateToUtc(parts.year, parts.month + 1, 1, timeZone);
+    const inMonth = { isDeleted: false, expenseDate: { gte: start, lt: end } };
+
+    const [paid, pending, byCategory, countThisMonth] = await Promise.all([
+      this.prisma.expense.aggregate({ where: { ...inMonth, isPaid: true }, _sum: { amount: true } }),
+      this.prisma.expense.aggregate({ where: { isDeleted: false, isPaid: false }, _sum: { amount: true } }),
+      this.prisma.expense.groupBy({ by: ['category'], where: inMonth, _sum: { amount: true }, orderBy: { _sum: { amount: 'desc' } }, take: 1 }),
+      this.prisma.expense.count({ where: inMonth }),
+    ]);
+    const money = (value: Prisma.Decimal | null | undefined) => Number((value ?? new Prisma.Decimal(0)).toFixed(2));
+    const top = byCategory[0];
+    return {
+      month: `${parts.year}-${String(parts.month).padStart(2, '0')}`,
+      paidThisMonth: money(paid._sum.amount),
+      pendingTotal: money(pending._sum.amount),
+      largestCategory: top ? { category: top.category, amount: money(top._sum.amount) } : null,
+      countThisMonth,
+    };
+  }
+
+  /** Newest first, hard-capped page (roadmap 5.6). */
+  async findAll(query?: ListQueryDto): Promise<PagedResult<ExpenseView>> {
     // shopId is injected by the tenant Prisma extension.
-    const expenses = await this.prisma.expense.findMany({
-      where: { isDeleted: false },
-      orderBy: { expenseDate: 'desc' },
-    });
-    return expenses.map(toView);
+    const { skip, take } = pageArgs(query);
+    const where = { isDeleted: false };
+    const [expenses, total] = await Promise.all([
+      this.prisma.expense.findMany({ where, orderBy: [{ expenseDate: 'desc' }, { id: 'desc' }], skip, take }),
+      this.prisma.expense.count({ where }),
+    ]);
+    return { items: expenses.map(toView), total, skip, take };
   }
 
   async create(dto: CreateExpenseDto): Promise<ExpenseView> {

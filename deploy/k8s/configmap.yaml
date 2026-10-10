@@ -1,0 +1,39 @@
+# Non-secret settings shared by the API, the web and the backup sidecar.
+# Secrets (DATABASE_URL, REDIS_URL, JWT_SECRET, NEXTAUTH_SECRET, ...) come
+# from the `dukaanai-secrets` Secret the kustomization generates from
+# dukaanai-secrets.env (copy dukaanai-secrets.env.example). Every API key is documented in
+# apps/api/.env.example; the class defaults cover what is not listed here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dukaanai-config
+data:
+  # Public origins: the web as the browser reaches it (CORS, sockets,
+  # NextAuth) and the API as the browser reaches it (inlined into the web
+  # image at build time too: apps/web/Dockerfile ARG NEXT_PUBLIC_API_URL).
+  WEB_ORIGIN: https://app.example.com
+  API_PUBLIC_URL: https://api.example.com/api
+  # Exactly one proxy hop in front of the API: the Ingress controller (the
+  # web server forwards the X-Forwarded-For it received on sign-in). A cloud
+  # load balancer that rewrites X-Forwarded-For before the Ingress is a
+  # second hop: set 2 then (apps/api/src/common/http/trust-proxy.ts).
+  TRUST_PROXY: "1"
+  STORAGE_ROOT: /var/lib/dukaanai/storage
+  UPLOAD_TEMP_DIR: uploads/tmp
+  # Behind a Service, endpoints stop routing a Terminating pod a moment
+  # after SIGTERM: drain 5 s before the listener closes (docs/DEPLOYMENT.md).
+  SHUTDOWN_DRAIN_DELAY_MS: "5000"
+  SHUTDOWN_TIMEOUT_MS: "30000"
+  HTTP_KEEP_ALIVE_TIMEOUT_MS: "65000"
+  LOG_LEVEL: log
+  BACKUP_STATUS_DIR: /var/lib/dukaanai/backups/status
+  # Backup sidecar (scripts/db/db-ops.sh backup-loop): once a day, the first
+  # run a minute after the pod starts.
+  BACKUP_COORDINATES: auto
+  BACKUP_LOOP_INTERVAL_SECONDS: "86400"
+  BACKUP_LOOP_INITIAL_DELAY_SECONDS: "60"
+  BACKUP_KEEP: "14"
+  DOCUMENTS_BACKUP_KEEP: "14"
+  OFFSITE_KEEP_DAYS: "30"
+  EMAIL_FROM: DukaanAI <no-reply@dukaanai.local>
+  SENTRY_ENVIRONMENT: production

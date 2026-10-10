@@ -1,0 +1,66 @@
+# The reference edge (roadmap 9.8): Caddy in front of the web and the API.
+#
+# One listener for both hostnames, HTTPS with certificates obtained
+# automatically (Let's Encrypt / ZeroSSL) for real domains, HTTP answered
+# with a redirect to HTTPS, HSTS, the client address forwarded to the
+# upstreams in X-Forwarded-For (the API runs with TRUST_PROXY=1: it trusts
+# exactly this hop), request bodies capped above the API's largest upload
+# (UPLOAD_MAX_MEDIA_BYTES, 50 MB), upstream timeouts above
+# BILLING_GATEWAY_TIMEOUT_MS (30 s), and the scrape endpoint hidden from the
+# internet (Prometheus reaches the API on the internal network).
+#
+# Values come from the environment (docker-compose.yml service `edge`,
+# docker-compose.prod.yml), with the local defaults shown:
+#   WEB_HOST        public hostname of the web app        (app.localhost)
+#   API_HOST        public hostname of the API            (api.localhost)
+#   EDGE_TLS_LINE   empty for automatic public certificates; "tls internal"
+#                   for a locally trusted CA (development, the compose smoke)
+#   EDGE_MAX_BODY   request body cap                      (64MB)
+#   EDGE_UPSTREAM_TIMEOUT  how long an upstream may take to answer (60s)
+#   EDGE_BLOCKED_IPS       addresses or CIDR ranges refused with 403 before
+#                   they reach the web or the API, space-separated
+#                   (docs/RUNBOOKS.md, DukaanAiCredentialFlood); the default
+#                   0.0.0.0/32 matches no client
+#
+# Caddy's own X-Forwarded-For handling: an X-Forwarded-For sent by the
+# client is discarded (no `trusted_proxies` is configured), so the value the
+# API sees is always the address Caddy accepted the connection from.
+# Validate after an edit: caddy validate --config deploy/edge/Caddyfile
+
+(dukaanai) {
+	{$EDGE_TLS_LINE}
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		-Server
+	}
+	request_body {
+		max_size {$EDGE_MAX_BODY:64MB}
+	}
+	@blocked client_ip {$EDGE_BLOCKED_IPS:0.0.0.0/32}
+	respond @blocked 403
+}
+
+{$WEB_HOST:app.localhost} {
+	import dukaanai
+	reverse_proxy web:3000 {
+		transport http {
+			dial_timeout 10s
+			response_header_timeout {$EDGE_UPSTREAM_TIMEOUT:60s}
+		}
+	}
+}
+
+{$API_HOST:api.localhost} {
+	import dukaanai
+	# The scrape endpoint is for the monitoring network only: from the
+	# internet it does not exist. Prometheus scrapes api:3002 directly.
+	@metrics path /api/metrics /api/metrics/*
+	respond @metrics 404
+	reverse_proxy api:3002 {
+		transport http {
+			dial_timeout 10s
+			response_header_timeout {$EDGE_UPSTREAM_TIMEOUT:60s}
+		}
+	}
+}

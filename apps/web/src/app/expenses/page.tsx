@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Card } from '@/components/ui/Card';
 import { 
   Receipt, Plus, Search, Filter, MoreVertical, 
@@ -9,7 +9,7 @@ import {
 import { Modal } from '@/components/ui/Modal';
 import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
-import { expensesApi, type ExpenseView } from '@/lib/api-client';
+import { expensesApi, type ExpenseSummary, type ExpenseView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -31,20 +31,42 @@ export default function ExpensesPage() {
   const { toast } = useToast();
   const [expenses, setExpenses] = useState<ExpenseView[]>([]);
   const [loading, setLoading] = useState(true);
+  // Roadmap 6.7: the tiles are this month's figures over every expense (GET /expenses/summary), not over the loaded page.
+  const [summary, setSummary] = useState<ExpenseSummary | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<ExpenseView | null>(null);
+
+  const refreshSummary = useCallback(() => {
+    expensesApi
+      .summary()
+      .then((next) => {
+        setSummary(next);
+        setSummaryError(null);
+      })
+      .catch((err) => setSummaryError(describeApiError(err, 'Loading expense totals (GET /expenses/summary)')));
+  }, []);
 
   useEffect(() => {
+    let cancelled = false;
     expensesApi.list()
       .then(data => {
-        if (Array.isArray(data)) {
+        if (!cancelled && Array.isArray(data)) {
           setExpenses(data);
         }
       })
       .catch((err) => {
+        if (cancelled) return;
         setExpenses([]);
         toast(describeApiError(err, 'Loading expenses (GET /expenses)'), 'error');
       })
-      .finally(() => setLoading(false));
-  }, [toast]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    refreshSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [toast, refreshSummary]);
   const [searchTerm, setSearchTerm] = useState('');
   
   // Modals & Panels
@@ -77,17 +99,7 @@ export default function ExpensesPage() {
   const [newMode, setNewMode] = useState('Cash');
   const [newStatus, setNewStatus] = useState('Paid');
 
-  // Derived Stats
-  const totalExpenses = expenses.filter(e => e.status === 'Paid').reduce((acc, curr) => acc + curr.amount, 0);
-  const pendingExpenses = expenses.filter(e => e.status === 'Pending').reduce((acc, curr) => acc + curr.amount, 0);
-  
-  // Group by category to find largest
-  const categoryTotals = expenses.reduce((acc: Record<string, number>, curr) => {
-    acc[curr.category] = (acc[curr.category] || 0) + curr.amount;
-    return acc;
-  }, {} as Record<string, number>);
-  
-  const largestCategory = Object.entries(categoryTotals).sort((a, b) => b[1] - a[1])[0] || ['None', 0];
+  const figure = (value: number | undefined) => (summary && value !== undefined ? `₹${value.toLocaleString('en-IN')}` : '—');
 
   // Filter Logic
   let processedExpenses = expenses.filter(e => 
@@ -104,26 +116,47 @@ export default function ExpensesPage() {
     processedExpenses = processedExpenses.filter(e => e.category === categoryFilter);
   }
 
+  const resetForm = () => {
+    setNewDesc(''); setNewAmount(''); setNewCategory('Supplies'); setNewMode('Cash'); setNewStatus('Paid');
+    setEditing(null);
+  };
+
+  const openEdit = (expense: ExpenseView) => {
+    setEditing(expense);
+    setNewDesc(expense.description);
+    setNewAmount(String(expense.amount));
+    setNewCategory(expense.category);
+    setNewMode(expense.status === 'Paid' ? expense.mode : 'Cash');
+    setNewStatus(expense.status);
+    setIsAddModalOpen(true);
+  };
+
   const handleSaveExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newDesc.trim() || !newAmount) return;
 
+    const body = {
+      description: newDesc.trim(),
+      category: newCategory,
+      amount: Number(newAmount),
+      isPaid: newStatus === 'Paid',
+      paymentMode: newStatus === 'Paid' ? newMode : undefined,
+    };
     try {
-      const created = await expensesApi.create({
-        description: newDesc.trim(),
-        category: newCategory,
-        amount: Number(newAmount),
-        isPaid: newStatus === 'Paid',
-        paymentMode: newStatus === 'Paid' ? newMode : undefined,
-      });
-
-      setExpenses([created, ...expenses]);
-      toast(`₹${newAmount} recorded under ${newCategory}`, 'success');
+      if (editing) {
+        const updated = await expensesApi.update(editing.id, body);
+        setExpenses((current) => current.map((ex) => (ex.id === updated.id ? updated : ex)));
+        toast(`"${updated.description}" updated`, 'success');
+      } else {
+        const created = await expensesApi.create(body);
+        setExpenses([created, ...expenses]);
+        toast(`₹${newAmount} recorded under ${newCategory}`, 'success');
+      }
       setIsAddModalOpen(false);
-
-      setNewDesc(''); setNewAmount(''); setNewCategory('Supplies'); setNewMode('Cash'); setNewStatus('Paid');
+      resetForm();
+      refreshSummary();
     } catch (err) {
-      toast(describeApiError(err, 'Recording expense (POST /expenses)'), 'error');
+      toast(describeApiError(err, editing ? 'Updating expense (PATCH /expenses/:id)' : 'Recording expense (POST /expenses)'), 'error');
     }
   };
 
@@ -137,18 +170,20 @@ export default function ExpensesPage() {
           const updated = await expensesApi.update(expense.id, { isPaid: true, paymentMode: 'Cash' });
           setExpenses(expenses.map(ex => (ex.id === expense.id ? updated : ex)));
           toast(`"${expense.description}" marked as Paid`, 'success');
+          refreshSummary();
         } catch (err) {
           toast(describeApiError(err, 'Updating expense (PATCH /expenses/:id)'), 'error');
         }
         break;
       case 'Edit':
-        toast(`Edit modal for "${expense.description}" coming soon`, 'info');
+        openEdit(expense);
         break;
       case 'Delete':
         try {
           await expensesApi.delete(expense.id);
           setExpenses(expenses.filter(ex => ex.id !== expense.id));
           toast(`Expense "${expense.description}" deleted`, 'success');
+          refreshSummary();
         } catch (err) {
           toast(describeApiError(err, 'Deleting expense (DELETE /expenses/:id)'), 'error');
         }
@@ -179,7 +214,7 @@ export default function ExpensesPage() {
         <Card className="p-5 flex items-center justify-between hoverable border-l-4 border-l-[#8B5CF6]">
           <div>
             <p className="text-xs text-gray-500 font-medium">Total Paid (This Month)</p>
-            <h3 className="text-2xl font-black text-gray-800 tracking-tight mt-1">₹{totalExpenses.toLocaleString('en-IN')}</h3>
+            <h3 className="text-2xl font-black text-gray-800 tracking-tight mt-1" data-testid="expenses-paid-month" title={summaryError ?? undefined}>{figure(summary?.paidThisMonth)}</h3>
           </div>
           <div className="w-12 h-12 rounded-full bg-purple-50 flex items-center justify-center text-[#8B5CF6]">
             <TrendingDown size={24} />
@@ -189,7 +224,7 @@ export default function ExpensesPage() {
         <Card className="p-5 flex items-center justify-between hoverable border-l-4 border-l-red-500 bg-red-50/30">
           <div>
             <p className="text-xs text-red-500 font-bold">Unpaid / Pending Bills</p>
-            <h3 className="text-2xl font-black text-red-700 tracking-tight mt-1">₹{pendingExpenses.toLocaleString('en-IN')}</h3>
+            <h3 className="text-2xl font-black text-red-700 tracking-tight mt-1" data-testid="expenses-pending" title={summaryError ?? undefined}>{figure(summary?.pendingTotal)}</h3>
           </div>
           <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-red-600">
             <AlertCircle size={24} />
@@ -201,8 +236,8 @@ export default function ExpensesPage() {
             <TrendingDown size={14} className="text-blue-500" /> Largest Category
           </p>
           <div className="mt-1 flex items-end gap-2">
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{largestCategory[0]}</h3>
-            <span className="text-sm font-medium text-gray-500 mb-0.5">(₹{largestCategory[1].toLocaleString('en-IN')})</span>
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight">{summary ? summary.largestCategory?.category ?? 'None' : '—'}</h3>
+            <span className="text-sm font-medium text-gray-500 mb-0.5">({figure(summary?.largestCategory?.amount ?? (summary ? 0 : undefined))})</span>
           </div>
         </Card>
       </div>
@@ -328,7 +363,8 @@ export default function ExpensesPage() {
                     </td>
                     <td className="px-6 py-4 text-right relative">
                       <button 
-                        onClick={(e) => { e.stopPropagation(); setOpenActionMenuId(openActionMenuId === expense.id ? null : expense.id); }}
+                        aria-label={`Actions for ${expense.description}`}
+                          onClick={(e) => { e.stopPropagation(); setOpenActionMenuId(openActionMenuId === expense.id ? null : expense.id); }}
                         className="p-2 text-gray-400 hover:text-[#8B5CF6] transition-colors rounded-lg hover:bg-[#8B5CF6]/10"
                       >
                         <MoreVertical size={18} />
@@ -387,7 +423,7 @@ export default function ExpensesPage() {
       </Card>
 
       {/* Add Expense Modal */}
-      <Modal isOpen={isAddModalOpen} onClose={() => setIsAddModalOpen(false)} title="Record New Expense" size="md">
+      <Modal isOpen={isAddModalOpen} onClose={() => { setIsAddModalOpen(false); resetForm(); }} title={editing ? `Edit Expense: ${editing.description}` : 'Record New Expense'} size="md">
         <form onSubmit={handleSaveExpense} className="space-y-4">
           <div>
             <label className="text-sm font-medium">Description *</label>

@@ -8,12 +8,15 @@ import { motion } from 'framer-motion';
 import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
+import { sanitizeCallbackUrl } from '@/lib/safe-callback-url';
+import { googleSignInEnabled } from '@/config/env';
 
 // Never statically generated — searchParams driven error display and real-time auth state.
 export const dynamic = 'force-dynamic';
-const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
 
 function LoginPageContent() {
+  // Decided by the server at run time (roadmap 9.19): the provider exists only with real credentials.
+  const googleOAuthEnabled = googleSignInEnabled();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -23,12 +26,17 @@ function LoginPageContent() {
   const { status } = useSession();
   const { toast } = useToast();
 
+  // Where to go after sign-in: the protected page the middleware bounced from,
+  // parsed against this origin so the parameter cannot redirect off-site
+  // (`//evil`, `/\evil` and absolute URLs all fall back, roadmap 6.4).
+  const callbackUrl = sanitizeCallbackUrl(searchParams.get('callbackUrl'), typeof window === 'undefined' ? '' : window.location.origin);
+
   // If already authenticated (or auth is bypassed), redirect away from login
   useEffect(() => {
     if (AUTH_DISABLED || status === 'authenticated') {
-      router.replace('/dashboard');
+      router.replace(callbackUrl);
     }
-  }, [status, router]);
+  }, [status, router, callbackUrl]);
 
   // Show error from NextAuth callback (e.g. OAuth failures)
   useEffect(() => {
@@ -38,6 +46,9 @@ function LoginPageContent() {
         OAuthSignin: 'Could not start Google sign-in. Please try again.',
         OAuthCallback: 'Google sign-in failed. Please try again.',
         OAuthAccountNotLinked: 'This Google account is not linked. Sign in with email instead.',
+        AccessDenied: 'Google sign-in was refused. If you registered with a password, sign in with it instead.',
+        GoogleNotConfigured: 'Google sign-in is not set up on the server yet (GOOGLE_CLIENT_ID). Sign in with your email and password.',
+        GoogleApiUnreachable: 'Google confirmed your account, but the DukaanAI server could not be reached. Try again in a moment.',
         Callback: 'Authentication failed. Please try again.',
         default: 'An unexpected error occurred.',
       };
@@ -70,7 +81,7 @@ function LoginPageContent() {
 
       if (result?.ok) {
         toast('Welcome back!', 'success');
-        router.push('/dashboard');
+        router.push(callbackUrl);
       }
     } catch (err) {
       console.error('Sign-in request failed:', err);
@@ -88,7 +99,7 @@ function LoginPageContent() {
     setError(null);
     setLoading(true);
     try {
-      await signIn('google', { callbackUrl: '/dashboard' });
+      await signIn('google', { callbackUrl });
     } catch (err) {
       console.error('Google sign-in failed:', err);
       setError('Could not connect to Google. Please try again.');
@@ -199,12 +210,12 @@ function LoginPageContent() {
                 <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
                   Password
                 </label>
-                <a
-                  href="#"
+                <Link
+                  href="/forgot-password"
                   className="text-xs font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors"
                 >
                   Forgot?
-                </a>
+                </Link>
               </div>
               <div className="relative">
                 <Lock

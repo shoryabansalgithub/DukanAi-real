@@ -1,0 +1,64 @@
+# gitleaks (roadmap 9.11, 9.14): no secret in any committed file. CI scans
+# the working tree and the whole history on every push (job "Lint"); run it
+# locally with `gitleaks dir . --config .gitleaks.toml` and
+# `gitleaks git . --config .gitleaks.toml`. Only known fixtures are
+# allowlisted, each by file AND pattern, so a real value in those files
+# still trips the scan.
+title = "DukaanAI"
+
+[extend]
+useDefault = true
+
+# Test fixtures: fixed strings that LOOK like secrets so the validators and
+# the boot matrix can be exercised; they never open anything.
+[[allowlists]]
+description = "unit, security and integration test fixtures"
+paths = [
+  '''apps/api/src/.*\.spec\.ts$''',
+  '''apps/api/test/.*\.ts$''',
+  '''apps/web/e2e(-auth)?/.*\.ts$''',
+]
+regexTarget = "line"
+regexes = [
+  '''k9vP2xR7mQ4tW8zB1nL6cH3jF5dS0aY2eU4iO7pA9sD1fG3h''',
+  '''rotated-secret-k9vP2xR7mQ4tW8zB1nL6cH3jF5dS0aY2''',
+  '''integration-secret-0123456789''',
+]
+
+# The common-password denylist (roadmap 9.15, ASVS 2.1.7): quoted lower-case
+# entries such as 'passwordpassword' or 'secret123456' that the policy refuses.
+[[allowlists]]
+description = "password policy denylist entries"
+paths = ['''apps/api/src/auth/password-policy\.ts$''']
+regexTarget = "line"
+regexes = ['''^\s*'[a-z0-9!@#$%^&*._\[\]=-]{12,32}',\s*$''']
+
+# The NestJS README badge that shipped with the scaffold: a public shields.io
+# URL whose `token` query parameter is a decoy.
+[[allowlists]]
+description = "NestJS starter README badge"
+paths = ['''apps/api/README\.md$''']
+regexTarget = "line"
+regexes = ['''shields\.io/circleci/build/github/nestjs/nest/master\?token=abc123def456''']
+
+# The compose smoke reads Grafana's provisioned admin login from the
+# environment, with the documented local default.
+[[allowlists]]
+description = "compose smoke: Grafana admin from .env"
+paths = ['''scripts/compose-smoke\.sh$''']
+regexTarget = "line"
+regexes = ['''GRAFANA_ADMIN_USER:-admin\}:\$\{GRAFANA_ADMIN_PASSWORD:-admin\}''']
+
+# Local-only files that are never committed (gitignored) but sit in a checkout.
+[[allowlists]]
+description = "untracked local state and build output"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next/''',
+  '''(^|/)dist/''',
+  '''apps/api/load/\.state\.json$''',
+  '''apps/api/load/\.business-day\.state\.json$''',
+  '''apps/api/load/\.business-day-run/''',
+  '''apps/api/load/reports/''',
+  '''(^|/)\.env(\..*)?$''',
+]

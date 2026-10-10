@@ -1,0 +1,54 @@
+# The release step: `prisma migrate deploy` from the API image, before the
+# new API starts (docs/DEPLOYMENT.md). A Job is immutable, so each release
+# re-creates it: kubectl delete job dukaanai-migrate --ignore-not-found,
+# then apply, then `kubectl wait --for=condition=complete job/dukaanai-migrate`
+# before rolling the API (deploy/k8s/README.md has the sequence).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dukaanai-migrate
+  labels:
+    app.kubernetes.io/name: dukaanai-migrate
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dukaanai-migrate
+        app.kubernetes.io/part-of: dukaanai
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: dukaanai-api
+          command: ["/app/node_modules/.bin/prisma", "migrate", "deploy"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dukaanai-secrets
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: db-ca
+              mountPath: /etc/dukaanai
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: db-ca
+          secret:
+            secretName: dukaanai-db-ca
+            optional: true

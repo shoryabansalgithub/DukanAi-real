@@ -43,9 +43,15 @@ export class StartupValidatorService implements OnModuleInit {
       });
       
       this.logger.error('================================================================================');
-      this.logger.error('Application cannot safely start. Halting process.');
+      this.logger.error('Application cannot safely start.');
 
-      process.exit(1);
+      // Thrown, not process.exit(1): the rejection reaches bootstrap().catch in
+      // main.ts, which writes the reason synchronously to stderr before exiting
+      // (process.exit here would cut buffered logs off and hide the cause).
+      throw new Error(
+        `Startup validation failed with ${criticalOrHigh.length} CRITICAL/HIGH violation(s): ` +
+          criticalOrHigh.map((e) => `[${e.domain}${e.property ? `.${e.property}` : ''}] ${e.reason} (${e.resolution})`).join('; '),
+      );
     } else {
       this.logger.warn(`Found ${errors.length} WARNING/INFO violations.`);
       errors.forEach((e, i) => {

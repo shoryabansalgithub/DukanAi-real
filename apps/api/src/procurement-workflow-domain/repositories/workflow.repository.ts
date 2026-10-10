@@ -5,7 +5,10 @@ import { WorkflowEngineService } from '../services/workflow-engine.service';
 import { WorkflowApprovalService } from '../services/workflow-approval.service';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { Prisma, WorkflowStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import { CreateWorkflowDefinitionDto } from '../dto/workflow.dto';
+import { assertOwnedMany } from '../../prisma/tenant-ownership';
+import { ListQueryDto, MAX_LIST_TAKE, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class WorkflowRepository {
@@ -17,30 +20,41 @@ export class WorkflowRepository {
     @Inject(CACHE_MANAGER) private cacheManager: Cache
   ) {}
 
-  async listDefinitions(shopId: string) {
-    return this.prisma.workflowDefinition.findMany({
-      where: { shopId, isActive: true },
-      include: { steps: { orderBy: { stepOrder: 'asc' } } }
-    });
+  async listDefinitions(shopId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = { shopId, isActive: true };
+    const [items, total] = await Promise.all([
+      this.prisma.workflowDefinition.findMany({
+        where,
+        include: { steps: { orderBy: { stepOrder: 'asc' }, take: MAX_LIST_TAKE } },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.workflowDefinition.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
-  async createDefinition(shopId: string, payload: any) {
+  async createDefinition(shopId: string, payload: CreateWorkflowDefinitionDto) {
     return this.prisma.$transaction(async (tx) => {
+      await assertOwnedMany(tx, 'user', payload.steps.map((s) => s.approverId), shopId, { isDeleted: false });
+      await assertOwnedMany(tx, 'user', payload.steps.map((s) => s.approverId), shopId, { isDeleted: false });
       const def = await tx.workflowDefinition.create({
         data: {
           shopId,
           name: payload.name,
           documentType: payload.documentType,
-          conditions: payload.conditions,
+          conditions: payload.conditions as Prisma.InputJsonValue | undefined,
           steps: {
-            create: payload.steps.map((s: any, idx: number) => ({
+            create: payload.steps.map((s, idx) => ({
               stepOrder: idx + 1,
               name: s.name,
               approverRole: s.approverRole,
               approverId: s.approverId,
               departmentId: s.departmentId,
               isParallel: s.isParallel || false,
-              conditions: s.conditions,
+              conditions: s.conditions as Prisma.InputJsonValue | undefined,
               slaMinutes: s.slaMinutes
             }))
           }
@@ -50,18 +64,18 @@ export class WorkflowRepository {
     });
   }
 
-  async getUserTasks(shopId: string, userId: string) {
-    return this.prisma.workflowTask.findMany({
-      where: {
-        shopId,
-        status: 'PENDING',
-        OR: [
-          { assignedUserId: userId },
-          { delegatedToUserId: userId }
-        ]
-      },
-      include: { workflowInstance: true }
-    });
+  async getUserTasks(shopId: string, userId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = {
+      shopId,
+      status: 'PENDING' as const,
+      OR: [{ assignedUserId: userId }, { delegatedToUserId: userId }],
+    };
+    const [items, total] = await Promise.all([
+      this.prisma.workflowTask.findMany({ where, include: { workflowInstance: true }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], skip, take }),
+      this.prisma.workflowTask.count({ where }),
+    ]);
+    return { items, total, skip, take };
   }
 
   async processTaskDecision(shopId: string, taskId: string, actorId: string, decision: 'APPROVE' | 'REJECT', comments?: string, signature?: string) {

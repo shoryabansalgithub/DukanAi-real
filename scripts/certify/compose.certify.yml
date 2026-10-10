@@ -1,0 +1,64 @@
+# Overlay for docker-compose.yml that runs the release candidate images
+# instead of building from the checkout (scripts/certify/certify.sh, roadmap
+# 9.12). Used through compose's own COMPOSE_FILE variable:
+#
+#   COMPOSE_FILE=docker-compose.yml:scripts/certify/compose.certify.yml \
+#   CERTIFY_API_IMAGE=ghcr.io/<owner>/dukaanai-api:v1.2.3 ... docker compose up -d --wait
+#
+# What differs from the reference stack, and why:
+#   - the three images are the candidates (`build` is reset so even `--build`
+#     cannot replace them), and db-ops runs the scripts baked into its image
+#     rather than the checkout's (the volume list is overridden);
+#   - MySQL and Redis are published on the host so the certification can run
+#     the restore drills, the Playwright viewer insert and the test fixtures
+#     against the stack's database;
+#   - the API runs with the test profile's open rate limits and the wide
+#     billing timeout (apps/api/.env.test): the route walk, the security
+#     suite, the browser suite and the load profile come from ONE address,
+#     which the production limits (5 sign-ins per 10 s, 20 requests per 10 s)
+#     would answer 429 by design. The production values under a realistic
+#     address mix are the subject of roadmap 9.16; the overrides are listed
+#     in the evidence bundle's SUMMARY.md.
+services:
+  migrate:
+    image: ${CERTIFY_API_IMAGE:?set CERTIFY_API_IMAGE to the API image under certification}
+    build: !reset null
+
+  api:
+    image: ${CERTIFY_API_IMAGE:?set CERTIFY_API_IMAGE to the API image under certification}
+    build: !reset null
+    environment:
+      RATE_LIMIT_SHORT_LIMIT: "100000"
+      RATE_LIMIT_MEDIUM_LIMIT: "100000"
+      RATE_LIMIT_LONG_LIMIT: "1000000"
+      AUTH_RATE_LIMIT_SHORT_LIMIT: "100000"
+      AUTH_RATE_LIMIT_MEDIUM_LIMIT: "100000"
+      AUTH_RATE_LIMIT_LONG_LIMIT: "1000000"
+      AUTH_RATE_LIMIT_ACCOUNT_LIMIT: "100000"
+      BILLING_GATEWAY_TIMEOUT_MS: "60000"
+
+  web:
+    image: ${CERTIFY_WEB_IMAGE:?set CERTIFY_WEB_IMAGE to the web image under certification}
+    build: !reset null
+
+  db-ops:
+    image: ${CERTIFY_DB_OPS_IMAGE:?set CERTIFY_DB_OPS_IMAGE to the db-ops image under certification}
+    build: !reset null
+    volumes: !override
+      - db-backups:/backups
+      - api-storage:/data/storage:ro
+      - api-uploads:/data/uploads:ro
+
+  binlog-archiver:
+    image: ${CERTIFY_DB_OPS_IMAGE:?set CERTIFY_DB_OPS_IMAGE to the db-ops image under certification}
+    build: !reset null
+    volumes: !override
+      - db-backups:/backups
+
+  mysql:
+    ports:
+      - "${CERTIFY_MYSQL_PORT:-3306}:3306"
+
+  redis:
+    ports:
+      - "${CERTIFY_REDIS_PORT:-6379}:6379"

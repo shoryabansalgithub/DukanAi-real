@@ -1,0 +1,53 @@
+# The edge on Kubernetes (roadmap 9.8), the Ingress equivalent of
+# deploy/edge/Caddyfile for ingress-nginx + cert-manager: HTTPS for both
+# hosts with certificates from the named ClusterIssuer, HTTP redirected,
+# HSTS, the client address in X-Forwarded-For (ingress-nginx sets it from the
+# connection it accepted and ignores a client-supplied value unless
+# use-forwarded-headers is on: one hop, TRUST_PROXY=1), request bodies capped
+# above UPLOAD_MAX_MEDIA_BYTES (50 MB), upstream timeouts above
+# BILLING_GATEWAY_TIMEOUT_MS (30 s), and /api/metrics routed into a Service
+# with no endpoints.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dukaanai
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 64m
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [app.example.com, api.example.com]
+      secretName: dukaanai-tls
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dukaanai-web
+                port: { name: http }
+    - host: api.example.com
+      http:
+        paths:
+          - path: /api/metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: dukaanai-blackhole
+                port: { name: http }
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dukaanai-api
+                port: { name: http }

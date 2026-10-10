@@ -1,0 +1,65 @@
+# Failure drills (roadmap 9.18): the reference stack (docker-compose.yml with
+# the edge and the monitoring stack) plus only what a drill needs to observe
+# and inject faults. scripts/drills/drill-stack.sh writes the inputs into
+# DRILL_DIR (outside the checkout) and runs compose with:
+#
+#   docker compose -p dukaanai-drill --env-file $DRILL_DIR/drill.env \
+#     -f docker-compose.yml -f scripts/drills/compose.drill.yml ...
+#
+# What differs from the reference stack, and why:
+#   - api-storage is a size-limited tmpfs (DRILL_STORAGE_SIZE, default 64m),
+#     so "fill the storage volume" fills a volume and not the host's disk;
+#     api-uploads gets its own 256m tmpfs too, so the free-space alerts
+#     describe the drill's volumes and not the host this happens to run on
+#     (the first run here found the host disk at 1.9 % free, and
+#     DukaanAiStorageFull said so).
+#   - the edge serves the drill's own certificates (DRILL_DIR/tls/edge.crt,
+#     swapped between valid, near-expiry and expired by `drill-stack.sh tls`),
+#     answers inside the network under its public names, and the blackbox
+#     exporter trusts the drill CA, so the edge probes verify certificates
+#     exactly as a browser does.
+#   - Prometheus runs the repository's prometheus.yml with the public edge
+#     targets enabled (the commented lines of that file, rendered into
+#     DRILL_DIR/prometheus.yml) and the repository's alerts.yml unchanged.
+#   - db-ops and the binlog archiver see DRILL_DIR/offsite as the off-site
+#     target (OFFSITE_REMOTE=local:/offsite), a directory outside the stack.
+services:
+  edge:
+    environment:
+      EDGE_TLS_LINE: "tls /etc/caddy/drill/edge.crt /etc/caddy/drill/edge.key"
+    volumes:
+      - ${DRILL_DIR:?run scripts/drills/drill-stack.sh}/tls:/etc/caddy/drill:ro
+    networks:
+      default:
+        aliases:
+          - ${WEB_HOST:-app.dukaanai.test}
+          - ${API_HOST:-api.dukaanai.test}
+
+  blackbox:
+    volumes:
+      - ${DRILL_DIR:?run scripts/drills/drill-stack.sh}/tls/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+
+  prometheus:
+    volumes:
+      - ${DRILL_DIR:?run scripts/drills/drill-stack.sh}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  db-ops:
+    environment:
+      OFFSITE_REMOTE: local:/offsite
+      OFFSITE_CRYPT_PASSWORD: ${OFFSITE_CRYPT_PASSWORD:?run scripts/drills/drill-stack.sh}
+    volumes:
+      - ${DRILL_DIR:?run scripts/drills/drill-stack.sh}/offsite:/offsite
+
+volumes:
+  api-storage:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=${DRILL_STORAGE_SIZE:-64m},uid=1000,gid=1000,mode=0755"
+  api-uploads:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=256m,uid=1000,gid=1000,mode=0755"

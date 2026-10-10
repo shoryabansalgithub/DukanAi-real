@@ -216,19 +216,21 @@ export class ProductVersioningService {
   }
 
   async getDiff(revA: string, revB: string) {
+      const shopId = this.tenantContext.getShopId();
+      // Both revisions must be this shop's before any stored diff is served.
+      const [a, b] = await Promise.all([
+          this.prisma.productRevision.findFirst({ where: { id: revA, shopId } }),
+          this.prisma.productRevision.findFirst({ where: { id: revB, shopId } })
+      ]);
+
+      if (!a || !b) throw new NotFoundException('Revisions not found');
+
       const diff = await this.prisma.revisionDiff.findUnique({
           where: {
               sourceRevId_targetRevId: { sourceRevId: revA, targetRevId: revB }
           }
       });
       if (diff) return diff.patch;
-
-      const [a, b] = await Promise.all([
-          this.prisma.productRevision.findUnique({ where: { id: revA } }),
-          this.prisma.productRevision.findUnique({ where: { id: revB } })
-      ]);
-
-      if (!a || !b) throw new NotFoundException('Revisions not found');
 
       return jsonpatch.compare(a.data as any, b.data as any);
   }

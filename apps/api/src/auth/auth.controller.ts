@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, Request, UseGuards, Delete, Param, Ip, Headers } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Request, UseGuards, Delete, Param, Ip, Headers, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { LocalAuthGuard } from './local-auth.guard';
 import { AuthService, LoginResponseDto } from './auth.service';
 import { Public } from './public.decorator';
@@ -14,10 +15,18 @@ import { CreateUserDto } from '../users/dto/create-user.dto';
 import { SafeUserDto } from '../users/dto/safe-user.dto';
 import type { Request as ExpressRequest } from 'express';
 import { GoogleAuthDto } from './dto/google-auth.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { GoogleIdentityService } from './google-identity.service';
+import { AnyAuthenticated } from './/any-authenticated.decorator';
+import { AuthThrottle } from '../common/throttling/auth-throttle.decorator';
+import { PasswordResetService } from './password-reset.service';
+import { ForgotPasswordDto, ResetPasswordDto } from './dto/password-reset.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
+import { CurrentUser } from '../iam/decorators';
 
 interface AuthenticatedRequest extends ExpressRequest {
-  user: SafeUserDto;
+  /** `sessionId` is set by JwtStrategy from the token's `sid` claim. */
+  user: SafeUserDto & { sessionId: string };
 }
 
 @ApiTags('auth')
@@ -27,15 +36,17 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly usersService: UsersService,
     private readonly googleIdentityService: GoogleIdentityService,
+    private readonly passwordReset: PasswordResetService,
   ) {}
 
   @Public()
+  @AuthThrottle()
   @Post('register')
-  @ApiOperation({ summary: 'Register a new user (defaults to CASHIER role for security)' })
+  @ApiOperation({ summary: 'Register a new shop and its OWNER account (staff join a shop through invitations)' })
   @ApiBody({ type: CreateUserDto })
   @ApiResponse({ status: 201, type: SafeUserDto })
   async register(@Body() body: CreateUserDto): Promise<SafeUserDto> {
-    // Security: force default role to CASHIER (least privilege) inside usersService.
+    // Registration creates a shop and its OWNER (UsersService.create); every other role arrives through an invitation.
     // DTO mass assignment protection strips unknown fields.
     const safeBody: CreateUserDto = {
       email: body.email,
@@ -48,6 +59,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @UseGuards(LocalAuthGuard)
   @Post('login')
   @ApiOperation({ summary: 'Login with email and password' })
@@ -56,6 +68,7 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('google')
   @ApiOperation({ summary: 'Authenticate or register via Google OAuth' })
   @ApiBody({ type: GoogleAuthDto })
@@ -71,25 +84,64 @@ export class AuthController {
   }
 
   @Public()
+  @AuthThrottle()
   @Post('refresh')
-  @ApiOperation({ summary: 'Refresh access token using refresh token' })
-  @ApiBody({ schema: { type: 'object', properties: { refresh_token: { type: 'string' } } } })
-  @ApiResponse({ status: 200, type: SafeUserDto })
+  @ApiOperation({ summary: 'Rotate the refresh token and issue a new access token' })
+  @ApiBody({ type: RefreshTokenDto })
+  @ApiResponse({ status: 201, type: SafeUserDto })
   async refresh(
-    @Body('refresh_token') refreshToken: string,
+    @Body() body: RefreshTokenDto,
     @Ip() ip: string,
     @Headers('user-agent') userAgent: string,
   ): Promise<LoginResponseDto> {
-    return this.authService.refresh(refreshToken, ip, userAgent);
+    return this.authService.refresh(body.refresh_token, ip, userAgent);
+  }
+
+  @Public()
+  @AuthThrottle()
+  @Post('forgot-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Email a password reset link; the answer never reveals whether the address has an account' })
+  forgotPassword(@Body() body: ForgotPasswordDto): Promise<{ message: string }> {
+    return this.passwordReset.request(body.email);
+  }
+
+  @Public()
+  @AuthThrottle()
+  @Post('reset-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Set a new password with the emailed token; ends every session of the account' })
+  resetPassword(@Body() body: ResetPasswordDto): Promise<{ message: string }> {
+    return this.passwordReset.reset(body.token, body.password);
+  }
+
+  @AnyAuthenticated()
+  @AuthThrottle()
+  @Post('change-password')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Change the password of the signed-in account (proves the current one; every session ends, ASVS 2.1.5)' })
+  changePassword(@CurrentUser('id') userId: string, @Body() body: ChangePasswordDto): Promise<{ message: string }> {
+    return this.passwordReset.change(userId, body.currentPassword, body.newPassword);
+  }
+
+  @AnyAuthenticated()
+  @Post('logout')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'End the current session: its refresh token and access tokens stop working at once' })
+  logout(@Request() req: AuthenticatedRequest): Promise<{ message: string }> {
+    return this.authService.logout(req.user.id, req.user.sessionId);
   }
 
   @Get('sessions')
+  @PagedList()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all active sessions for the current user' })
-  getSessions(@Request() req: AuthenticatedRequest) {
-    return this.authService.getSessions(req.user.id);
+  getSessions(@Request() req: AuthenticatedRequest, @Query() query: ListQueryDto) {
+    return this.authService.getSessions(req.user.id, query);
   }
 
+  @AnyAuthenticated()
   @Delete('sessions/:id')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Revoke a specific session' })

@@ -61,22 +61,26 @@ export class AnalyticsRepository {
     });
   }
 
-  async upsertCategorySpendSnapshot(shopId: string, categoryId: string, data: any) {
+  async upsertCategorySpendSnapshot(shopId: string, categoryId: string, data: any, departmentId: string | null = null) {
+    // The unique key is (shopId, categoryId, departmentKey): departmentKey
+    // mirrors departmentId with '-' for "no department", because MySQL never
+    // compares NULLs in a unique index (phase 8 exit gate). Both are written.
+    const departmentKey = departmentId ?? '-';
     return this.prisma.purchaseCategorySpendSnapshot.upsert({
-      // We assume departmentId is null for this simple aggregation
       where: {
-        shopId_categoryId_departmentId: { shopId, categoryId, departmentId: '' } // empty string or null depending on schema
+        shopId_categoryId_departmentKey: { shopId, categoryId, departmentKey },
       },
       update: {
         totalSpend: data.totalSpend,
-        growthPct: data.growthPct
+        growthPct: data.growthPct,
       },
       create: {
         shopId,
         categoryId,
-        departmentId: '',
-        ...data
-      }
+        departmentId,
+        departmentKey,
+        ...data,
+      },
     });
   }
 

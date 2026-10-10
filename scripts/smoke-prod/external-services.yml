@@ -1,0 +1,51 @@
+# The "managed" services the production compose variant is proven against
+# (scripts/compose-smoke-prod.sh, CI job "Deployment (compose smoke)"): a
+# throwaway MySQL 8 that accepts TLS connections only, with a server
+# certificate from a private CA the API has to verify (DATABASE_URL carries
+# ?sslaccept=strict&sslcert=/etc/dukaanai/db-ca.pem, DB_CA_FILE mounts the
+# CA), and a Redis. Layered over docker-compose.prod.yml for the smoke only;
+# never part of a deployment.
+services:
+  dukaanai-ext-mysql:
+    image: mysql:8.0
+    command:
+      - --require_secure_transport=ON
+      - --ssl-ca=/certs/ca.pem
+      - --ssl-cert=/certs/server.pem
+      - --ssl-key=/certs/server.key
+      - --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SMOKE_DB_ROOT_PASSWORD:?}
+      MYSQL_DATABASE: dukaanai
+      MYSQL_USER: dukaanai
+      MYSQL_PASSWORD: ${SMOKE_DB_PASSWORD:?}
+    volumes:
+      - ${SMOKE_CERT_DIR:?}:/certs:ro
+    healthcheck:
+      # Over TCP (TLS is negotiated by the client), so the init-time server,
+      # which listens on the socket only, never passes the probe.
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h127.0.0.1 --protocol=tcp -uroot --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 20s
+
+  dukaanai-ext-redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  migrate:
+    depends_on:
+      dukaanai-ext-mysql:
+        condition: service_healthy
+      dukaanai-ext-redis:
+        condition: service_healthy
+
+  # The smoke waits for the agent's first run instead of a day.
+  backup-agent:
+    environment:
+      BACKUP_LOOP_INITIAL_DELAY_SECONDS: "5"

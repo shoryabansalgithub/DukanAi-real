@@ -1,38 +1,24 @@
 import { Global, Module } from '@nestjs/common';
 import { ConfigModule as NestConfigModule } from '@nestjs/config';
 import { validateSync } from 'class-validator';
-import { plainToInstance } from 'class-transformer';
+import { hydrateFromEnv } from './hydrate-from-env';
 
-import { AppConfig, Environment } from './domains/app.config';
+import { AppConfig } from './domains/app.config';
 import { DatabaseConfig } from './domains/database.config';
 import { JwtConfig } from './domains/jwt.config';
-import { AuthConfig, parseAuthDisabled } from './domains/auth.config';
+import { AuthConfig, assertAuthBypassPermitted, parseAuthDisabled, parseGoogleClientId } from './domains/auth.config';
 import { RedisConfig } from './domains/redis.config';
 import { StorageConfig } from './domains/storage.config';
 import { AiConfig } from './domains/ai.config';
-import { ApiConfig } from './domains/api.config';
 import { PrismaConfig } from './domains/prisma.config';
-import { QueueConfig } from './domains/queue.config';
 import { BullConfig } from './domains/bull.config';
 import { CacheConfig } from './domains/cache.config';
-import { MediaConfig } from './domains/media.config';
-import { SearchConfig } from './domains/search.config';
-import { AnalyticsConfig } from './domains/analytics.config';
 import { EmailConfig } from './domains/email.config';
-import { SmsConfig } from './domains/sms.config';
-import { WhatsappConfig } from './domains/whatsapp.config';
-import { OAuthConfig } from './domains/oauth.config';
-import { PaymentsConfig } from './domains/payments.config';
-import { FileUploadConfig } from './domains/file-upload.config';
-import { FeatureFlagsConfig } from './domains/feature-flags.config';
 import { MonitoringConfig } from './domains/monitoring.config';
 import { LoggingConfig } from './domains/logging.config';
-import { PerformanceConfig } from './domains/performance.config';
 import { SecurityConfig } from './domains/security.config';
-import { CorsConfig } from './domains/cors.config';
-import { SwaggerConfig } from './domains/swagger.config';
-import { HealthConfig } from './domains/health.config';
 import { CronConfig } from './domains/cron.config';
+import { RetentionConfig } from './domains/retention.config';
 
 // Feature Domains
 import { SalesFeatureConfig } from './domains/features/sales-feature.config';
@@ -44,8 +30,8 @@ import { EventsFeatureConfig } from './domains/features/events-feature.config';
 import { InventoryFeatureConfig } from './domains/features/inventory-feature.config';
 import { ImportExportFeatureConfig } from './domains/features/import-export-feature.config';
 import { OcrFeatureConfig } from './domains/features/ocr-feature.config';
+import { UploadConfig } from './domains/upload.config';
 import { BillingFeatureConfig } from './domains/features/billing-feature.config';
-import { ProcurementFeatureConfig } from './domains/features/procurement-feature.config';
 
 function validateConfig<T extends object>(configClass: T): T {
   const errors = validateSync(configClass);
@@ -61,21 +47,16 @@ function validateConfig<T extends object>(configClass: T): T {
   imports: [
     NestConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['.env.local', `.env.${process.env.NODE_ENV || 'development'}`, '.env'],
+      // .env.<NODE_ENV> is a committed template and is read only for an explicit
+      // NODE_ENV; a process that does not say which environment it is must not
+      // pick up the development template (AppConfig then refuses to boot).
+      envFilePath: ['.env.local', ...(process.env.NODE_ENV ? [`.env.${process.env.NODE_ENV}`] : []), '.env'],
     }),
   ],
   providers: [
     {
       provide: AppConfig,
-      useFactory: () => {
-        const config = new AppConfig();
-        Object.assign(config, {
-          nodeEnv: (process.env.NODE_ENV as Environment) || Environment.Development,
-          port: parseInt(process.env.PORT || '3002', 10),
-          frontendUrl: process.env.FRONTEND_URL,
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(AppConfig)),
     },
     {
       provide: DatabaseConfig,
@@ -89,16 +70,7 @@ function validateConfig<T extends object>(configClass: T): T {
     },
     {
       provide: JwtConfig,
-      useFactory: () => {
-        const config = new JwtConfig();
-        Object.assign(config, {
-          jwtSecret: process.env.JWT_SECRET,
-          jwtExpiresIn: process.env.JWT_EXPIRES_IN,
-          jwtRefreshSecret: process.env.JWT_REFRESH_SECRET,
-          jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN,
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(JwtConfig)),
     },
     {
       provide: AuthConfig,
@@ -108,8 +80,12 @@ function validateConfig<T extends object>(configClass: T): T {
         // fails the @IsBoolean validation below and refuses to boot.
         Object.assign(config, {
           authDisabled: parseAuthDisabled(process.env.AUTH_DISABLED),
+          googleClientId: parseGoogleClientId(process.env.GOOGLE_CLIENT_ID),
         });
-        return validateConfig(config);
+        validateConfig(config);
+        // The bypass is refused outright outside development/test (P1-6).
+        assertAuthBypassPermitted(config.authDisabled, process.env.NODE_ENV);
+        return config;
       },
     },
     {
@@ -149,189 +125,49 @@ function validateConfig<T extends object>(configClass: T): T {
       },
     },
     {
-      provide: ApiConfig,
-      useFactory: () => {
-        const config = new ApiConfig();
-        return validateConfig(config);
-      },
-    },
-    {
       provide: PrismaConfig,
-      useFactory: () => {
-        const config = new PrismaConfig();
-        Object.assign(config, {
-          logQueries: process.env.PRISMA_LOG_QUERIES === 'true',
-          logLevelProduction: ['warn', 'error'],
-          logLevelDevelopment: ['query', 'info', 'warn', 'error'],
-          slowQueryThreshold: parseInt(process.env.PRISMA_SLOW_QUERY_THRESHOLD || '1000', 10),
-        });
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: QueueConfig,
-      useFactory: () => {
-        const config = new QueueConfig();
-        Object.assign(config, {
-          defaultConcurrency: parseInt(process.env.QUEUE_CONCURRENCY || '5', 10),
-          timeout: parseInt(process.env.QUEUE_TIMEOUT || '5000', 10),
-        });
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(PrismaConfig)),
     },
     {
       provide: BullConfig,
-      useFactory: () => {
-        return validateConfig(plainToInstance(BullConfig, process.env, { enableImplicitConversion: true }));
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(BullConfig)),
     },
     {
       provide: CacheConfig,
-      useFactory: () => {
-        const config = new CacheConfig();
-        Object.assign(config, {
-          ttl: parseInt(process.env.CACHE_TTL || '3600000', 10),
-          maxItems: parseInt(process.env.CACHE_MAX_ITEMS || '1000', 10),
-        });
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: MediaConfig,
-      useFactory: () => {
-        const config = new MediaConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: SearchConfig,
-      useFactory: () => {
-        const config = new SearchConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: AnalyticsConfig,
-      useFactory: () => {
-        const config = new AnalyticsConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(CacheConfig)),
     },
     {
       provide: EmailConfig,
-      useFactory: () => {
-        const config = new EmailConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: SmsConfig,
-      useFactory: () => {
-        const config = new SmsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: WhatsappConfig,
-      useFactory: () => {
-        const config = new WhatsappConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: OAuthConfig,
-      useFactory: () => {
-        const config = new OAuthConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: PaymentsConfig,
-      useFactory: () => {
-        const config = new PaymentsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: FileUploadConfig,
-      useFactory: () => {
-        const config = new FileUploadConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: FeatureFlagsConfig,
-      useFactory: () => {
-        const config = new FeatureFlagsConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(EmailConfig)),
     },
     {
       provide: MonitoringConfig,
-      useFactory: () => {
-        const config = new MonitoringConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(MonitoringConfig)),
     },
     {
       provide: LoggingConfig,
-      useFactory: () => {
-        const config = new LoggingConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: PerformanceConfig,
-      useFactory: () => {
-        const config = new PerformanceConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(LoggingConfig)),
     },
     {
       provide: SecurityConfig,
-      useFactory: () => {
-        return validateConfig(plainToInstance(SecurityConfig, process.env, { enableImplicitConversion: true }));
-      },
-    },
-    {
-      provide: CorsConfig,
-      useFactory: () => {
-        const config = new CorsConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: SwaggerConfig,
-      useFactory: () => {
-        const config = new SwaggerConfig();
-        return validateConfig(config);
-      },
-    },
-    {
-      provide: HealthConfig,
-      useFactory: () => {
-        const config = new HealthConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(SecurityConfig)),
     },
     {
       provide: CronConfig,
-      useFactory: () => {
-        const config = new CronConfig();
-        return validateConfig(config);
-      },
+      useFactory: () => validateConfig(hydrateFromEnv(CronConfig)),
     },
-    { provide: SalesFeatureConfig, useFactory: () => validateConfig(plainToInstance(SalesFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(plainToInstance(PurchaseFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(plainToInstance(AnalyticsFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: SearchFeatureConfig, useFactory: () => validateConfig(plainToInstance(SearchFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ValidationFeatureConfig, useFactory: () => validateConfig(plainToInstance(ValidationFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: EventsFeatureConfig, useFactory: () => validateConfig(plainToInstance(EventsFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: InventoryFeatureConfig, useFactory: () => validateConfig(plainToInstance(InventoryFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(plainToInstance(ImportExportFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: OcrFeatureConfig, useFactory: () => validateConfig(plainToInstance(OcrFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: BillingFeatureConfig, useFactory: () => validateConfig(plainToInstance(BillingFeatureConfig, process.env, { enableImplicitConversion: true })) },
-    { provide: ProcurementFeatureConfig, useFactory: () => validateConfig(plainToInstance(ProcurementFeatureConfig, process.env, { enableImplicitConversion: true })) },
+    { provide: RetentionConfig, useFactory: () => validateConfig(hydrateFromEnv(RetentionConfig)) },
+    { provide: SalesFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SalesFeatureConfig)) },
+    { provide: PurchaseFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(PurchaseFeatureConfig)) },
+    { provide: AnalyticsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(AnalyticsFeatureConfig)) },
+    { provide: SearchFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(SearchFeatureConfig)) },
+    { provide: ValidationFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ValidationFeatureConfig)) },
+    { provide: EventsFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(EventsFeatureConfig)) },
+    { provide: InventoryFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(InventoryFeatureConfig)) },
+    { provide: ImportExportFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(ImportExportFeatureConfig)) },
+    { provide: OcrFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(OcrFeatureConfig)) },
+    { provide: UploadConfig, useFactory: () => validateConfig(hydrateFromEnv(UploadConfig)) },
+    { provide: BillingFeatureConfig, useFactory: () => validateConfig(hydrateFromEnv(BillingFeatureConfig)) },
   ],
   exports: [
     AppConfig,
@@ -341,29 +177,15 @@ function validateConfig<T extends object>(configClass: T): T {
     RedisConfig,
     StorageConfig,
     AiConfig,
-    ApiConfig,
     PrismaConfig,
-    QueueConfig,
     BullConfig,
     CacheConfig,
-    MediaConfig,
-    SearchConfig,
-    AnalyticsConfig,
     EmailConfig,
-    SmsConfig,
-    WhatsappConfig,
-    OAuthConfig,
-    PaymentsConfig,
-    FileUploadConfig,
-    FeatureFlagsConfig,
     MonitoringConfig,
     LoggingConfig,
-    PerformanceConfig,
     SecurityConfig,
-    CorsConfig,
-    SwaggerConfig,
-    HealthConfig,
     CronConfig,
+    RetentionConfig,
     SalesFeatureConfig,
     PurchaseFeatureConfig,
     AnalyticsFeatureConfig,
@@ -373,8 +195,8 @@ function validateConfig<T extends object>(configClass: T): T {
     InventoryFeatureConfig,
     ImportExportFeatureConfig,
     OcrFeatureConfig,
+    UploadConfig,
     BillingFeatureConfig,
-    ProcurementFeatureConfig,
   ],
 })
 export class EnterpriseConfigModule {}

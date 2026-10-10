@@ -1,13 +1,10 @@
-import { Controller, Get, UseGuards, Query } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import { Controller, Get, Query } from '@nestjs/common';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { AnalyticsDashboardService } from './services/analytics-dashboard.service';
 import { AnalyticsVendorPerformanceService } from './services/analytics-vendor-performance.service';
 import { AnalyticsTrendService } from './services/analytics-trend.service';
 import { AnalyticsCostService } from './services/analytics-cost.service';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
 @Controller('purchase-analytics')
 export class PurchaseAnalyticsController {
   constructor(

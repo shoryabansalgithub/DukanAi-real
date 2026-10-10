@@ -1,16 +1,21 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
-exports[`Golden Master should deterministically produce the exact same output 1`] = `
+exports[`Golden Master produces the exact same output for the frozen input (preview mode) 1`] = `
 {
-  "calculationHash": "4bbd5ad4",
-  "engineVersion": "1.0.0",
+  "calculationHash": "35b4311c",
+  "engineVersion": "2.0.0",
   "finalTotal": "618",
   "grandTotal": "617.97",
+  "invoiceDiscount": "20",
   "lines": [
     {
+      "cessAmount": "0",
       "cgstAmount": "17.37",
       "discountAmount": "6.96",
+      "gstRate": "18",
       "igstAmount": "0",
+      "invoiceDiscountShare": "6.96",
+      "itemDiscountAmount": "0",
       "lineSubtotal": "200",
       "lineTotal": "227.78",
       "productId": "P1",
@@ -21,9 +26,13 @@ exports[`Golden Master should deterministically produce the exact same output 1`
       "unitPrice": "100",
     },
     {
+      "cessAmount": "0",
       "cgstAmount": "5.43",
       "discountAmount": "32.83",
+      "gstRate": "5",
       "igstAmount": "0",
+      "invoiceDiscountShare": "7.83",
+      "itemDiscountAmount": "25",
       "lineSubtotal": "250",
       "lineTotal": "228.03",
       "productId": "P2",
@@ -34,9 +43,13 @@ exports[`Golden Master should deterministically produce the exact same output 1`
       "unitPrice": "250",
     },
     {
+      "cessAmount": "0",
       "cgstAmount": "0",
       "discountAmount": "5.21",
+      "gstRate": "12",
       "igstAmount": "17.37",
+      "invoiceDiscountShare": "5.21",
+      "itemDiscountAmount": "0",
       "lineSubtotal": "150",
       "lineTotal": "162.16",
       "productId": "P3",
@@ -47,13 +60,16 @@ exports[`Golden Master should deterministically produce the exact same output 1`
       "unitPrice": "50",
     },
   ],
+  "payment": null,
   "roundOff": "0.03",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "subtotal": "600",
   "taxableTotal": "555",
+  "totalCess": "0",
   "totalCgst": "22.8",
   "totalDiscount": "45",
   "totalIgst": "17.37",
+  "totalItemDiscount": "25",
   "totalSgst": "22.8",
   "totalTax": "62.97",
 }

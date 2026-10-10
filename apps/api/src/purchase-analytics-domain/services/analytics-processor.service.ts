@@ -3,6 +3,8 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalyticsRepository } from '../repositories/analytics.repository';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { jobContext, requireJobShop } from '../../iam/tenant-context/job-context';
 
 @Processor('purchase-analytics')
 export class AnalyticsProcessorService extends WorkerHost {
@@ -10,26 +12,31 @@ export class AnalyticsProcessorService extends WorkerHost {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly repository: AnalyticsRepository
+    private readonly repository: AnalyticsRepository,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
+  /** Every aggregation runs in the shop's tenant context (roadmap 4.1, audit P2-5). */
   async process(job: Job<any, any, string>): Promise<any> {
     this.logger.debug(`Processing Analytics job ${job.id} of type ${job.name}`);
-    
-    switch (job.name) {
-      case 'aggregate-daily-dashboard':
-        return this.aggregateDailyDashboard(job.data.shopId);
-      case 'aggregate-vendor-performance':
-        return this.aggregateVendorPerformance(job.data.shopId);
-      case 'aggregate-category-spend':
-        return this.aggregateCategorySpend(job.data.shopId);
-      case 'aggregate-trends':
-        return this.aggregateTrends(job.data.shopId);
-      default:
-        this.logger.warn(`Unknown job type: ${job.name}`);
-    }
+    const shopId = requireJobShop(job.data, job.name);
+    return this.tenantContext.runWithContext(jobContext(shopId, job.id), () => {
+      switch (job.name) {
+        case 'aggregate-daily-dashboard':
+          return this.aggregateDailyDashboard(shopId);
+        case 'aggregate-vendor-performance':
+          return this.aggregateVendorPerformance(shopId);
+        case 'aggregate-category-spend':
+          return this.aggregateCategorySpend(shopId);
+        case 'aggregate-trends':
+          return this.aggregateTrends(shopId);
+        default:
+          this.logger.warn(`Unknown job type: ${job.name}`);
+          return undefined;
+      }
+    });
   }
 
   private async aggregateDailyDashboard(shopId: string) {
@@ -53,11 +60,13 @@ export class AnalyticsProcessorService extends WorkerHost {
       _sum: { outstandingAmount: true }
     });
     
-    // Compute exact Average Lead Time across all historical GRNs using PostgreSQL aggregation
-    const leadTimeRaw: any[] = await this.prisma.$queryRaw`
-      SELECT AVG(EXTRACT(EPOCH FROM ("receivedDate" - "createdAt")) / 86400) as avg_days 
-      FROM "GoodsReceipt" 
-      WHERE "shopId" = ${shopId} AND "status" = 'COMPLETED' AND "receivedDate" IS NOT NULL
+    // Average lead time (days from receipt creation to goods received) over
+    // accepted and completed receipts. MySQL syntax (roadmap 4.2): the former
+    // PostgreSQL query (EXTRACT(EPOCH ...), quoted identifiers) never ran here.
+    const leadTimeRaw: Array<{ avg_days: number | string | null }> = await this.prisma.$queryRaw`
+      SELECT AVG(TIMESTAMPDIFF(SECOND, createdAt, receivedDate) / 86400) AS avg_days
+      FROM GoodsReceipt
+      WHERE shopId = ${shopId} AND status IN ('ACCEPTED', 'COMPLETED', 'CLOSED') AND receivedDate IS NOT NULL AND isDeleted = false
     `;
     const averageLeadTimeDays = leadTimeRaw.length > 0 && leadTimeRaw[0].avg_days ? Math.ceil(Number(leadTimeRaw[0].avg_days)) : 0;
 

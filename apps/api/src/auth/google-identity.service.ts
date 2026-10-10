@@ -1,5 +1,5 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { AuthConfig } from '../config/domains/auth.config';
 
 export interface GoogleIdentity {
   googleId: string;
@@ -24,10 +24,15 @@ interface GoogleTokenInfo {
 export class GoogleIdentityService {
   private readonly logger = new Logger(GoogleIdentityService.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private readonly authConfig: AuthConfig) {}
 
   async verifyIdToken(idToken: string): Promise<GoogleIdentity> {
-    const clientId = this.configService.getOrThrow<string>('GOOGLE_CLIENT_ID');
+    // The client id is the token's required audience. Without it nothing can be verified: say so
+    // (no deployment passed it to the API before roadmap 9.19, and every sign-in ended as a 500).
+    const clientId = this.authConfig.googleClientId;
+    if (!clientId) {
+      throw new ServiceUnavailableException({ message: 'Google sign-in is not configured on this server (GOOGLE_CLIENT_ID).', code: 'GOOGLE_SIGNIN_NOT_CONFIGURED' });
+    }
 
     let response: Response;
     try {

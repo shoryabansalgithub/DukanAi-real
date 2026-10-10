@@ -1,91 +1,72 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Req, Query, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, UseInterceptors, UploadedFile, BadRequestException, Query } from '@nestjs/common';
+import { ListQueryDto, PagedList } from '../common/pagination';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { UploadCleanupInterceptor } from '../common/upload/upload-cleanup.interceptor';
 import { ProductMediaService } from './product-media.service';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
+import { CurrentShop, CurrentUser } from '../iam/decorators';
+import { MANAGEMENT_ROLES } from '../auth/role-sets';
+import { Roles } from '../auth/roles.decorator';
+import { ReorderMediaDto, TagMediaDto, UploadMediaDto } from './dto/tag-media.dto';
 
-@UseGuards(JwtAuthGuard, TenantGuard)
+/**
+ * Product media (roadmap 4.1). The shop and the user come from the verified
+ * session (`@CurrentShop`, `@CurrentUser`); `req.shop` was never set. The
+ * former `bulk` and `search` stubs, which answered success without doing
+ * anything, are gone; `tag` and `order` now do what they claim.
+ */
 @Controller('media')
 export class ProductMediaController {
   constructor(private readonly productMediaService: ProductMediaService) {}
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('upload/product/:id')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
   async uploadProductMedia(
     @Param('id') productId: string,
-    @UploadedFile() file: any,
-    @Body('isPrimary') isPrimaryStr: string,
-    @Req() req: any,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: UploadMediaDto,
+    @CurrentShop() shopId: string,
+    @CurrentUser('id') userId: string,
   ) {
-    if (!file) {
-      throw new BadRequestException('File is required');
-    }
-    
-    return this.productMediaService.uploadMedia(
-      req.shop.id,
-      req.user.id,
-      file,
-      productId,
-      undefined,
-      isPrimaryStr === 'true'
-    );
+    if (!file) throw new BadRequestException('File is required');
+    return this.productMediaService.uploadMedia(shopId, userId, file, productId, undefined, body.isPrimary === 'true');
   }
 
+  @Roles(...MANAGEMENT_ROLES)
   @Post('upload/variant/:id')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(UploadCleanupInterceptor, FileInterceptor('file'))
   async uploadVariantMedia(
     @Param('id') variantId: string,
-    @UploadedFile() file: any,
-    @Body('isPrimary') isPrimaryStr: string,
-    @Req() req: any,
+    @UploadedFile() file: Express.Multer.File | undefined,
+    @Body() body: UploadMediaDto,
+    @CurrentShop() shopId: string,
+    @CurrentUser('id') userId: string,
   ) {
-    if (!file) {
-      throw new BadRequestException('File is required');
-    }
-    
-    return this.productMediaService.uploadMedia(
-      req.shop.id,
-      req.user.id,
-      file,
-      undefined,
-      variantId,
-      isPrimaryStr === 'true'
-    );
+    if (!file) throw new BadRequestException('File is required');
+    return this.productMediaService.uploadMedia(shopId, userId, file, undefined, variantId, body.isPrimary === 'true');
   }
 
   @Get('product/:id')
-  async getProductGallery(@Param('id') productId: string, @Req() req: any) {
-    return this.productMediaService.getGallery(req.shop.id, productId, undefined);
+  @PagedList()
+  async getProductGallery(@Param('id') productId: string, @CurrentShop() shopId: string, @Query() query: ListQueryDto) {
+    return this.productMediaService.getGallery(shopId, productId, undefined, query);
   }
 
   @Get('variant/:id')
-  async getVariantGallery(@Param('id') variantId: string, @Req() req: any) {
-    return this.productMediaService.getGallery(req.shop.id, undefined, variantId);
+  @PagedList()
+  async getVariantGallery(@Param('id') variantId: string, @CurrentShop() shopId: string, @Query() query: ListQueryDto) {
+    return this.productMediaService.getGallery(shopId, undefined, variantId, query);
   }
 
-  @Post('bulk')
-  async bulkUpload(@Req() req: any) {
-    // In a real scenario, this would accept an array of pre-signed URLs or S3 keys
-    // and queue them into BullMQ for processing.
-    return { message: 'Bulk upload queued successfully' };
-  }
-
+  @Roles(...MANAGEMENT_ROLES)
   @Post('tag')
-  async tagMedia(@Body() body: { assetId: string, tag: string }, @Req() req: any) {
-    // Stub implementation for semantic tagging
-    return { message: `Tag ${body.tag} added to asset ${body.assetId}` };
+  async tagMedia(@Body() body: TagMediaDto, @CurrentShop() shopId: string) {
+    return this.productMediaService.tagAsset(shopId, body.assetId, body.tag);
   }
 
-  @Get('search')
-  async searchMedia(@Query('q') query: string, @Req() req: any) {
-    // Stub implementation for Redis-backed search
-    return [];
-  }
-
+  @Roles(...MANAGEMENT_ROLES)
   @Post('order')
-  async updateOrder(@Body() body: { assetIds: string[] }, @Req() req: any) {
-    // Stub implementation for updating sort orders
-    return { message: 'Order updated successfully' };
+  async updateOrder(@Body() body: ReorderMediaDto, @CurrentShop() shopId: string) {
+    return this.productMediaService.reorderReferences(shopId, body);
   }
 }
-

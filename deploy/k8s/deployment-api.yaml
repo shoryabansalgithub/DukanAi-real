@@ -1,0 +1,178 @@
+# The API: one replica (the documents volume is ReadWriteOnce and the
+# backup sidecar reads it), Recreate so the old pod releases the volumes
+# before the new one claims them. Probes per docs/DEPLOYMENT.md; the grace
+# period exceeds SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dukaanai-api
+  labels:
+    app.kubernetes.io/name: dukaanai-api
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dukaanai-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dukaanai-api
+        app.kubernetes.io/part-of: dukaanai
+    spec:
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: dukaanai-api
+          ports:
+            - name: http
+              containerPort: 3002
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3002"
+            - name: FRONTEND_URL
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: WEB_ORIGIN } }
+            - name: TRUST_PROXY
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: TRUST_PROXY } }
+            - name: STORAGE_ROOT
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: STORAGE_ROOT } }
+            - name: UPLOAD_TEMP_DIR
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: UPLOAD_TEMP_DIR } }
+            - name: SHUTDOWN_DRAIN_DELAY_MS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SHUTDOWN_DRAIN_DELAY_MS } }
+            - name: SHUTDOWN_TIMEOUT_MS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SHUTDOWN_TIMEOUT_MS } }
+            - name: HTTP_KEEP_ALIVE_TIMEOUT_MS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: HTTP_KEEP_ALIVE_TIMEOUT_MS } }
+            - name: LOG_LEVEL
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LOG_LEVEL } }
+            - name: BACKUP_STATUS_DIR
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: BACKUP_STATUS_DIR } }
+            - name: EMAIL_FROM
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: EMAIL_FROM } }
+            - name: SENTRY_ENVIRONMENT
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SENTRY_ENVIRONMENT } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: DATABASE_URL } }
+            - name: REDIS_URL
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: REDIS_URL } }
+            - name: JWT_SECRET
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: JWT_SECRET } }
+            - name: SMTP_URL
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: SMTP_URL } }
+            - name: GEMINI_API_KEY
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GEMINI_API_KEY } }
+            # The web's Google client id: the API accepts only id tokens issued for it.
+            - name: GOOGLE_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: GOOGLE_CLIENT_ID } }
+            - name: METRICS_TOKEN
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: METRICS_TOKEN } }
+            - name: SENTRY_DSN
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: SENTRY_DSN } }
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/dukaanai/storage
+            - name: uploads
+              mountPath: /app/apps/api/uploads
+            - name: backups
+              mountPath: /var/lib/dukaanai/backups
+              readOnly: true
+            - name: db-ca
+              mountPath: /etc/dukaanai
+              readOnly: true
+          startupProbe:
+            httpGet: { path: /api/health/live, port: http }
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet: { path: /api/health/live, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /api/health/ready, port: http }
+            periodSeconds: 5
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+        # Backups without cron (scripts/db/db-ops.sh backup-loop, roadmap
+        # 9.7): the daily dump of the managed database, the documents
+        # archive and the encrypted off-site copy, each success stamped under
+        # BACKUP_STATUS_DIR for backup_last_success_timestamp_seconds. It
+        # shares the pod so it reads the ReadWriteOnce volumes.
+        - name: backup-agent
+          image: dukaanai-db-ops
+          args: ["backup-loop"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: DB_OPS_DATABASE_URL } }
+            - name: BACKUP_DIR
+              value: /backups
+            - name: STORAGE_ROOT
+              value: /data/storage
+            - name: MEDIA_DIR
+              value: /data/uploads/media
+            - name: DOCUMENTS_BACKUP_DIR
+              value: /backups/documents
+            - name: BACKUP_COORDINATES
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: BACKUP_COORDINATES } }
+            - name: BACKUP_LOOP_INTERVAL_SECONDS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: BACKUP_LOOP_INTERVAL_SECONDS } }
+            - name: BACKUP_LOOP_INITIAL_DELAY_SECONDS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: BACKUP_LOOP_INITIAL_DELAY_SECONDS } }
+            - name: BACKUP_KEEP
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: BACKUP_KEEP } }
+            - name: DOCUMENTS_BACKUP_KEEP
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: DOCUMENTS_BACKUP_KEEP } }
+            - name: OFFSITE_KEEP_DAYS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: OFFSITE_KEEP_DAYS } }
+            - name: OFFSITE_REMOTE
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: OFFSITE_REMOTE } }
+            - name: OFFSITE_CRYPT_PASSWORD
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: OFFSITE_CRYPT_PASSWORD } }
+            - name: OFFSITE_CRYPT_SALT
+              valueFrom: { secretKeyRef: { name: dukaanai-secrets, key: OFFSITE_CRYPT_SALT } }
+          volumeMounts:
+            - name: backups
+              mountPath: /backups
+            - name: storage
+              mountPath: /data/storage
+              readOnly: true
+            - name: uploads
+              mountPath: /data/uploads
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: dukaanai-storage
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: dukaanai-uploads
+        - name: backups
+          persistentVolumeClaim:
+            claimName: dukaanai-backups
+        - name: db-ca
+          secret:
+            secretName: dukaanai-db-ca
+            optional: true
