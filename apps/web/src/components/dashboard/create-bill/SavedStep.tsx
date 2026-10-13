@@ -32,7 +32,6 @@ export function SavedStep({
               </span>
               <span className="min-w-0">Bill photo saved for {customer.name}</span>
             </p>
-            <p className="mt-1 text-[13px] leading-[18px] text-gray-500">In their documents, under Bills.</p>
             <p className="mt-2 text-[13px] leading-[18px] text-gray-700">
               Amount <span className="font-bold tabular-nums">{formatPaise(paise)}</span> is not recorded yet.
             </p>

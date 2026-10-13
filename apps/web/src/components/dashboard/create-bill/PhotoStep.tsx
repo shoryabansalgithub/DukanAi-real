@@ -97,9 +97,9 @@ export function PhotoStep({
         )}
       </SheetFooter>
       {/* tailwindboss-ignore missing-micro-spec: hidden file inputs draw nothing; Take photo / Upload from files open them */}
-      <input ref={cameraRef} type="file" accept="image/*" capture="environment" hidden onChange={onPick} />
+      <input ref={cameraRef} name="bill-photo-camera" type="file" accept="image/*" capture="environment" hidden onChange={onPick} />
       {/* tailwindboss-ignore missing-micro-spec: the same hidden input, for files */}
-      <input ref={filesRef} type="file" accept="image/*" hidden onChange={onPick} />
+      <input ref={filesRef} name="bill-photo-file" type="file" accept="image/*" hidden onChange={onPick} />
     </>
   );
 }

@@ -93,7 +93,8 @@ export function CreateBillSheet({ open, onClosed }: { open: boolean; onClosed: (
         ) : (
           <span aria-hidden />
         )}
-        <h2 id="create-bill-title" ref={titleRef} tabIndex={-1} className="truncate text-center text-base font-bold leading-6 text-gray-800">
+        {/* tailwindboss-ignore focus-removed: the title is focused only to anchor screen readers on the new step; it is not a control, and a ring around it read as one */}
+        <h2 id="create-bill-title" ref={titleRef} tabIndex={-1} className="truncate text-center text-base font-bold leading-6 text-gray-800 outline-none">
           {STEP_TITLES[step]}
         </h2>
         <IconButton label="Close" onClick={close}>
