@@ -1,10 +1,23 @@
+> **Historical document, superseded.** Kept for the record: it describes an
+> earlier state of the project (mock data, Next.js 14, Node 18/20, features
+> that were never built) and is no longer maintained. Current documentation:
+> [README.md](./README.md) (what is built, how to run it, the docs map),
+> [AGENTS.md](./AGENTS.md) (architecture and sharp edges) and
+> [docs/](./docs) (deployment, operations, release, go-live).
+
 # DukaanAI - Setup Guide
 
 ## 🚀 Quick Start Guide
 
+> **The current setup is README.md, "Run it with Docker" and "Run it for
+> development"** (Node.js 22 from `.nvmrc`, `npm ci` at the repository root,
+> MySQL 8 and Redis 7, the API on port 3002 and the web on port 3010). The
+> steps below are the original front-end-only guide: the mock data they
+> mention no longer exists, every page calls the API.
+
 ### Prerequisites
-- **Node.js 20 LTS** - [Download](https://nodejs.org/)
-- **npm or yarn** - Comes with Node.js
+- **Node.js 22** (`.nvmrc`; the `engines` floor is 22.12) - [Download](https://nodejs.org/)
+- **npm** - Comes with Node.js
 - **Git** - [Download](https://git-scm.com/)
 - **VS Code** (Recommended) - [Download](https://code.visualstudio.com/)
 

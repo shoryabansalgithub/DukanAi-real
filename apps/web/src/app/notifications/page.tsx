@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useSession } from 'next-auth/react';
 import { Card } from '@/components/ui/Card';
 import {
   PackageOpen, AlertTriangle, UserCheck, CheckCircle2, Bell, ShieldAlert, Clock, BadgePercent,
@@ -8,6 +9,10 @@ import {
 import { useToast } from '@/components/ui/Toast';
 import { notificationsApi, type NotificationView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
+import { isManagement } from '@/components/customers/permissions';
+
+/** One page of `GET /notifications`; the rest load on request, never cut silently (audit W9). */
+const PAGE_SIZE = 100;
 
 const TYPE_STYLES: Record<string, { icon: React.ComponentType<{ size?: number | string }>; color: string }> = {
   LOW_STOCK: { icon: AlertTriangle, color: 'text-orange-500 bg-orange-50' },
@@ -33,17 +38,51 @@ function relativeTime(iso: string): string {
 
 export default function NotificationsPage() {
   const { toast } = useToast();
+  const { data: session } = useSession();
+  // `PATCH /notifications/read-all` is MANAGEMENT_ROLES: it clears the alerts for the whole shop (audit W12).
+  const canMarkAllRead = isManagement(session?.user?.role);
   const [notifications, setNotifications] = useState<NotificationView[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false; // stale-response guard (roadmap 6.5): nothing lands after unmount
     notificationsApi
-      .list()
-      .then(setNotifications)
-      .catch((err) => setLoadError(describeApiError(err, 'Loading notifications (GET /notifications)')))
-      .finally(() => setLoading(false));
+      .listPage(0, PAGE_SIZE)
+      .then((page) => {
+        if (cancelled) return;
+        setNotifications(page.items);
+        setTotal(page.total);
+      })
+      .catch((err) => {
+        if (!cancelled) setLoadError(describeApiError(err, 'Loading notifications (GET /notifications)'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  const handleLoadMore = async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await notificationsApi.listPage(notifications.length, PAGE_SIZE);
+      setNotifications((current) => {
+        const seen = new Set(current.map((n) => n.id));
+        return [...current, ...page.items.filter((n) => !seen.has(n.id))];
+      });
+      setTotal(page.total);
+    } catch (err) {
+      toast(describeApiError(err, 'Loading more notifications (GET /notifications)'), 'error');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const handleMarkAllRead = async () => {
     try {
@@ -72,12 +111,14 @@ export default function NotificationsPage() {
           <h1 className="text-2xl font-bold text-gray-800">Notifications</h1>
           <p className="text-sm text-gray-500 mt-1">Stay updated on your store's alerts and activities.</p>
         </div>
-        <button
-          onClick={handleMarkAllRead}
-          className="text-sm font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors"
-        >
-          Mark all as read
-        </button>
+        {canMarkAllRead && (
+          <button
+            onClick={handleMarkAllRead}
+            className="text-sm font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors"
+          >
+            Mark all as read
+          </button>
+        )}
       </div>
 
       {loading && (
@@ -124,6 +165,19 @@ export default function NotificationsPage() {
             );
           })}
         </Card>
+      )}
+
+      {!loading && !loadError && notifications.length < total && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={() => void handleLoadMore()}
+            disabled={loadingMore}
+            className="text-sm font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors disabled:opacity-60"
+          >
+            {loadingMore ? 'Loading…' : `Load more (${notifications.length} of ${total} shown)`}
+          </button>
+        </div>
       )}
     </div>
   );

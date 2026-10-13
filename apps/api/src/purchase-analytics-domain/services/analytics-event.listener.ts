@@ -4,6 +4,10 @@ import type { Cache } from 'cache-manager';
 import { Queue } from 'bullmq';
 import { InjectQueue } from '@nestjs/bullmq';
 import { OnEvent } from '@nestjs/event-emitter';
+import { PrismaService } from '../../prisma/prisma.service';
+import { Clock } from '../../common/time/clock';
+import { purchaseBusinessDates } from '../analytics-dates';
+import { dashboardCacheKey } from './analytics-dashboard.service';
 
 @Injectable()
 export class AnalyticsEventListener implements OnModuleInit {
@@ -11,7 +15,9 @@ export class AnalyticsEventListener implements OnModuleInit {
 
   constructor(
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
-    @InjectQueue('purchase-analytics') private readonly analyticsQueue: Queue
+    @InjectQueue('purchase-analytics') private readonly analyticsQueue: Queue,
+    private readonly prisma: PrismaService,
+    private readonly clock: Clock,
   ) {}
 
   onModuleInit() {
@@ -34,9 +40,9 @@ export class AnalyticsEventListener implements OnModuleInit {
   }
   
   private async handleDocumentUpdate(shopId: string) {
-    const today = new Date();
-    const normalizedDate = new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()));
-    const cacheKey = `dashboard:${shopId}:${normalizedDate.toISOString()}`;
+    // Today in the shop's time zone, the key the dashboard reads (release audit #26).
+    const { dateKey } = await purchaseBusinessDates(this.prisma, shopId, this.clock.now());
+    const cacheKey = dashboardCacheKey(shopId, dateKey);
     
     // 1. Invalidate instantly so users get fresh fallback data
     await this.cacheManager.del(cacheKey);

@@ -1,0 +1,3 @@
+# Documents written by the storage module (STORAGE_ROOT, ./data/storage in .env.test);
+# the Playwright smart-capture test fills it on every run.
+data/

@@ -12,6 +12,8 @@ import {
   TEXT_MIME_TYPES,
 } from './storage-security.constants';
 import { sanitizeStorageFileName } from './storage-path.util';
+import { contentMatchesDeclaredType, sniffMimeType } from '../common/upload/file-signature';
+import { fileNameTooLong } from '../common/upload/upload-options';
 
 type FileFilterCallback = (error: Error | null, acceptFile: boolean) => void;
 
@@ -26,6 +28,23 @@ export const billingDocumentUploadPolicy: UploadPolicy = {
   allowedMimeTypes: ALLOWED_MIME_TYPES,
   allowedExtensions: ALLOWED_FILE_EXTENSIONS,
 };
+
+/** An expense receipt: a phone photo (JPEG / PNG) or a PDF, up to the billing document cap. */
+export const expenseReceiptUploadPolicy: UploadPolicy = {
+  maxBytes: MAX_BILLING_DOCUMENT_BYTES,
+  allowedMimeTypes: new Set([...IMAGE_MIME_TYPES, ...PDF_MIME_TYPES]),
+  allowedExtensions: new Set(['.jpg', '.jpeg', '.png', '.pdf']),
+};
+
+/** Multer's filter for expense receipts: the declared type and extension, before a byte is stored. */
+export function expenseReceiptFileFilter(_request: unknown, file: Express.Multer.File, callback: FileFilterCallback): void {
+  try {
+    validateUploadedFile(file, expenseReceiptUploadPolicy);
+    callback(null, true);
+  } catch (error) {
+    callback(error instanceof Error ? error : new BadRequestException(), false);
+  }
+}
 
 export const cloudUploadPolicy: UploadPolicy = {
   maxBytes: MAX_CLOUD_UPLOAD_BYTES,
@@ -54,6 +73,10 @@ export function validateUploadedFile(
     throw new BadRequestException('Required file is missing');
   }
 
+  // The same name limit as every other upload route (audit P3), before anything is written.
+  const tooLong = fileNameTooLong(file.originalname);
+  if (tooLong) throw tooLong;
+
   const sanitizedName = sanitizeStorageFileName(file.originalname);
   const ext = path.extname(sanitizedName).toLowerCase();
 
@@ -71,6 +94,11 @@ export function validateUploadedFile(
 
   if (!policy.allowedMimeTypes.has(file.mimetype)) {
     throw new BadRequestException(`MIME type ${file.mimetype} is not allowed`);
+  }
+
+  // After the upload (the filter runs before any byte arrives): the content must be what the type claims.
+  if (file.buffer && !contentMatchesDeclaredType(sniffMimeType(file.buffer), file.mimetype)) {
+    throw new BadRequestException({ message: `File content does not match its declared type ${file.mimetype}`, code: 'STORAGE_CONTENT_MISMATCH' });
   }
 
   return file;

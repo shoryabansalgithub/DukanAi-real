@@ -70,7 +70,7 @@ describe('StartupValidatorService', () => {
     expect(service['logger'].warn).toHaveBeenCalled();
   });
 
-  it('should call process.exit(1) on HIGH severity errors', async () => {
+  it('throws on HIGH severity errors so bootstrap reports the reason', async () => {
     validationEngine.validateAll.mockResolvedValue([
       {
         domain: 'TestDomain',
@@ -80,12 +80,12 @@ describe('StartupValidatorService', () => {
         resolution: 'Fix it',
       }
     ]);
-    await service.onModuleInit();
-    expect(mockExit).toHaveBeenCalledWith(1);
+    await expect(service.onModuleInit()).rejects.toThrow(/Startup validation failed.*TestDomain/);
+    expect(mockExit).not.toHaveBeenCalled();
     expect(service['logger'].error).toHaveBeenCalled();
   });
 
-  it('should call process.exit(1) on CRITICAL severity errors', async () => {
+  it('throws on CRITICAL severity errors so bootstrap reports the reason', async () => {
     validationEngine.validateAll.mockResolvedValue([
       {
         domain: 'TestDomain',
@@ -95,8 +95,8 @@ describe('StartupValidatorService', () => {
         resolution: 'Fix it',
       }
     ]);
-    await service.onModuleInit();
-    expect(mockExit).toHaveBeenCalledWith(1);
+    await expect(service.onModuleInit()).rejects.toThrow(/Startup validation failed.*TestDomain/);
+    expect(mockExit).not.toHaveBeenCalled();
     expect(service['logger'].error).toHaveBeenCalled();
   });
 });

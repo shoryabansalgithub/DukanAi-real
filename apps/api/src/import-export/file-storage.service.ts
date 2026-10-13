@@ -19,15 +19,24 @@ export class FileStorageService {
   }
 
   /**
-   * Saves an uploaded file stream locally and returns the safe path.
+   * Moves a disk-stored upload (or writes a memory one) into the imports
+   * directory under a server-chosen name and returns that path.
    */
   async saveImportFile(shopId: string, file: Express.Multer.File): Promise<string> {
     try {
       const ext = path.extname(file.originalname).toLowerCase();
       const filename = `${shopId}-${uuidv4()}${ext}`;
       const filePath = path.join(this.importsDir, filename);
-      
-      fs.writeFileSync(filePath, file.buffer);
+
+      if (file.path) {
+        await fs.promises.rename(file.path, filePath).catch(async () => {
+          // Temp and imports directories may sit on different file systems.
+          await fs.promises.copyFile(file.path, filePath);
+          await fs.promises.unlink(file.path).catch(() => undefined);
+        });
+      } else {
+        await fs.promises.writeFile(filePath, file.buffer ?? Buffer.alloc(0));
+      }
       this.logger.log(`Saved import file to ${filePath}`);
       return filePath;
     } catch (err) {

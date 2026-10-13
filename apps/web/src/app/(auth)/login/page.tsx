@@ -5,15 +5,18 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn, useSession } from 'next-auth/react';
 import { motion } from 'framer-motion';
-import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle } from 'lucide-react';
+import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
+import { sanitizeCallbackUrl } from '@/lib/safe-callback-url';
+import { googleSignInEnabled } from '@/config/env';
 
 // Never statically generated — searchParams driven error display and real-time auth state.
 export const dynamic = 'force-dynamic';
-const googleOAuthEnabled = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === 'true';
 
 function LoginPageContent() {
+  // Decided by the server at run time (roadmap 9.19): the provider exists only with real credentials.
+  const googleOAuthEnabled = googleSignInEnabled();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -23,12 +26,19 @@ function LoginPageContent() {
   const { status } = useSession();
   const { toast } = useToast();
 
+  // Where to go after sign-in: the protected page the middleware bounced from,
+  // parsed against this origin so the parameter cannot redirect off-site
+  // (`//evil`, `/\evil` and absolute URLs all fall back, roadmap 6.4).
+  const callbackUrl = sanitizeCallbackUrl(searchParams.get('callbackUrl'), typeof window === 'undefined' ? '' : window.location.origin);
+  // Settings › Change password signs every session out and lands here.
+  const passwordChanged = searchParams.get('notice') === 'password-changed';
+
   // If already authenticated (or auth is bypassed), redirect away from login
   useEffect(() => {
     if (AUTH_DISABLED || status === 'authenticated') {
-      router.replace('/dashboard');
+      router.replace(callbackUrl);
     }
-  }, [status, router]);
+  }, [status, router, callbackUrl]);
 
   // Show error from NextAuth callback (e.g. OAuth failures)
   useEffect(() => {
@@ -38,6 +48,9 @@ function LoginPageContent() {
         OAuthSignin: 'Could not start Google sign-in. Please try again.',
         OAuthCallback: 'Google sign-in failed. Please try again.',
         OAuthAccountNotLinked: 'This Google account is not linked. Sign in with email instead.',
+        AccessDenied: 'Google sign-in was refused. If you registered with a password, sign in with it instead.',
+        GoogleNotConfigured: 'Google sign-in is not set up on the server yet (GOOGLE_CLIENT_ID). Sign in with your email and password.',
+        GoogleApiUnreachable: 'Google confirmed your account, but the DukaanAI server could not be reached. Try again in a moment.',
         Callback: 'Authentication failed. Please try again.',
         default: 'An unexpected error occurred.',
       };
@@ -70,7 +83,7 @@ function LoginPageContent() {
 
       if (result?.ok) {
         toast('Welcome back!', 'success');
-        router.push('/dashboard');
+        router.push(callbackUrl);
       }
     } catch (err) {
       console.error('Sign-in request failed:', err);
@@ -88,7 +101,7 @@ function LoginPageContent() {
     setError(null);
     setLoading(true);
     try {
-      await signIn('google', { callbackUrl: '/dashboard' });
+      await signIn('google', { callbackUrl });
     } catch (err) {
       console.error('Google sign-in failed:', err);
       setError('Could not connect to Google. Please try again.');
@@ -122,9 +135,17 @@ function LoginPageContent() {
             </p>
           </div>
 
+          {passwordChanged && !error && (
+            <div role="status" className="flex items-center gap-2.5 p-3 mb-6 bg-green-50 border border-green-200 rounded-xl text-sm font-medium text-green-700">
+              <CheckCircle2 size={16} className="shrink-0" />
+              <span>Your password was changed and every session was signed out. Sign in with the new password.</span>
+            </div>
+          )}
+
           {/* --- Error banner --- */}
           {error && (
             <motion.div
+              role="alert"
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               className="flex items-center gap-2.5 p-3 mb-6 bg-red-50 border border-red-200 rounded-xl text-sm font-medium text-red-700"
@@ -174,7 +195,7 @@ function LoginPageContent() {
           {/* --- Email / password form --- */}
           <form onSubmit={handleCredentialsLogin} className="space-y-5">
             <div>
-              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
+              <label htmlFor="login-email" className="block text-xs font-bold text-gray-700 uppercase tracking-wide mb-2">
                 Email Address
               </label>
               <div className="relative">
@@ -183,6 +204,7 @@ function LoginPageContent() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
                 <input
+                  id="login-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -196,15 +218,15 @@ function LoginPageContent() {
 
             <div>
               <div className="flex justify-between items-center mb-2">
-                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
+                <label htmlFor="login-password" className="block text-xs font-bold text-gray-700 uppercase tracking-wide">
                   Password
                 </label>
-                <a
-                  href="#"
+                <Link
+                  href="/forgot-password"
                   className="text-xs font-bold text-[#8B5CF6] hover:text-purple-700 transition-colors"
                 >
                   Forgot?
-                </a>
+                </Link>
               </div>
               <div className="relative">
                 <Lock
@@ -212,6 +234,7 @@ function LoginPageContent() {
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
                 <input
+                  id="login-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

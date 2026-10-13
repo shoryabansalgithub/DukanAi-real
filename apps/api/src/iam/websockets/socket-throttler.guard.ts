@@ -1,10 +1,10 @@
-import { ExecutionContext, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerException } from '@nestjs/throttler';
 
 @Injectable()
 export class SocketThrottlerGuard extends ThrottlerGuard {
   async handleRequest(requestProps: any): Promise<boolean> {
-    const { context, limit, ttl, throttler, blockDuration, getTracker, generateKey } = requestProps;
+    const { context, limit, ttl, throttler, blockDuration } = requestProps;
 
     if (context.getType() !== 'ws') {
       return true;

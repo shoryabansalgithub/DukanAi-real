@@ -51,14 +51,16 @@ export const SlidingPanel: React.FC<SlidingPanelProps> = ({
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: '100%', opacity: 0.5 }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className={`relative h-full w-full ${width} bg-white dark:bg-gray-900 shadow-2xl flex flex-col border-l border-gray-200 dark:border-gray-800`}
+            className={`relative h-full w-full ${width} bg-white shadow-2xl flex flex-col border-l border-gray-200`}
           >
             {title && (
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800 shrink-0">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0">
+                <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
                 <button
                   onClick={onClose}
-                  className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+                  type="button"
+                  aria-label="Close"
+                  className="p-2 rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
                 >
                   <X size={20} />
                 </button>

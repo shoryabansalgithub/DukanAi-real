@@ -1,0 +1,36 @@
+# Build context for apps/api/Dockerfile and apps/web/Dockerfile (context = repo root).
+# Dependencies are installed from the lockfile inside the image; outputs are rebuilt.
+.git
+.github
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/coverage
+**/test-results
+**/test-results-*
+**/playwright-report
+**/playwright-report-*
+**/*.tsbuildinfo
+**/*.log
+# Secrets and runtime data never enter an image; env comes from the orchestrator.
+# Every env file, the committed templates included (audit 2026-10-11, R5: the
+# web image shipped apps/web/.env.production because Next's standalone output
+# copies it): the builds take NEXT_PUBLIC_* from build arguments and the
+# containers run on the orchestrator's environment and the class defaults.
+# The documented examples stay (nothing reads them; they hold no values).
+.env
+**/.env
+**/.env.*
+!**/.env.example
+apps/api/data
+apps/api/uploads
+**/dump.rdb
+# Not needed to build or run the servers.
+apps/api/test
+apps/api/load
+apps/web/e2e
+apps/web/e2e-*
+docs
+*.md
+!apps/api/prisma/MIGRATIONS.md

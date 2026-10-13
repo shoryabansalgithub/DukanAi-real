@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import * as jsonpatch from 'fast-json-patch';
@@ -71,11 +71,13 @@ export class ProductVersioningService {
     return revision;
   }
 
-  async saveDraft(revisionId: string, updatedData: any) {
+  // Every revision route names its product: a revision is found only under the
+  // product in the path, never by its id alone (audit T6i).
+  async saveDraft(productId: string, revisionId: string, updatedData: any) {
     const shopId = this.tenantContext.getShopId();
     
     const revision = await this.prisma.productRevision.findFirst({
-        where: { id: revisionId, shopId, status: 'DRAFT' }
+        where: { id: revisionId, productId, shopId, status: 'DRAFT' }
     });
     
     if (!revision) throw new NotFoundException('Draft revision not found');
@@ -126,10 +128,10 @@ export class ProductVersioningService {
     return updated;
   }
 
-  async publish(revisionId: string) {
+  async publish(productId: string, revisionId: string) {
     const shopId = this.tenantContext.getShopId();
     const revision = await this.prisma.productRevision.findFirst({
-        where: { id: revisionId, shopId, status: 'APPROVED' }
+        where: { id: revisionId, productId, shopId, status: 'APPROVED' }
     });
 
     if (!revision) throw new BadRequestException('Revision must be APPROVED to publish');
@@ -171,14 +173,18 @@ export class ProductVersioningService {
     return { success: true, newVersion: product.version + 1 };
   }
 
-  async approve(revisionId: string, comments?: string) {
+  async approve(productId: string, revisionId: string, comments?: string) {
       const shopId = this.tenantContext.getShopId();
       const userId = this.tenantContext.getUserId();
 
       const revision = await this.prisma.productRevision.findFirst({
-          where: { id: revisionId, shopId, status: 'PENDING_REVIEW' }
+          where: { id: revisionId, productId, shopId, status: 'PENDING_REVIEW' }
       });
       if (!revision) throw new NotFoundException('Revision not found or not pending');
+      // Separation of duties, like purchase orders and stock adjustments: the author never approves their own revision.
+      if (revision.authorId === userId) {
+          throw new ForbiddenException({ message: 'The author of a revision cannot approve it.', code: 'SEPARATION_OF_DUTIES' });
+      }
 
       const signature = crypto.createHash('sha256').update(`${revisionId}-${userId}-${Date.now()}`).digest('hex');
 
@@ -193,8 +199,8 @@ export class ProductVersioningService {
                   resolvedAt: new Date()
               }
           }),
-          this.prisma.productRevision.update({
-              where: { id: revisionId },
+          this.prisma.productRevision.updateMany({
+              where: { id: revisionId, status: 'PENDING_REVIEW' },
               data: { status: 'APPROVED' }
           })
       ]);
@@ -202,10 +208,10 @@ export class ProductVersioningService {
       return { success: true };
   }
 
-  async submitForReview(revisionId: string) {
+  async submitForReview(productId: string, revisionId: string) {
       const shopId = this.tenantContext.getShopId();
       const revision = await this.prisma.productRevision.findFirst({
-          where: { id: revisionId, shopId, status: 'DRAFT' }
+          where: { id: revisionId, productId, shopId, status: 'DRAFT' }
       });
       if (!revision) throw new NotFoundException('Draft not found');
 
@@ -215,20 +221,22 @@ export class ProductVersioningService {
       });
   }
 
-  async getDiff(revA: string, revB: string) {
+  async getDiff(productId: string, revA: string, revB: string) {
+      const shopId = this.tenantContext.getShopId();
+      // Both revisions must be this shop's and this product's before any stored diff is served.
+      const [a, b] = await Promise.all([
+          this.prisma.productRevision.findFirst({ where: { id: revA, productId, shopId } }),
+          this.prisma.productRevision.findFirst({ where: { id: revB, productId, shopId } })
+      ]);
+
+      if (!a || !b) throw new NotFoundException('Revisions not found');
+
       const diff = await this.prisma.revisionDiff.findUnique({
           where: {
               sourceRevId_targetRevId: { sourceRevId: revA, targetRevId: revB }
           }
       });
       if (diff) return diff.patch;
-
-      const [a, b] = await Promise.all([
-          this.prisma.productRevision.findUnique({ where: { id: revA } }),
-          this.prisma.productRevision.findUnique({ where: { id: revB } })
-      ]);
-
-      if (!a || !b) throw new NotFoundException('Revisions not found');
 
       return jsonpatch.compare(a.data as any, b.data as any);
   }

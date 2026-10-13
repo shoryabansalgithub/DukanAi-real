@@ -12,8 +12,6 @@ import { SocketContextInterceptor } from '../iam/websockets/socket-context.inter
 import { SocketRolesGuard } from '../iam/websockets/socket-roles.guard';
 import { SocketThrottlerGuard } from '../iam/websockets/socket-throttler.guard';
 import { SocketValidationPipe } from '../iam/websockets/socket-validation.pipe';
-import { Roles } from '../auth/roles.decorator';
-import { Role } from '@prisma/client';
 
 @WebSocketGateway({
   namespace: '/inventory',

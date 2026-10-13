@@ -1,123 +1,130 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import type { Cache } from 'cache-manager';
-import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 import { CacheConfig } from '../config/domains/cache.config';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
-import Redis from 'ioredis';
+import type Redis from 'ioredis';
 
+export type StockPrecheck = 'ok' | 'insufficient' | 'cache_miss';
+
+/**
+ * Redis stock fast-path.
+ *
+ * Redis is NEVER authoritative. Keys `stock:{shopId}:{productId}` hold the
+ * last known Product.currentStock so that hot products can reject obviously
+ * impossible sales before opening a database transaction. Every operation
+ * here is best-effort: any Redis failure degrades to the database path.
+ *
+ * Invariants:
+ *  - a key is only ever created by `syncStock` (from an authoritative value)
+ *    or by the Lua decrement of an existing key; `restoreStock` never
+ *    creates keys, so a missing key can never be "poisoned" into a wrong
+ *    positive value;
+ *  - every write keeps the configured TTL so drift self-expires.
+ */
 @Injectable()
 export class InventoryCacheService {
   private readonly logger = new Logger(InventoryCacheService.name);
 
+  // Atomic check-and-decrement that preserves the key's TTL.
+  private static readonly DECREMENT_LUA = `
+    local current = tonumber(redis.call('GET', KEYS[1]))
+    if current == nil then return '-2' end
+    local qty = tonumber(ARGV[1])
+    if current < qty then return '-1' end
+    local newVal = current - qty
+    local ttl = redis.call('TTL', KEYS[1])
+    if ttl > 0 then
+      redis.call('SET', KEYS[1], tostring(newVal), 'EX', ttl)
+    else
+      redis.call('SET', KEYS[1], tostring(newVal), 'EX', tonumber(ARGV[2]))
+    end
+    return tostring(newVal)
+  `;
+
+  // Increment only when the key exists (compensation must not create keys).
+  private static readonly RESTORE_LUA = `
+    if redis.call('EXISTS', KEYS[1]) == 0 then return '-2' end
+    local newVal = redis.call('INCRBYFLOAT', KEYS[1], ARGV[1])
+    local ttl = redis.call('TTL', KEYS[1])
+    if ttl <= 0 then redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2])) end
+    return newVal
+  `;
+
   constructor(
-    @Inject(CACHE_MANAGER) private cache: Cache,
-    @Inject(REDIS_CLIENT) private redis: Redis,
-    private prisma: PrismaService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly tenantContext: TenantContextService,
-    private readonly cacheConfig: CacheConfig
-  ) {
-    if (this.redis) {
-      this.logger.log('Redis client connected for inventory cache');
-    } else {
-      this.logger.warn(
-        'No Redis client available — inventory cache will use DB-only path',
-      );
+    private readonly cacheConfig: CacheConfig,
+  ) {}
+
+  private key(productId: string, shopId?: string): string {
+    return `stock:${shopId ?? this.tenantContext.getShopId()}:${productId}`;
+  }
+
+  private get ttl(): number {
+    return this.cacheConfig.inventoryStockTtlSeconds;
+  }
+
+  /** Atomic pre-decrement BEFORE the DB transaction. Never throws. */
+  async tryDecrementStock(productId: string, quantity: number, shopId?: string): Promise<StockPrecheck> {
+    try {
+      const result = await this.redis.eval(InventoryCacheService.DECREMENT_LUA, 1, this.key(productId, shopId), quantity.toString(), this.ttl.toString());
+      if (result === '-1') return 'insufficient';
+      if (result === '-2') return 'cache_miss';
+      return 'ok';
+    } catch (e) {
+      this.logger.warn(`Redis pre-check unavailable for ${productId}: ${(e as Error).message}`);
+      return 'cache_miss';
     }
   }
 
-  // Warm the cache on startup (load all product stocks into Redis)
-  async warmCache(): Promise<void> {
-    if (!this.redis) return;
-    const shopId = this.tenantContext.getShopId();
-    
-    let skip = 0;
-    const take = 1000;
-    let hasMore = true;
+  /** Compensation after a failed transaction; only touches existing keys. Never throws. */
+  async restoreStock(productId: string, quantity: number, shopId?: string): Promise<void> {
+    try {
+      await this.redis.eval(InventoryCacheService.RESTORE_LUA, 1, this.key(productId, shopId), quantity.toString(), this.ttl.toString());
+    } catch (e) {
+      this.logger.warn(`Redis restore failed for ${productId}: ${(e as Error).message}`);
+    }
+  }
 
-    while (hasMore) {
-      const products = await this.prisma.product.findMany({
-        where: { shopId, isDeleted: false },
-        select: { id: true, currentStock: true },
-        take,
-        skip,
-        orderBy: { id: 'asc' },
-      });
+  /** Set the cached value from an authoritative DB value. Never throws. */
+  async syncStock(productId: string, newStock: number | string, shopId?: string): Promise<void> {
+    try {
+      await this.redis.set(this.key(productId, shopId), newStock.toString(), 'EX', this.ttl);
+    } catch (e) {
+      this.logger.warn(`Redis sync failed for ${productId}: ${(e as Error).message}`);
+    }
+  }
 
-      if (products.length === 0) {
-        hasMore = false;
-        break;
-      }
-
+  async syncMany(entries: Array<{ productId: string; stock: number | string }>, shopId?: string): Promise<void> {
+    if (entries.length === 0) return;
+    try {
       const pipeline = this.redis.pipeline();
-      for (const p of products) {
-        pipeline.set(
-          `stock:${shopId}:${p.id}`,
-          p.currentStock.toNumber().toString(),
-          'EX',
-          this.cacheConfig.inventoryStockTtlSeconds,
-        );
-      }
+      for (const e of entries) pipeline.set(this.key(e.productId, shopId), e.stock.toString(), 'EX', this.ttl);
       await pipeline.exec();
-      
-      skip += take;
+    } catch (e) {
+      this.logger.warn(`Redis bulk sync failed: ${(e as Error).message}`);
     }
   }
 
-  // Atomic pre-decrement in Redis (BEFORE the DB transaction)
-  // Returns: 'ok' | 'insufficient' | 'cache_miss'
-  async tryDecrementStock(
-    productId: string,
-    quantity: number,
-  ): Promise<'ok' | 'insufficient' | 'cache_miss'> {
-    if (!this.redis) return 'cache_miss';
-    const shopId = this.tenantContext.getShopId();
-    const key = `stock:${shopId}:${productId}`;
-    const exists = await this.redis.exists(key);
-    if (!exists) return 'cache_miss'; // Fall back to DB-only path
-
-    // Lua script for atomic check-and-decrement (float-safe)
-    // Uses GET/SET with float arithmetic instead of integer-only DECRBY
-    const luaScript = `
-      local current = tonumber(redis.call('GET', KEYS[1]))
-      if current == nil then return '-2' end
-      local qty = tonumber(ARGV[1])
-      if current < qty then return '-1' end
-      local newVal = current - qty
-      redis.call('SET', KEYS[1], tostring(newVal))
-      return tostring(newVal)
-    `;
-    const result = await this.redis.eval(
-      luaScript,
-      1,
-      key,
-      quantity.toString(),
-    );
-
-    if (result === '-1') return 'insufficient';
-    if (result === '-2') return 'cache_miss';
-    return 'ok';
+  /** Drop cached values so the next read goes to the database. Never throws. */
+  async invalidate(productIds: string[], shopId?: string): Promise<void> {
+    if (productIds.length === 0) return;
+    try {
+      await this.redis.del(...productIds.map((id) => this.key(id, shopId)));
+    } catch (e) {
+      this.logger.warn(`Redis invalidate failed: ${(e as Error).message}`);
+    }
   }
 
-  // Called after DB transaction rolls back — restore the Redis counter
-  async restoreStock(
-    productId: string,
-    quantity: number,
-  ): Promise<void> {
-    if (!this.redis) return;
-    const shopId = this.tenantContext.getShopId();
-    const key = `stock:${shopId}:${productId}`;
-    await this.redis.incrbyfloat(key, quantity); // Support fractional
-  }
-
-  // Called when stock is manually adjusted — keep Redis in sync
-  async syncStock(
-    productId: string,
-    newStock: number,
-  ): Promise<void> {
-    if (!this.redis) return;
-    const shopId = this.tenantContext.getShopId();
-    await this.redis.set(`stock:${shopId}:${productId}`, newStock.toString(), 'EX', this.cacheConfig.inventoryStockTtlSeconds);
+  /** Cached value or null on miss/failure. */
+  async getStock(productId: string, shopId?: string): Promise<number | null> {
+    try {
+      const raw = await this.redis.get(this.key(productId, shopId));
+      if (raw === null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
   }
 }

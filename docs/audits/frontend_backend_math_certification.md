@@ -1,3 +1,8 @@
+> **Historical audit, superseded.** One of the audit passes that the
+> production-readiness roadmap (phases 0 to 9) answered; its findings are
+> closed or tracked there and it is no longer maintained. Current documentation:
+> [README.md](../../README.md), [AGENTS.md](../../AGENTS.md) and [docs/](../../docs).
+
 # Frontend-Backend Math Integrity Certification Report
 
 ## 1. Executive Summary

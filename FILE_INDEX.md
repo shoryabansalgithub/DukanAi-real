@@ -1,3 +1,10 @@
+> **Historical document, superseded.** Kept for the record: it describes an
+> earlier state of the project (mock data, Next.js 14, Node 18/20, features
+> that were never built) and is no longer maintained. Current documentation:
+> [README.md](./README.md) (what is built, how to run it, the docs map),
+> [AGENTS.md](./AGENTS.md) (architecture and sharp edges) and
+> [docs/](./docs) (deployment, operations, release, go-live).
+
 # 📑 DukaanAI - Complete File Index
 
 **Status**: ✅ **PHASE 2 COMPLETE** | **50+ Files Created** | **5000+ Lines of Code**
@@ -7,9 +14,9 @@
 ## 📋 Quick Navigation
 
 ### 🚀 **START HERE** (New to project?)
-1. Read: [PHASE2_SUMMARY.md](./PHASE2_SUMMARY.md) - Quick overview
-2. Read: [SETUP_GUIDE.md](./SETUP_GUIDE.md) - How to run locally
-3. Explore: Navigate to `apps/web/` and run `npm install && npm run dev`
+1. Read: [README.md](./README.md) - what is built, the stack, how to run it (Node.js 22, MySQL 8, Redis 7) and the documentation map
+2. Run: README "Run it with Docker" or "Run it for development" (`npm ci` at the repository root, not in `apps/web`)
+3. Read: [AGENTS.md](./AGENTS.md) and [docs/POS_BILLING_CONTRACT.md](./docs/POS_BILLING_CONTRACT.md) before changing code
 
 ### 📚 **Documentation** (Want details?)
 - [TECH_STACK_ARCHITECTURE.md](./TECH_STACK_ARCHITECTURE.md) - Why each technology
@@ -21,7 +28,7 @@
 ### 💻 **Frontend Code** (Want to build?)
 - [apps/web/src/app/dashboard/page.tsx](./apps/web/src/app/dashboard/page.tsx) - Main dashboard
 - [apps/web/src/components/](./apps/web/src/components/) - All components
-- [apps/web/src/data/mockData.ts](./apps/web/src/data/mockData.ts) - Mock data
+- `apps/web/src/lib/api-client.ts` - every page reads and writes through the API (the former `src/data/mockData.ts` is gone: there is no mock data)
 
 ---
 

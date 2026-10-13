@@ -15,9 +15,18 @@ interface RequestWithUser {
   user?: SafeUserDto;
 }
 
+/** Why a request for a shop in this state is refused (roadmap 1.8: only ACTIVE shops pass). */
+const STATUS_MESSAGES: Record<Exclude<ShopStatus, 'ACTIVE'>, string> = {
+  SUSPENDED: 'This shop is suspended. Contact support to reactivate it.',
+  LOCKED: 'This shop has been locked for security reasons.',
+  ARCHIVED: 'This shop has been archived.',
+  DELETED: 'This shop has been deleted.',
+};
+
 /**
  * Global guard that enforces tenant isolation by rejecting authenticated
- * requests where the user has no shop assignment (shopId = null).
+ * requests where the user has no shop assignment (shopId = null) or whose
+ * shop is not ACTIVE.
  *
  * Execution order (via APP_GUARD registration):
  *   ThrottlerGuard → JwtAuthGuard → TenantGuard → RolesGuard
@@ -69,12 +78,11 @@ export class TenantGuard implements CanActivate {
       );
     }
 
-    if (user.shopStatus === ShopStatus.LOCKED) {
-      throw new ForbiddenException('This shop has been locked for security reasons.');
-    }
-
-    if (user.shopStatus === ShopStatus.DELETED) {
-      throw new ForbiddenException('This shop has been deleted.');
+    if (user.shopStatus !== ShopStatus.ACTIVE) {
+      // Unknown status (user loaded without its shop) fails closed as well.
+      const message = user.shopStatus ? STATUS_MESSAGES[user.shopStatus] : 'The status of your shop could not be verified.';
+      this.logger.warn(`Tenant guard rejected user ${user.id} (${user.email}) — shop ${user.shopId} is ${user.shopStatus ?? 'unknown'}`);
+      throw new ForbiddenException(message);
     }
 
     return true;

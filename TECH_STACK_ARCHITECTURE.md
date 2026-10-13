@@ -1,5 +1,12 @@
 # DukaanAI - Production-Grade Tech Stack Architecture
 
+> **Status (roadmap 8.6):** this is the original design rationale, kept for the
+> "why" behind each choice. The stack as built differs in places: Next.js 16 on
+> React 19, Node 22, BullMQ (`@nestjs/bullmq`), class-validator config domains,
+> and no Radix UI, shadcn/ui, TanStack Query or next-themes (removed as unused,
+> roadmap 6.8). `AGENTS.md`, the `package.json` files and
+> `docs/architecture/environment-architecture.md` describe what runs today.
+
 ## Executive Summary
 
 DukaanAI requires a **scalable, enterprise-grade, AI-first retail OS** architecture that can handle real-time transactions, complex analytics, AI features, and multi-shop operations at scale.
@@ -10,7 +17,7 @@ DukaanAI requires a **scalable, enterprise-grade, AI-first retail OS** architect
 
 ### 📱 **FRONTEND STACK**
 
-#### **Primary Framework: Next.js 14+ (App Router)**
+#### **Primary Framework: Next.js 16 (App Router, React 19)**
 - **Why**: 
   - Server-side rendering for SEO and performance
   - Built-in API routes for quick backend prototyping
@@ -112,7 +119,7 @@ DukaanAI requires a **scalable, enterprise-grade, AI-first retail OS** architect
   - Reduces bugs in financial transactions (billing)
   - Excellent for team collaboration
 
-#### **Runtime: Node.js 20 LTS**
+#### **Runtime: Node.js 22 LTS**
 - **Why**:
   - Long-term support version
   - Excellent performance
@@ -306,7 +313,7 @@ DukaanAI requires a **scalable, enterprise-grade, AI-first retail OS** architect
   - Perfect for startup phase
   - Can migrate to AWS later
 
-#### **Message Queue: Bull (Redis-based)**
+#### **Message Queue: BullMQ (Redis-based)**
 - **Why**:
   - Background job processing
   - Bill generation queuing

@@ -1,33 +1,72 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { Suspense, useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Card } from '@/components/ui/Card';
 import { 
   ClipboardList, AlertTriangle, AlertOctagon, TrendingDown, 
-  Search, Filter, FileText, ArrowRightLeft, MoreVertical, Calendar, ChevronDown, PackageMinus
+  Search, Filter, MoreVertical, Calendar, ChevronDown, PackageMinus
 } from 'lucide-react';
-import { Modal } from '@/components/ui/Modal';
 import { SlidingPanel } from '@/components/ui/SlidingPanel';
-import { useToast } from '@/components/ui/Toast';
 import { AnimatePresence, motion } from 'framer-motion';
 import { inventoryApi, type BatchItem } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
+import { LowStockPanel } from '@/components/inventory/LowStockPanel';
+import { PaginationControls } from '@/components/customers/PaginationControls';
 
 function formatBatchDate(date: string | null, options: Intl.DateTimeFormatOptions) {
   return date ? new Date(date).toLocaleDateString('en-IN', options) : 'Not recorded';
 }
 
-export default function InventoryPage() {
-  const { toast } = useToast();
+/** A batch's state as the table shows it: no stock left, past its expiry, within 30 days of it, or safe. */
+type ExpiryStatus = 'Depleted' | 'Expired' | 'Expiring Soon' | 'Safe';
+
+function expiryStatus(batch: BatchItem, today: Date, horizon: Date): ExpiryStatus {
+  if (batch.quantity === 0) return 'Depleted';
+  const expDate = batch.expDate ? new Date(batch.expDate) : null;
+  if (expDate && expDate <= today) return 'Expired';
+  if (expDate && expDate <= horizon) return 'Expiring Soon';
+  return 'Safe';
+}
+
+/** The Filters menu: none ticked shows every batch, ticked ones narrow the list (and its search) to those states. */
+const EXPIRY_FILTERS: ReadonlyArray<{ status: ExpiryStatus; label: string }> = [
+  { status: 'Expired', label: 'Show Expired' },
+  { status: 'Expiring Soon', label: 'Expiring < 30 Days' },
+  { status: 'Safe', label: 'Safe' },
+  { status: 'Depleted', label: 'Depleted (no stock)' },
+];
+
+const LOW_STOCK_TAB = 'Low Stock';
+/** Rows per table page; the tiles and the search cover every batch (audit W9). */
+const PAGE_SIZE = 50;
+/** Only the tabs with a module behind them (roadmap 6.7): stock moves are recorded from Products › Update Stock. */
+const MAIN_TABS = ['Batches & Expiry', LOW_STOCK_TAB];
+
+/** `?tab=low-stock` (dashboard links) opens the Low Stock tab. */
+function tabFromQuery(tab: string | null): string {
+  return tab === 'low-stock' ? LOW_STOCK_TAB : 'Batches & Expiry';
+}
+
+function InventoryPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const tabParam = searchParams.get('tab');
   const [batches, setBatches] = useState<BatchItem[]>([]);
+  // Every batch is read page by page (`X-Total-Count`); a bound that stopped the read is said on screen.
+  const [batchTotal, setBatchTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [skip, setSkip] = useState(0);
 
   useEffect(() => {
     const loadBatches = async () => {
       try {
         setLoadError(null);
-        setBatches(await inventoryApi.listBatches());
+        const result = await inventoryApi.listBatches();
+        setBatches(result.items);
+        setBatchTotal(result.total);
       } catch (err) {
         setLoadError(describeApiError(err, 'Loading inventory batches (GET /batches)'));
       } finally {
@@ -37,14 +76,37 @@ export default function InventoryPage() {
     void loadBatches();
   }, []);
   const [searchTerm, setSearchTerm] = useState('');
+  const [expiryFilter, setExpiryFilter] = useState<ReadonlySet<ExpiryStatus>>(() => new Set());
+  // A new search or filter starts on the first page.
+  useEffect(() => {
+    setSkip(0);
+  }, [searchTerm, expiryFilter]);
+
+  const toggleExpiryFilter = (status: ExpiryStatus) => {
+    setExpiryFilter((current) => {
+      const next = new Set(current);
+      if (next.has(status)) next.delete(status);
+      else next.add(status);
+      return next;
+    });
+  };
   
   // Modals & Panels
-  const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [isSidePanelOpen, setIsSidePanelOpen] = useState(false);
-  const [selectedBatch, setSelectedBatch] = useState<any>(null);
+  const [selectedBatch, setSelectedBatch] = useState<BatchItem | null>(null);
 
   // Dropdowns & Tabs
-  const [activeMainTab, setActiveMainTab] = useState('Batches & Expiry');
+  const [activeMainTab, setActiveMainTab] = useState(() => tabFromQuery(tabParam));
+
+  // Follow the URL when it changes while the page is open (e.g. a dashboard link).
+  useEffect(() => {
+    setActiveMainTab(tabFromQuery(tabParam));
+  }, [tabParam]);
+
+  const selectTab = (tab: string) => {
+    setActiveMainTab(tab);
+    router.replace(tab === LOW_STOCK_TAB ? '/inventory?tab=low-stock' : '/inventory', { scroll: false });
+  };
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   
@@ -61,9 +123,6 @@ export default function InventoryPage() {
   }, []);
 
   // Form State
-  const [adjustType, setAdjustType] = useState('Wastage');
-  const [adjustQty, setAdjustQty] = useState('');
-  const [adjustReason, setAdjustReason] = useState('');
 
   // Derived Stats
   const today = new Date();
@@ -79,26 +138,16 @@ export default function InventoryPage() {
   const expiredCount = batches.filter(b => b.expDate && new Date(b.expDate) <= today && b.quantity > 0).length;
   const zeroStockBatches = batches.filter(b => b.quantity === 0).length;
 
-  // Filter Logic
-  const processedBatches = batches.filter(b => 
-    b.product.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    b.batchNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    b.sku.toLowerCase().includes(searchTerm.toLowerCase())
+  // Filter Logic: the search and the expiry filters apply to every batch read, then the table pages the result.
+  const processedBatches = batches.filter(b =>
+    (b.product.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.batchNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.sku.toLowerCase().includes(searchTerm.toLowerCase())) &&
+    (expiryFilter.size === 0 || expiryFilter.has(expiryStatus(b, today, thirtyDaysFromNow)))
   );
+  const pageBatches = processedBatches.slice(skip, skip + PAGE_SIZE);
 
-  const handleAdjustStock = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!adjustQty || Number(adjustQty) <= 0) return;
-
-    // Persisting an adjustment requires the physical inventory location and a
-    // ledger entry. Do not mutate client state and falsely report success.
-    toast('Choose a product inventory location before recording an adjustment.', 'info');
-    setIsAdjustModalOpen(false);
-    setAdjustQty(''); setAdjustReason('');
-    setSelectedBatch(null);
-  };
-
-  const handleAction = (action: string, batch: any, e: React.MouseEvent) => {
+  const handleAction = (action: string, batch: BatchItem, e: React.MouseEvent) => {
     e.stopPropagation();
     setOpenActionMenuId(null);
     setSelectedBatch(batch);
@@ -107,16 +156,11 @@ export default function InventoryPage() {
       case 'View Timeline': 
         setIsSidePanelOpen(true);
         break;
-      case 'Adjust Stock':
-        setIsAdjustModalOpen(true);
-        break;
-      case 'Print Barcode':
-        toast(`Printing barcode for Batch ${batch.batchNo}...`, 'info');
-        break;
     }
   };
-  if (loading) return <div className="p-12 text-center text-gray-500">Loading inventory batches...</div>;
-  if (loadError) return <div className="p-12 text-center text-red-600">{loadError}</div>;
+  // The batch list gates only its own tab: Low Stock loads independently.
+  if (loading && activeMainTab !== LOW_STOCK_TAB) return <div className="p-12 text-center text-gray-500">Loading inventory batches...</div>;
+  if (loadError && activeMainTab !== LOW_STOCK_TAB) return <div className="p-12 text-center text-red-600">{loadError}</div>;
 
   return (
     <div className="space-y-6">
@@ -126,22 +170,13 @@ export default function InventoryPage() {
           <h1 className="text-2xl font-bold text-gray-800">Inventory Operations</h1>
           <p className="text-sm text-gray-500 mt-1">Track expiry dates, manage batches, and handle stock adjustments.</p>
         </div>
-        <div className="flex gap-3">
-          <button 
-            onClick={() => { setSelectedBatch(null); setIsAdjustModalOpen(true); }}
-            className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all"
-          >
-            <PackageMinus size={18} />
-            Adjust Stock
-          </button>
-          <button 
-            onClick={() => toast('Stock Transfer module coming soon', 'info')}
-            className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 transition-all"
-          >
-            <ArrowRightLeft size={18} />
-            Stock Transfer
-          </button>
-        </div>
+        <Link
+          href="/products"
+          className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 shadow-sm transition-all"
+        >
+          <PackageMinus size={18} />
+          Adjust Stock on Products
+        </Link>
       </div>
 
       {/* Stats Row */}
@@ -179,23 +214,26 @@ export default function InventoryPage() {
           </div>
           <div>
             <p className="text-xs text-gray-500 font-medium">Monthly Wastage</p>
-            <h3 className="text-xl font-bold text-gray-800 tracking-tight">₹0</h3>
+            {/* No module records wastage as a figure yet: say so rather than show an invented ₹0 (roadmap 6.1). */}
+            <h3 className="text-xl font-bold text-gray-800 tracking-tight" title="Wastage is not recorded as a separate figure yet">Not tracked</h3>
           </div>
         </Card>
       </div>
 
       {/* Tabs */}
       <div className="flex gap-6 border-b border-gray-200">
-        {['Batches & Expiry', 'Stock Adjustments', 'Purchase Orders'].map(tab => (
+        {MAIN_TABS.map(tab => (
           <button 
             key={tab}
-            onClick={() => setActiveMainTab(tab)}
+            onClick={() => selectTab(tab)}
             className={`pb-3 text-sm font-bold border-b-2 transition-colors ${activeMainTab === tab ? 'border-[#8B5CF6] text-[#8B5CF6]' : 'border-transparent text-gray-400 hover:text-gray-600'}`}
           >
             {tab}
           </button>
         ))}
       </div>
+
+      {activeMainTab === LOW_STOCK_TAB && <LowStockPanel />}
 
       {/* Main Content Card */}
       {activeMainTab === 'Batches & Expiry' && (
@@ -218,7 +256,7 @@ export default function InventoryPage() {
                 className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50 transition-colors w-full sm:w-auto justify-center"
               >
                 <Filter size={16} />
-                Filters <ChevronDown size={14} />
+                Filters{expiryFilter.size > 0 ? ` (${expiryFilter.size})` : ''} <ChevronDown size={14} />
               </button>
 
               <AnimatePresence>
@@ -233,10 +271,23 @@ export default function InventoryPage() {
                       <div>
                         <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Expiry Status</h4>
                         <div className="flex flex-col gap-2">
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="rounded text-[#8B5CF6]"/> Show Expired</label>
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="rounded text-[#8B5CF6]"/> Expiring &lt; 30 Days</label>
-                          <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="rounded text-[#8B5CF6]"/> Safe</label>
+                          {EXPIRY_FILTERS.map(({ status, label }) => (
+                            <label key={status} className="flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={expiryFilter.has(status)}
+                                onChange={() => toggleExpiryFilter(status)}
+                                className="rounded text-[#8B5CF6]"
+                              />
+                              {label}
+                            </label>
+                          ))}
                         </div>
+                        {expiryFilter.size > 0 && (
+                          <button type="button" onClick={() => setExpiryFilter(new Set())} className="mt-3 text-xs font-bold text-[#8B5CF6] hover:underline">
+                            Clear filters
+                          </button>
+                        )}
                       </div>
                     </div>
                   </motion.div>
@@ -259,25 +310,17 @@ export default function InventoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {processedBatches.map((batch) => {
-                  const expDate = batch.expDate ? new Date(batch.expDate) : null;
-                  const isExpired = Boolean(expDate && expDate <= today && batch.quantity > 0);
-                  const isExpiringSoon = Boolean(!isExpired && expDate && expDate <= thirtyDaysFromNow && batch.quantity > 0);
-                  const isEmpty = batch.quantity === 0;
-
-                  let statusText = 'Safe';
-                  let statusClass = 'bg-green-50 text-green-600';
-                  
-                  if (isEmpty) {
-                    statusText = 'Depleted';
-                    statusClass = 'bg-gray-100 text-gray-600';
-                  } else if (isExpired) {
-                    statusText = 'Expired';
-                    statusClass = 'bg-red-50 text-red-600';
-                  } else if (isExpiringSoon) {
-                    statusText = 'Expiring Soon';
-                    statusClass = 'bg-orange-50 text-orange-600';
-                  }
+                {pageBatches.map((batch) => {
+                  // The same rule as the filters (an empty batch is Depleted whatever its date).
+                  const statusText = expiryStatus(batch, today, thirtyDaysFromNow);
+                  const isExpired = statusText === 'Expired';
+                  const isExpiringSoon = statusText === 'Expiring Soon';
+                  const statusClass = {
+                    Depleted: 'bg-gray-100 text-gray-600',
+                    Expired: 'bg-red-50 text-red-600',
+                    'Expiring Soon': 'bg-orange-50 text-orange-600',
+                    Safe: 'bg-green-50 text-green-600',
+                  }[statusText];
 
                   return (
                     <tr 
@@ -320,7 +363,7 @@ export default function InventoryPage() {
                               exit={{ opacity: 0, scale: 0.95 }}
                               className="absolute right-8 top-10 w-48 bg-white border border-gray-100 shadow-xl rounded-xl z-50 overflow-hidden text-left"
                             >
-                              {['View Timeline', 'Adjust Stock', 'Print Barcode'].map(action => (
+                              {['View Timeline'].map(action => (
                                 <button 
                                   key={action}
                                   onClick={(e) => handleAction(action, batch, e)}
@@ -339,86 +382,25 @@ export default function InventoryPage() {
                 {processedBatches.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-500">
-                      No inventory batches yet. Add stock to a product to begin tracking batch and expiry data.
+                      {batches.length === 0
+                        ? 'No inventory batches yet. Add stock to a product to begin tracking batch and expiry data.'
+                        : 'No batches match the search or the expiry filters.'}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-        </Card>
-      )}
-
-      {activeMainTab !== 'Batches & Expiry' && (
-        <Card className="p-16 flex flex-col items-center justify-center text-center min-h-[400px] border-dashed">
-          <FileText size={48} className="text-gray-300 mb-4" />
-          <h3 className="text-xl font-bold text-gray-800">Module Coming Soon</h3>
-          <p className="text-sm text-gray-500 mt-2 max-w-sm">The {activeMainTab} features are currently under development in the Beta version.</p>
-        </Card>
-      )}
-
-      {/* Adjust Stock Modal */}
-      <Modal isOpen={isAdjustModalOpen} onClose={() => setIsAdjustModalOpen(false)} title={selectedBatch ? `Adjust Batch: ${selectedBatch.batchNo}` : "General Stock Adjustment"} size="md">
-        <form onSubmit={handleAdjustStock} className="space-y-4">
-          {!selectedBatch && (
-            <div>
-              <label className="text-sm font-medium">Search Product/Batch</label>
-              <input className="w-full mt-1 border rounded-lg p-2" placeholder="Scan barcode or type name..." />
-            </div>
+          {batchTotal > batches.length && (
+            <p role="status" className="px-5 pt-3 text-xs font-medium text-orange-600">
+              Showing the first {batches.length.toLocaleString('en-IN')} of {batchTotal.toLocaleString('en-IN')} batches: the tiles and the search cover only these.
+            </p>
           )}
-          
-          <div>
-            <label className="text-sm font-medium">Adjustment Type</label>
-            <div className="grid grid-cols-3 gap-2 mt-2">
-              {['Wastage', 'Addition', 'Return'].map(type => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setAdjustType(type)}
-                  className={`py-2 rounded-lg text-sm font-bold transition-all border ${
-                    adjustType === type 
-                      ? type === 'Wastage' ? 'bg-red-50 border-red-200 text-red-600' 
-                        : type === 'Addition' ? 'bg-green-50 border-green-200 text-green-600'
-                        : 'bg-orange-50 border-orange-200 text-orange-600'
-                      : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className="text-sm font-medium">Quantity *</label>
-            <input 
-              value={adjustQty} 
-              onChange={e=>setAdjustQty(e.target.value)} 
-              type="number" 
-              required 
-              min="1"
-              max={adjustType !== 'Addition' ? selectedBatch?.quantity : undefined}
-              className="w-full mt-1 border rounded-lg p-3 text-lg font-bold" 
-              placeholder="0" 
-            />
-          </div>
-
-          <div>
-            <label className="text-sm font-medium">Reason / Remarks</label>
-            <textarea 
-              value={adjustReason}
-              onChange={e=>setAdjustReason(e.target.value)}
-              className="w-full mt-1 border rounded-lg p-2 h-20 resize-none" 
-              placeholder="e.g. Expired items, damaged in transit..."
-            ></textarea>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-4 border-t mt-6">
-            <button type="button" onClick={() => setIsAdjustModalOpen(false)} className="px-4 py-2 border rounded-lg text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-            <button type="submit" className="px-4 py-2 bg-[#8B5CF6] hover:bg-[#7C3AED] text-white rounded-lg text-sm font-bold shadow-lg shadow-purple-500/30">Confirm Adjustment</button>
-          </div>
-        </form>
-      </Modal>
+          {processedBatches.length > PAGE_SIZE && (
+            <PaginationControls skip={skip} take={PAGE_SIZE} total={processedBatches.length} onChange={setSkip} itemLabel="batches" />
+          )}
+        </Card>
+      )}
 
       {/* Side Panel for Batch Details */}
       <SlidingPanel isOpen={isSidePanelOpen} onClose={() => setIsSidePanelOpen(false)} title="Batch Lifecycle">
@@ -439,7 +421,7 @@ export default function InventoryPage() {
               <div className="relative pl-6">
                 <div className="absolute w-3 h-3 bg-white border-2 border-purple-500 rounded-full -left-[7px] top-1.5" />
                 <p className="text-sm font-bold text-gray-800">Manufacturing Date</p>
-                <p className="text-xs text-gray-500 mt-1">{new Date(selectedBatch.mfgDate).toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                <p className="text-xs text-gray-500 mt-1">{formatBatchDate(selectedBatch.mfgDate, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
               </div>
               
               <div className="relative pl-6">
@@ -462,21 +444,29 @@ export default function InventoryPage() {
               <div className="relative pl-6">
                 <div className="absolute w-3 h-3 bg-red-500 rounded-full -left-[7px] top-1.5 shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
                 <p className="text-sm font-bold text-red-600">Expiry Date</p>
-                <p className="text-xs text-red-500 mt-1 font-medium">{new Date(selectedBatch.expDate).toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                <p className="text-xs text-red-500 mt-1 font-medium">{formatBatchDate(selectedBatch.expDate, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
               </div>
             </div>
 
             <div className="mt-8 border-t border-gray-100 pt-6">
-              <button 
-                onClick={() => { setIsSidePanelOpen(false); setIsAdjustModalOpen(true); }}
+              <Link
+                href={`/products?q=${encodeURIComponent(selectedBatch.sku ?? '')}`}
                 className="w-full bg-red-50 text-red-600 hover:bg-red-100 py-3 rounded-xl text-sm font-bold transition-colors border border-red-200 flex items-center justify-center gap-2"
               >
-                <PackageMinus size={16} /> Record Wastage / Expiry
-              </button>
+                <PackageMinus size={16} /> Record Wastage / Expiry on Products
+              </Link>
             </div>
           </div>
         )}
       </SlidingPanel>
     </div>
+  );
+}
+
+export default function InventoryPage() {
+  return (
+    <Suspense fallback={<div className="p-12 text-center text-gray-500">Loading inventory…</div>}>
+      <InventoryPageContent />
+    </Suspense>
   );
 }

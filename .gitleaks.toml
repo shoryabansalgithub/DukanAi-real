@@ -1,0 +1,93 @@
+# gitleaks (roadmap 9.11, 9.14): no secret in any committed file. CI scans
+# the working tree and the whole history on every push (job "Lint"); run it
+# locally with `gitleaks dir . --config .gitleaks.toml` and
+# `gitleaks git . --config .gitleaks.toml`.
+#
+# Only known fixtures are allowlisted, each by rule AND file AND value, so a
+# real secret in those files still trips the scan. Two gitleaks rules make
+# that so, and both bit this file once (audit 2026-10-11, P1-13):
+#   - a GLOBAL allowlist's `paths` skip the file before any rule runs,
+#     whatever `condition` says: a fixture list must name its rules with
+#     `targetRules`, which makes it a rule allowlist;
+#   - a rule allowlist with paths and regexes matches on EITHER unless it says
+#     `condition = "AND"`.
+# The lint job proves it on every run (step "gitleaks control"): it plants a
+# GitHub token in a committed template and in a spec file of a scratch copy
+# and fails unless both are reported.
+title = "DukaanAI"
+
+[extend]
+useDefault = true
+
+# Test fixtures: fixed strings that LOOK like secrets so the validators, the
+# boot matrix and the password policy can be exercised; they never open
+# anything. The regexes are the extracted secret, anchored.
+[[allowlists]]
+description = "unit, security and integration test fixtures"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''^apps/api/src/.*\.spec\.ts$''',
+  '''^apps/api/test/.*\.ts$''',
+  '''^apps/api/test/boot-matrix\.json$''',
+  '''^apps/web/e2e(-auth)?/.*\.ts$''',
+]
+regexes = [
+  '''^k9vP2xR7mQ4tW8zB1nL6cH3jF5dS0aY2eU4iO7pA9sD1fG3h$''',
+  '''^rotated-secret-k9vP2xR7mQ4tW8zB1nL6cH3jF5dS0aY2$''',
+  '''^integration-secret-0123456789$''',
+  # a common password the policy must refuse (password-policy.integration-spec.ts)
+  '''^qwertyuiop123$''',
+]
+
+# The common-password denylist (roadmap 9.15, ASVS 2.1.7): quoted lower-case
+# entries such as 'passwordpassword' or 'secret123456' that the policy
+# refuses. The rule reads one entry as the "key" of the next, so the match is
+# two adjacent list entries.
+[[allowlists]]
+description = "password policy denylist entries"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^apps/api/src/auth/password-policy\.ts$''']
+regexTarget = "match"
+regexes = ['''^[a-z0-9!@#$%^&*._\[\]=-]{0,32}',\s*'[a-z0-9!@#$%^&*._\[\]=-]{12,32}'$''']
+
+# The NestJS README badge that shipped with the scaffold: a public shields.io
+# URL whose `token` query parameter is a decoy.
+[[allowlists]]
+description = "NestJS starter README badge"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^apps/api/README\.md$''']
+regexes = ['''^abc123def456$''']
+
+# The compose smoke once read Grafana's admin login from the shell with the
+# local default (still in the history, commit 34ec5e66).
+[[allowlists]]
+description = "compose smoke: Grafana admin from the environment"
+targetRules = ["curl-auth-user"]
+condition = "AND"
+paths = ['''^scripts/compose-smoke\.sh$''']
+regexes = ['''^"\$\{GRAFANA_ADMIN_USER:-admin\}:\$\{GRAFANA_ADMIN_PASSWORD:-admin\}"$''']
+
+# Local-only files that are never committed (gitignored) but sit in a
+# checkout: a global path list, so these files are not scanned at all. The
+# committed environment templates (.env.example, .env.development, .env.test,
+# .env.production) are NOT listed: they are scanned like any other file and
+# hold placeholders only. The local files the root .gitignore keeps out are
+# `.env`, `.env.local` and `.env.<name>.local`.
+[[allowlists]]
+description = "untracked local state and build output"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.next/''',
+  '''(^|/)dist/''',
+  '''apps/api/load/\.state\.json$''',
+  '''apps/api/load/\.business-day\.state\.json$''',
+  '''apps/api/load/\.business-day-run/''',
+  '''apps/api/load/reports/''',
+  '''^apps/web/(test-results|playwright-report)[^/]*/''',
+  '''(^|/)\.env$''',
+  '''(^|/)\.env\.local$''',
+  '''(^|/)\.env\.[^/]+\.local$''',
+]

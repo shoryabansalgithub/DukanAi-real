@@ -1,0 +1,24 @@
+# kubectl apply -k deploy/k8s   (after: cp dukaanai-secrets.env.example
+# common/dukaanai-secrets.env and editing it, the hosts in configmap.yaml /
+# ingress.yaml, and newTag in common/kustomization.yaml to the release to
+# run). README.md.
+#
+# The application only. The release step (`prisma migrate deploy`) is its own
+# kustomization, deploy/k8s/migrate, applied and waited for BEFORE this one
+# (audit 2026-10-11, P1-16: with the Job in this list, `kubectl apply -k`
+# rolled the new API while the migration had not run, and the documented
+# delete-and-re-apply could delete a Job in the middle of its DDL). Both
+# share ../common: the namespace, the Secret and the one release tag.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dukaanai
+resources:
+  - configmap.yaml
+  - pvc.yaml
+  - deployment-api.yaml
+  - deployment-web.yaml
+  - services.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+components:
+  - common

@@ -1,0 +1,46 @@
+# Blackbox exporter modules (roadmap 9.10): the uptime probes Prometheus runs
+# every minute against the readiness route and the login page
+# (deploy/prometheus/prometheus.yml, job blackbox-http). Inside the stack
+# they hit the containers; the public hostnames through the edge are listed
+# there as well. An EXTERNAL checker (another network, another provider) is
+# still required and set up by hand: docs/OBSERVABILITY.md, "Uptime checks".
+modules:
+  http_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      valid_status_codes: [200]
+      fail_if_ssl: false
+      fail_if_not_ssl: false
+  # The login page must render the DukaanAI sign-in, not a bare 200 from a
+  # misrouted edge.
+  http_login_page:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: true
+      valid_status_codes: [200]
+      fail_if_body_not_matches_regexp:
+        - "DukaanAI"
+  # The certificate an address serves, read whether or not it verifies (job
+  # blackbox-tls; roadmap 9.18). The probes above stop reporting a
+  # certificate the moment it expires, so an expiry alert built on them
+  # resolves when the certificate lapses and nothing names the cause; the
+  # certificate drill showed it. The answer itself does not matter here: the
+  # alerts read probe_ssl_earliest_cert_expiry, never this module's
+  # probe_success, and nothing is trusted from a connection it makes.
+  tls_certificate:
+    prober: http
+    timeout: 10s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
+      fail_if_not_ssl: true
+      tls_config:
+        insecure_skip_verify: true

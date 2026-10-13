@@ -8,7 +8,9 @@ import { SafeUserDto } from '../../users/dto/safe-user.dto';
 interface RequestWithUserAndCorrelation {
   user?: SafeUserDto;
   headers: Record<string, string>;
-  correlationId?: string; // Set by earlier middleware if it exists
+  /** Settled by CorrelationIdMiddleware (sanitised); never read the raw header here. */
+  correlationId?: string;
+  requestId?: string;
 }
 
 @Injectable()
@@ -23,9 +25,10 @@ export class TenantContextInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest<RequestWithUserAndCorrelation>();
     const user = request.user;
     
-    // In many enterprise systems, the correlation ID is passed via headers (e.g. x-correlation-id)
-    const correlationId = request.headers['x-correlation-id'] || request.correlationId || crypto.randomUUID();
-    const requestId = request.headers['x-request-id'] || crypto.randomUUID();
+    // CorrelationIdMiddleware validated the client's values; the raw headers
+    // must not win over them (they may be too long or unsafe to log).
+    const correlationId = request.correlationId ?? crypto.randomUUID();
+    const requestId = request.requestId ?? crypto.randomUUID();
 
     const tenantContext: TenantContext = {
       correlationId: correlationId as string,

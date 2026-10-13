@@ -1,0 +1,28 @@
+# What the application (deploy/k8s) and the release step (deploy/k8s/migrate)
+# share, so the two kustomizations always agree: the namespace, the
+# `dukaanai-secrets` Secret (generated from dukaanai-secrets.env in this
+# directory, copied from ../dukaanai-secrets.env.example; a change makes a new
+# hashed name and rolls the deployments) and THE release tag (newTag below,
+# one place for every image: the migration Job runs the API image of the
+# release it migrates for). README.md, "Release".
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - namespace.yaml
+secretGenerator:
+  - name: dukaanai-secrets
+    envs: [dukaanai-secrets.env]
+# The images are the ones the release workflow pushed
+# (.github/workflows/release.yml): one build per commit, promoted by tag
+# (v<version>, or sha-<commit> from main; docs/STAGING.md). Nothing is built
+# here. Set newTag to the release to run, for all three.
+images:
+  - name: dukaanai-api
+    newName: ghcr.io/shoryabansalgithub/dukaanai-api
+    newTag: sha-0000000
+  - name: dukaanai-web
+    newName: ghcr.io/shoryabansalgithub/dukaanai-web
+    newTag: sha-0000000
+  - name: dukaanai-db-ops
+    newName: ghcr.io/shoryabansalgithub/dukaanai-db-ops
+    newTag: sha-0000000

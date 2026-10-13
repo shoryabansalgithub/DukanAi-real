@@ -1,0 +1,13 @@
+# Playwright output (apps/web/playwright.config.ts)
+/test-results/
+/playwright-report/
+/test-results-auth/
+/playwright-report-auth/
+/test-results-business-day/
+/test-results-drills/
+
+# Written by `next dev` / `next build` / `next typegen` on every run (the dev
+# and build type paths differ), so a tracked copy changed with every dev
+# start. Generated, never committed; `tsc` passes without it and `next
+# build` writes it before its own type check.
+/next-env.d.ts

@@ -1,0 +1,34 @@
+# The backup kinds the REFERENCE topology runs (docker-compose.yml, the drill
+# stack): the nightly dump, the documents archive and the off-site copy, and
+# the 5-minute binary-log archive (the binlog-archiver service; point in time
+# is ours to keep, docs/DATA_SAFETY.md). DukaanAiBackupNeverRecorded fires for
+# every kind recorded here that has no backup_last_success_timestamp_seconds
+# series (deploy/prometheus/alerts.yml).
+#
+# One file per topology (audit 2026-10-11, R12: the production topology has
+# no binary-log archiver, so a fixed list paged for ever). render.sh loads the
+# one PROMETHEUS_TOPOLOGY names; a Prometheus of your own loads exactly one of
+# them next to alerts.yml. Validate: promtool check rules <file>.
+groups:
+  - name: dukaanai-topology
+    rules:
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: dump
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: binlog
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: documents
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: offsite

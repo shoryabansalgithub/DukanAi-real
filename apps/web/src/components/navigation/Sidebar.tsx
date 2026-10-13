@@ -1,99 +1,101 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import {
   LayoutDashboard, ShoppingCart, PackageSearch, UserCheck, Users,
-  ClipboardList, Receipt, UserCircle, BarChart3, Bot, Bell,
-  Settings, Database, ChevronDown, Sparkles, ShoppingBag, Menu, X,
-  ScanLine, Camera, SlidersHorizontal, ArrowUp, ArrowDown, GripVertical, CheckCircle2
+  ClipboardList, Receipt, UserCircle, BarChart3, Bell,
+  Settings, Sparkles, ShoppingBag, Menu, X,
+  ScanLine, Camera, CheckCircle2, FileText, Clock,
 } from 'lucide-react';
 import { clsx } from '@/lib/utils';
 import { useAppStore } from '@/store';
 import { Modal } from '@/components/ui/Modal';
-import { useToast } from '@/components/ui/Toast';
+import { canSeeFinancials, canUsePos, isManagement } from '@/components/customers/permissions';
 
-const defaultNavigation = [
+interface NavItem {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ size?: number | string; className?: string }>;
+  badge?: string;
+  badgeColor?: string;
+  /** Kept below the scrolling list, so it is on screen at every window height. */
+  pinned?: boolean;
+  /** Shown only to the roles the page's API accepts (audit W12); absent = every signed-in role. */
+  allowed?: (role: string | null | undefined) => boolean;
+}
+
+const navigation: NavItem[] = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Billing (POS)', href: '/billing', icon: ShoppingCart },
+  { name: 'Billing (POS)', href: '/billing', icon: ShoppingCart, allowed: canUsePos },
+  { name: 'Invoices', href: '/invoices', icon: FileText },
+  { name: 'Shifts', href: '/shifts', icon: Clock },
   { name: 'Products / Stock', href: '/products', icon: PackageSearch },
-  { name: 'Customers (Udhar)', href: '/customers', icon: UserCheck, badge: 'New', badgeColor: 'bg-[#8B5CF6]' },
-  { name: 'AI OCR Scanner', href: '/ai-scanner', icon: ScanLine, badge: 'Magic', badgeColor: 'bg-green-500' },
+  { name: 'Customers (Udhar)', href: '/customers', icon: UserCheck },
+  { name: 'AI OCR Scanner', href: '/ai-scanner', icon: ScanLine, badge: 'Magic', badgeColor: 'bg-green-500', allowed: isManagement },
   { name: 'Smart Bill Capture', href: '/smart-capture', icon: Camera, badge: 'Mobile', badgeColor: 'bg-blue-500' },
-  { name: 'Suppliers', href: '/suppliers', icon: Users },
+  { name: 'Suppliers', href: '/suppliers', icon: Users, allowed: canSeeFinancials },
   { name: 'Inventory', href: '/inventory', icon: ClipboardList },
-  { name: 'Expenses', href: '/expenses', icon: Receipt },
-  { name: 'Employees', href: '/employees', icon: UserCircle },
-  { name: 'Reports & Analytics', href: '/analytics', icon: BarChart3 },
-  { name: 'AI Assistant', href: '/ai-assistant', icon: Bot, badge: 'Beta', badgeColor: 'bg-[#8B5CF6]' },
-  { name: 'Notifications', href: '/notifications', icon: Bell, badge: '6', badgeColor: 'bg-red-500' },
-  { name: 'Settings', href: '/settings', icon: Settings },
+  { name: 'Expenses', href: '/expenses', icon: Receipt, allowed: canSeeFinancials },
+  { name: 'Employees', href: '/employees', icon: UserCircle, allowed: isManagement },
+  { name: 'Reports & Analytics', href: '/analytics', icon: BarChart3, allowed: canSeeFinancials },
+  { name: 'Notifications', href: '/notifications', icon: Bell, pinned: true },
+  { name: 'Settings', href: '/settings', icon: Settings, pinned: true },
 ];
+
+function isActivePath(pathname: string, href: string): boolean {
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: session, status } = useSession();
+  const role = session?.user?.role;
+  // Until the session is read every link shows, so an owner's menu never flickers.
+  const shows = (item: NavItem) => status === 'loading' || !item.allowed || item.allowed(role);
   const { sidebarOpen, toggleSidebar } = useAppStore();
-  
-  const [navItems, setNavItems] = useState(defaultNavigation);
-  const [isEditMode] = useState(false);
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
-  const { toast } = useToast();
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const savedOrder = localStorage.getItem('sidebar_order');
-      if (savedOrder) {
-        try {
-          const hrefOrder: string[] = JSON.parse(savedOrder);
-          const sorted = [...defaultNavigation].sort((a, b) => {
-            const indexA = hrefOrder.indexOf(a.href);
-            const indexB = hrefOrder.indexOf(b.href);
-            // Items not in saved order go to the bottom
-            if (indexA === -1 && indexB === -1) return 0;
-            if (indexA === -1) return 1;
-            if (indexB === -1) return -1;
-            return indexA - indexB;
-          });
-          setNavItems(sorted);
-        } catch (e) {
-          console.error('Failed to parse sidebar order', e);
-        }
-      }
-    }
-  }, []);
-
-  const saveOrder = (items: typeof defaultNavigation) => {
-    setNavItems(items);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('sidebar_order', JSON.stringify(items.map(item => item.href)));
-    }
-  };
-
-  const moveUp = (e: React.MouseEvent, index: number) => {
-    e.preventDefault();
-    if (index === 0) return;
-    const newItems = [...navItems];
-    const temp = newItems[index];
-    newItems[index] = newItems[index - 1];
-    newItems[index - 1] = temp;
-    saveOrder(newItems);
-  };
-
-  const moveDown = (e: React.MouseEvent, index: number) => {
-    e.preventDefault();
-    if (index === navItems.length - 1) return;
-    const newItems = [...navItems];
-    const temp = newItems[index];
-    newItems[index] = newItems[index + 1];
-    newItems[index + 1] = temp;
-    saveOrder(newItems);
+  const renderLink = (item: NavItem) => {
+    const Icon = item.icon;
+    const isActive = isActivePath(pathname, item.href);
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        aria-current={isActive ? 'page' : undefined}
+        onClick={() => {
+          if (window.innerWidth < 768) toggleSidebar();
+        }}
+        className={clsx(
+          'flex items-center justify-between px-3 py-2.5 rounded-xl transition-all duration-200 group text-sm font-medium',
+          isActive
+            ? 'bg-[#8B5CF6] text-white shadow-[0_4px_15px_rgba(139,92,246,0.4)]'
+            : 'text-gray-400 hover:text-white hover:bg-white/5'
+        )}
+      >
+        <div className="flex items-center gap-3">
+          <Icon size={18} className={clsx(isActive ? 'text-white' : 'text-gray-400 group-hover:text-white')} />
+          <span>{item.name}</span>
+        </div>
+        {item.badge && (
+          <span className={clsx('text-[10px] px-1.5 py-0.5 rounded-md text-white font-bold', item.badgeColor)}>
+            {item.badge}
+          </span>
+        )}
+      </Link>
+    );
   };
 
   return (
     <>
       <button
+        type="button"
         onClick={toggleSidebar}
+        aria-label={sidebarOpen ? 'Close menu' : 'Open menu'}
+        aria-expanded={sidebarOpen}
         className="md:hidden fixed top-4 left-4 z-50 p-2 rounded-lg bg-[#8B5CF6] text-white shadow-lg"
       >
         {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
@@ -113,7 +115,7 @@ export function Sidebar() {
         )}
       >
         {/* Logo */}
-        <div className="p-6">
+        <div className="p-6 [@media(max-height:640px)]:py-3">
           <Link href="/" className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-[#8B5CF6] shadow-[0_0_15px_rgba(139,92,246,0.5)]">
               <ShoppingBag size={24} strokeWidth={2.5} />
@@ -125,120 +127,45 @@ export function Sidebar() {
           </Link>
         </div>
 
-        {/* Menu Header with Edit Button */}
-        <div className="px-6 flex items-center justify-between mb-2">
+        <div className="px-6 mb-2">
           <span className="text-[10px] uppercase font-bold tracking-wider text-gray-500">Main Menu</span>
-          <button 
-            onClick={() => toast('Menu customisation coming soon in Pro version', 'info')}
-            className="p-1.5 rounded-lg transition-colors flex items-center gap-1 text-xs text-gray-500 hover:text-white hover:bg-white/10"
-            title="Reorder Menu Items"
-          >
-            <SlidersHorizontal size={12} />
-            Edit
-          </button>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto px-4 pb-4 space-y-1 scrollbar-hide">
-          {navItems.map((item, index) => {
-            const Icon = item.icon;
-            const isActive = pathname === item.href && !isEditMode;
-            return (
-              <div key={item.href} className="relative group/item flex items-center">
-                <Link
-                  href={isEditMode ? '#' : item.href}
-                  onClick={(e) => {
-                    if (isEditMode) e.preventDefault();
-                    if (!isEditMode && window.innerWidth < 768) toggleSidebar();
-                  }}
-                  className={clsx(
-                    'flex-1 flex items-center justify-between px-3 py-2.5 rounded-xl transition-all duration-200 group text-sm font-medium',
-                    isActive
-                      ? 'bg-[#8B5CF6] text-white shadow-[0_4px_15px_rgba(139,92,246,0.4)]'
-                      : isEditMode 
-                        ? 'border border-dashed border-gray-600/50 bg-black/20 text-gray-300'
-                        : 'text-gray-400 hover:text-white hover:bg-white/5'
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    {isEditMode ? (
-                      <GripVertical size={14} className="text-gray-600" />
-                    ) : (
-                      <Icon size={18} className={clsx(isActive ? 'text-white' : 'text-gray-400 group-hover:text-white')} />
-                    )}
-                    <span>{item.name}</span>
-                  </div>
-                  {!isEditMode && item.badge && (
-                    <span className={clsx('text-[10px] px-1.5 py-0.5 rounded-md text-white font-bold', item.badgeColor)}>
-                      {item.badge}
-                    </span>
-                  )}
-                </Link>
-
-                {/* Edit Mode Reorder Buttons */}
-                {isEditMode && (
-                  <div className="absolute right-2 flex flex-col gap-1">
-                    <button 
-                      onClick={(e) => moveUp(e, index)}
-                      disabled={index === 0}
-                      className="p-1 text-gray-500 hover:text-white disabled:opacity-30 transition-colors"
-                    >
-                      <ArrowUp size={12} />
-                    </button>
-                    <button 
-                      onClick={(e) => moveDown(e, index)}
-                      disabled={index === navItems.length - 1}
-                      className="p-1 text-gray-500 hover:text-white disabled:opacity-30 transition-colors"
-                    >
-                      <ArrowDown size={12} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Database Manager Accordion */}
-          <div className="pt-4 mt-4 border-t border-white/5">
-            <button className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium text-gray-400 hover:text-white hover:bg-white/5 transition-all">
-              <div className="flex items-center gap-3">
-                <Database size={18} />
-                <span>Database Manager</span>
-              </div>
-              <ChevronDown size={16} />
-            </button>
-            <div className="pl-11 pr-3 pt-1 pb-2 space-y-2">
-              <Link href="/database/products" className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors">
-                <div className="w-4 h-4 border border-gray-500 rounded flex items-center justify-center"><PackageSearch size={10} /></div>
-                Products DB
-              </Link>
-              <Link href="/database/customers" className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors">
-                <div className="w-4 h-4 border border-gray-500 rounded flex items-center justify-center"><Users size={10} /></div>
-                Customers DB
-              </Link>
-            </div>
+        {/* Navigation: the list scrolls (with a visible scrollbar), Notifications and
+            Settings stay pinned under it, so a laptop or phone never hides them
+            below the Upgrade card (release audit 2026-10-12). */}
+        <nav className="flex-1 min-h-0 flex flex-col" aria-label="Main">
+          <div className="sidebar-scroll flex-1 min-h-[6rem] overflow-y-auto px-4 pb-2 space-y-1">
+            {navigation.filter((item) => !item.pinned && shows(item)).map(renderLink)}
+          </div>
+          <div className="px-4 pt-2 space-y-1 border-t border-white/5">
+            {navigation.filter((item) => item.pinned && shows(item)).map(renderLink)}
           </div>
         </nav>
 
-        {/* Upgrade to Pro */}
-        <div className="p-4 mt-auto">
-          <div className="bg-gradient-to-br from-[#1E1B4B] to-[#2E1065] p-4 rounded-2xl border border-white/5 shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-2 opacity-20">
+        {/* Upgrade to Pro: on a short window (a laptop, a phone on its side) the
+            card keeps its title and button and drops the description, and below
+            640 px it is the button alone, so the menu above keeps its room. */}
+        <div className="px-4 pb-4 pt-3 [@media(max-height:640px)]:pb-2 [@media(max-height:640px)]:pt-2">
+          <div className="bg-gradient-to-br from-[#1E1B4B] to-[#2E1065] p-4 [@media(max-height:820px)]:p-3 [@media(max-height:640px)]:p-2 rounded-2xl border border-white/5 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-2 opacity-20 [@media(max-height:820px)]:hidden">
               <Sparkles size={40} className="text-white" />
             </div>
-            <h4 className="text-white font-bold text-sm flex items-center gap-2 mb-2">
+            <h4 className="text-white font-bold text-sm flex items-center gap-2 mb-2 [@media(max-height:640px)]:hidden">
               <div className="w-6 h-6 rounded-full bg-yellow-500/20 flex items-center justify-center">
                 <Sparkles size={12} className="text-yellow-500" />
               </div>
               Upgrade to Pro <span className="text-yellow-500">✨</span>
             </h4>
-            <p className="text-[11px] text-gray-300 mb-4 leading-tight">
+            <p className="text-[11px] text-gray-300 mb-4 leading-tight [@media(max-height:820px)]:hidden">
               Unlock advanced AI insights, cloud backup & more.
             </p>
-            <button 
+            <button
+              type="button"
               onClick={() => setIsUpgradeModalOpen(true)}
-              className="w-full bg-[#8B5CF6] hover:bg-[#7C3AED] text-white text-xs font-bold py-2.5 rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-purple-500/30">
-              Upgrade Now &rarr;
+              className="w-full bg-[#8B5CF6] hover:bg-[#7C3AED] text-white text-xs font-bold py-2.5 [@media(max-height:820px)]:py-2 rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg shadow-purple-500/30">
+              <span className="[@media(max-height:640px)]:hidden">Upgrade Now &rarr;</span>
+              <span className="hidden [@media(max-height:640px)]:inline">Upgrade to Pro ✨</span>
             </button>
           </div>
         </div>
@@ -249,30 +176,30 @@ export function Sidebar() {
           <div className="grid grid-cols-2 gap-4">
             <div className="border border-purple-200 dark:border-purple-900/50 bg-purple-50/50 dark:bg-purple-900/10 rounded-xl p-5 relative overflow-hidden text-center cursor-pointer hover:border-purple-500 transition-colors group">
               <div className="absolute top-0 left-0 right-0 h-1 bg-purple-500" />
-              <h4 className="font-bold text-gray-900 dark:text-white text-lg">Monthly</h4>
+              <h4 className="font-bold text-gray-900 text-lg">Monthly</h4>
               <p className="text-3xl font-bold text-purple-600 mt-2 mb-1">₹499<span className="text-sm text-gray-500 font-medium">/mo</span></p>
               <p className="text-xs text-gray-500">Billed monthly</p>
             </div>
             <div className="border-2 border-purple-600 bg-purple-50 dark:bg-purple-900/20 rounded-xl p-5 relative overflow-hidden text-center cursor-pointer shadow-lg shadow-purple-500/10">
               <div className="absolute top-0 right-0 bg-purple-600 text-white text-[10px] font-bold px-2 py-1 rounded-bl-lg uppercase tracking-wider">Save 20%</div>
-              <h4 className="font-bold text-gray-900 dark:text-white text-lg">Annual</h4>
+              <h4 className="font-bold text-gray-900 text-lg">Annual</h4>
               <p className="text-3xl font-bold text-purple-600 mt-2 mb-1">₹399<span className="text-sm text-gray-500 font-medium">/mo</span></p>
               <p className="text-xs text-purple-600 font-medium">Billed ₹4,788 yearly</p>
             </div>
           </div>
-          
+
           <div>
-            <h4 className="font-bold text-sm text-gray-900 dark:text-white mb-3">Pro Features Include:</h4>
+            <h4 className="font-bold text-sm text-gray-900 mb-3">Pro Features Include:</h4>
             <div className="grid grid-cols-2 gap-3">
               {[
-                "Advanced AI Insights & Analytics",
-                "Automated Cloud Backup",
-                "AI Voice Billing (Unlimited)",
-                "Multi-shop Management",
-                "Priority 24/7 Support",
-                "Custom Invoice Templates"
-              ].map((feat, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                'Advanced AI Insights & Analytics',
+                'Automated Cloud Backup',
+                'Multi-shop Management',
+                'Priority 24/7 Support',
+                'Custom Invoice Templates',
+                'Scheduled Reports',
+              ].map((feat) => (
+                <div key={feat} className="flex items-center gap-2 text-sm text-gray-600">
                   <CheckCircle2 size={16} className="text-green-500 shrink-0" />
                   {feat}
                 </div>
@@ -280,12 +207,10 @@ export function Sidebar() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-3 pt-4 border-t border-gray-100 dark:border-gray-800">
-            <button className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-xl transition-colors shadow-lg shadow-purple-500/20">
-              Start 7-day Free Trial
-            </button>
-            <button onClick={() => setIsUpgradeModalOpen(false)} className="text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 text-center font-medium">
-              Maybe later
+          <div className="flex flex-col gap-3 pt-4 border-t border-gray-100">
+            <p className="text-center text-xs text-gray-500">Plans are not purchasable in-app yet. Contact support to upgrade.</p>
+            <button type="button" onClick={() => setIsUpgradeModalOpen(false)} className="text-sm text-gray-500 hover:text-gray-700 text-center font-medium">
+              Close
             </button>
           </div>
         </div>

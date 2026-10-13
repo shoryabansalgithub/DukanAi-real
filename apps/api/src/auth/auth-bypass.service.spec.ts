@@ -30,6 +30,18 @@ describe('AuthBypassService', () => {
     return { service, prisma };
   }
 
+  describe('isEnabled — never in production', () => {
+    it('stays false under NODE_ENV=production even when the config says true', () => {
+      const previous = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        expect(build(true).service.isEnabled).toBe(false);
+      } finally {
+        process.env.NODE_ENV = previous;
+      }
+    });
+  });
+
   describe('isEnabled — secure by default', () => {
     it('is disabled when the flag is unset', () => {
       expect(build(undefined).service.isEnabled).toBe(false);
