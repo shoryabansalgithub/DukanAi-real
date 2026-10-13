@@ -15,6 +15,7 @@ import { PaymentModesCard } from '@/components/dashboard/PaymentModesCard';
 import { QuickActionsCard } from '@/components/dashboard/QuickActionsCard';
 import { LowStockCard } from '@/components/dashboard/LowStockCard';
 import { AiInsightsCard } from '@/components/dashboard/AiInsightsCard';
+import { CreateBillCard } from '@/components/dashboard/create-bill/CreateBillCard';
 import { StaleBadge } from '@/components/dashboard/CardStates';
 import { useVisibilityPolling } from '@/components/dashboard/useVisibilityPolling';
 import { useDashboardResource } from '@/components/dashboard/useDashboardResource';
@@ -138,6 +139,8 @@ export default function DashboardPage() {
           retrying={summary.loading}
         />
       )}
+
+      <CreateBillCard />
 
       {/* Today */}
       <div className={`grid grid-cols-2 gap-4 ${shows('todayProfit') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
