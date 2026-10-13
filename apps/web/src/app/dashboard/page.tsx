@@ -8,6 +8,7 @@ import {
 import { analyticsApi, type DashboardSummarySection } from '@/lib/api-client';
 import { SummaryStatCard } from '@/components/dashboard/SummaryStatCard';
 import { ShiftCard } from '@/components/dashboard/ShiftCard';
+import { TodaySalesDialog } from '@/components/dashboard/TodaySalesDialog';
 import { RecentInvoicesCard } from '@/components/dashboard/RecentInvoicesCard';
 import { KpiStrip } from '@/components/dashboard/KpiStrip';
 import { SalesTrendCard } from '@/components/dashboard/SalesTrendCard';
@@ -30,6 +31,7 @@ const count = (value: number | null | undefined) => (value === null || value ===
 export default function DashboardPage() {
   const [trendDays, setTrendDays] = useState(7);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [salesOpen, setSalesOpen] = useState(false);
 
   const fetchSummary = useCallback(() => analyticsApi.dashboardSummary(), []);
   const fetchKpis = useCallback(() => analyticsApi.kpis(), []);
@@ -147,6 +149,7 @@ export default function DashboardPage() {
           label="Today's sales (net)"
           value={money(s?.todaySales)}
           hint={s && s.todayGrossSales !== null ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns ?? 0)}` : undefined}
+          onClick={() => setSalesOpen(true)}
           {...tile('today')}
         />
         {shows('todayProfit') && (
@@ -193,6 +196,8 @@ export default function DashboardPage() {
           {...tile('stock')}
         />
       </div>
+
+      <TodaySalesDialog open={salesOpen} onClose={() => setSalesOpen(false)} summary={s} />
 
       {/* All time */}
       <div className={`grid grid-cols-2 gap-4 ${shows('inventoryValue') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
