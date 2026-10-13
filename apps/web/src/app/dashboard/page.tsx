@@ -139,115 +139,125 @@ export default function DashboardPage() {
         />
       )}
 
-      {/* Today */}
-      <div className={`grid grid-cols-2 gap-4 ${shows('todayProfit') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
-        <SummaryStatCard
-          icon={<TrendingUp size={24} />}
-          tone="bg-[#8B5CF6]/10 text-[#8B5CF6]"
-          label="Today's sales (net)"
-          value={money(s?.todaySales)}
-          hint={s && s.todayGrossSales !== null ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns ?? 0)}` : undefined}
-          {...tile('today')}
-        />
-        {shows('todayProfit') && (
+      <div className="max-md:grid max-md:auto-rows-fr max-md:grid-cols-2 max-md:gap-4 md:space-y-6">
+        {/* Today */}
+        <div className={`grid gap-4 max-md:contents ${shows('todayProfit') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
           <SummaryStatCard
-            icon={<ShoppingBag size={24} />}
-            tone="bg-green-500/10 text-green-500"
-            label="Today's gross profit"
-            value={money(s?.todayProfit)}
-            hint="Sales − cost of goods, after returns"
-            {...tile('todayProfit')}
+            icon={<TrendingUp size={24} />}
+            tone="bg-[#8B5CF6]/10 text-[#8B5CF6]"
+            className="max-md:hidden"
+            label="Today's sales (net)"
+            value={money(s?.todaySales)}
+            hint={s && s.todayGrossSales !== null ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns ?? 0)}` : undefined}
+            {...tile('today')}
           />
-        )}
-        <SummaryStatCard
-          icon={<FileText size={24} />}
-          tone="bg-blue-500/10 text-blue-500"
-          label="Today's orders"
-          value={count(s?.todayOrders)}
-          hint={s && s.todayReturnCount !== null ? `${formatCount(s.todayReturnCount)} return${s.todayReturnCount === 1 ? '' : 's'}` : undefined}
-          href="/invoices"
-          {...tile('today')}
-        />
-        <SummaryStatCard
-          icon={<Users size={24} />}
-          tone="bg-orange-500/10 text-orange-500"
-          label="Outstanding udhar"
-          value={money(s?.outstandingUdhar)}
-          hint="Across all customers"
-          href="/customers"
-          {...tile('udhar')}
-        />
-        <SummaryStatCard
-          icon={<Package size={24} />}
-          tone="bg-amber-500/10 text-amber-500"
-          label="Low & out of stock"
-          value={
-            s && s.lowStockCount !== null && s.outOfStockCount !== null ? (
-              <>
-                {formatCount(s.lowStockCount)} <span className="text-sm text-red-500">/ {formatCount(s.outOfStockCount)}</span>
-              </>
-            ) : ''
-          }
-          hint="Low / out of stock"
-          href="/inventory?tab=low-stock"
-          {...tile('stock')}
-        />
-      </div>
+          {shows('todayProfit') && (
+            <SummaryStatCard
+              icon={<ShoppingBag size={24} />}
+              tone="bg-green-500/10 text-green-500"
+              className="max-md:hidden"
+              label="Today's gross profit"
+              value={money(s?.todayProfit)}
+              hint="Sales − cost of goods, after returns"
+              {...tile('todayProfit')}
+            />
+          )}
+          <SummaryStatCard
+            icon={<FileText size={24} />}
+            tone="bg-blue-500/10 text-blue-500"
+            className="max-md:hidden"
+            label="Today's orders"
+            value={count(s?.todayOrders)}
+            hint={s && s.todayReturnCount !== null ? `${formatCount(s.todayReturnCount)} return${s.todayReturnCount === 1 ? '' : 's'}` : undefined}
+            href="/invoices"
+            {...tile('today')}
+          />
+          <SummaryStatCard
+            icon={<Users size={24} />}
+            tone="bg-orange-500/10 text-orange-500"
+            label="Outstanding udhar"
+            value={money(s?.outstandingUdhar)}
+            hint="Across all customers"
+            href="/customers"
+            {...tile('udhar')}
+          />
+          <SummaryStatCard
+            icon={<Package size={24} />}
+            tone="bg-amber-500/10 text-amber-500"
+            className="max-md:hidden"
+            label="Low & out of stock"
+            value={
+              s && s.lowStockCount !== null && s.outOfStockCount !== null ? (
+                <>
+                  {formatCount(s.lowStockCount)} <span className="text-sm text-red-500">/ {formatCount(s.outOfStockCount)}</span>
+                </>
+              ) : ''
+            }
+            hint="Low / out of stock"
+            href="/inventory?tab=low-stock"
+            {...tile('stock')}
+          />
+        </div>
 
-      {/* All time */}
-      <div className={`grid grid-cols-2 gap-4 ${shows('inventoryValue') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
-        <SummaryStatCard
-          icon={<Wallet size={24} />}
-          tone="bg-emerald-500/10 text-emerald-500"
-          label="Total revenue"
-          value={money(s?.totalRevenue)}
-          hint="Net, all time"
-          {...tile('allTime')}
-        />
-        <SummaryStatCard
-          icon={<FileText size={24} />}
-          tone="bg-indigo-500/10 text-indigo-500"
-          label="Total invoices"
-          value={count(s?.totalOrders)}
-          hint="Sales, all time"
-          href="/invoices"
-          {...tile('allTime')}
-        />
-        <SummaryStatCard
-          icon={<Users size={24} />}
-          tone="bg-teal-500/10 text-teal-500"
-          label="Total customers"
-          value={count(s?.totalCustomers)}
-          hint="Registered"
-          href="/customers"
-          {...tile('customers')}
-        />
-        <SummaryStatCard
-          icon={<Package size={24} />}
-          tone="bg-rose-500/10 text-rose-500"
-          label="Total products"
-          value={count(s?.totalProducts)}
-          hint="Catalog size"
-          href="/products"
-          {...tile('products')}
-        />
-        {shows('inventoryValue') && (
+        {/* All time */}
+        <div className={`grid gap-4 max-md:contents ${shows('inventoryValue') ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
           <SummaryStatCard
-            icon={<Database size={24} />}
-            tone="bg-cyan-500/10 text-cyan-500"
-            label="Inventory value"
-            value={money(s?.inventoryValue)}
-            hint="Current stock at cost"
-            href="/inventory"
-            {...tile('inventoryValue')}
+            icon={<Wallet size={24} />}
+            tone="bg-emerald-500/10 text-emerald-500"
+            className="max-md:order-first"
+            label="Total revenue"
+            value={money(s?.totalRevenue)}
+            hint="Net, all time"
+            {...tile('allTime')}
           />
-        )}
+          <SummaryStatCard
+            icon={<FileText size={24} />}
+            tone="bg-indigo-500/10 text-indigo-500"
+            className="max-md:order-first"
+            label="Total invoices"
+            value={count(s?.totalOrders)}
+            hint="Sales, all time"
+            href="/invoices"
+            {...tile('allTime')}
+          />
+          <SummaryStatCard
+            icon={<Users size={24} />}
+            tone="bg-teal-500/10 text-teal-500"
+            label="Total customers"
+            value={count(s?.totalCustomers)}
+            hint="Registered"
+            href="/customers"
+            {...tile('customers')}
+          />
+          <SummaryStatCard
+            icon={<Package size={24} />}
+            tone="bg-rose-500/10 text-rose-500"
+            className="max-md:hidden"
+            label="Total products"
+            value={count(s?.totalProducts)}
+            hint="Catalog size"
+            href="/products"
+            {...tile('products')}
+          />
+          {shows('inventoryValue') && (
+            <SummaryStatCard
+              icon={<Database size={24} />}
+              tone="bg-cyan-500/10 text-cyan-500"
+              className="max-md:hidden"
+              label="Inventory value"
+              value={money(s?.inventoryValue)}
+              hint="Current stock at cost"
+              href="/inventory"
+              {...tile('inventoryValue')}
+            />
+          )}
+        </div>
       </div>
 
       {/* Trend + quick actions + shift */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <SalesTrendCard
-          className="lg:col-span-6"
+          className="max-md:hidden lg:col-span-6"
           trend={trend.data}
           loading={trend.loading}
           error={trend.error}
@@ -262,7 +272,7 @@ export default function DashboardPage() {
       {/* AI insights + low stock */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <AiInsightsCard
-          className="lg:col-span-2"
+          className="max-md:hidden lg:col-span-2"
           insights={insights.data}
           loading={insights.loading}
           error={insights.error}
@@ -277,7 +287,7 @@ export default function DashboardPage() {
       </div>
 
       {/* KPIs + payment modes + recent invoices */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 max-md:hidden">
         <KpiStrip kpis={kpis.data} loading={kpis.loading} error={kpis.error} onRetry={() => void loadKpis({ force: true })} />
         <PaymentModesCard paymentModes={s?.paymentModes ?? []} {...card('paymentModes')} />
         <RecentInvoicesCard
