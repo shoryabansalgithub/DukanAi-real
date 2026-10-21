@@ -1,0 +1,60 @@
+# promtool unit tests for the backup alerts on the PRODUCTION topology
+# (docker-compose.prod.yml, deploy/k8s): the backup agent runs the dump, the
+# documents archive and the off-site copy, and there is no binary-log
+# archiver (audit 2026-10-11, R12: DukaanAiBackupNeverRecorded used to fire
+# for ever there). CI runs it with alerts.test.yml:
+#   promtool test rules deploy/prometheus/alerts.test.yml deploy/prometheus/alerts.production.test.yml
+rule_files:
+  - alerts.yml
+  - topology/production.rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Every kind the production topology runs is recorded: nothing pages,
+  # although no binary-log stamp exists.
+  - interval: 1m
+    input_series:
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="dump"}'
+        values: '0+60x60'
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="documents"}'
+        values: '0+60x60'
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="offsite"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: DukaanAiBackupNeverRecorded
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: DukaanAiBackupStale
+        exp_alerts: []
+
+  # Only the dump has been recorded: the documents archive and the off-site
+  # copy page, the binary log (not run here) does not.
+  - interval: 1m
+    input_series:
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="dump"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DukaanAiBackupNeverRecorded
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: DukaanAiBackupNeverRecorded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: dukaanai-api
+              kind: documents
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
+              summary: "Backup job documents has never recorded a success"
+              description: "No backup_last_success_timestamp_seconds series for kind documents. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."
+          - exp_labels:
+              severity: warning
+              job: dukaanai-api
+              kind: offsite
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
+              summary: "Backup job offsite has never recorded a success"
+              description: "No backup_last_success_timestamp_seconds series for kind offsite. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."

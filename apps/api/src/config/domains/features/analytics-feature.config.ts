@@ -1,30 +1,37 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../../registry/registry.decorators';
-import { IsNumber, IsOptional } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { IsInt, Min } from 'class-validator';
+import { IntegerFromEnv } from '../../hydrate-from-env';
 
+/**
+ * Analytics list sizes. Hydrated with `hydrateFromEnv`: an unset or blank variable keeps the
+ * default, `0` is a value where the bound allows it, and anything that is not
+ * a number (or is out of bounds) fails boot.
+ */
 @Injectable()
-@ConfigDomain({ owner: 'Analytics', feature: 'Analytics Domain', version: '1.0.0', description: 'Configuration for Analytics Domain Features' })
+@ConfigDomain({ owner: 'Analytics', feature: 'Analytics Domain', version: '1.1.0', description: 'Configuration for Analytics Domain Features' })
 export class AnalyticsFeatureConfig {
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 12))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('ANALYTICS_TREND_ANALYSIS_LIMIT')
-  readonly trendAnalysisLimit: number = 12;
+  trendAnalysisLimit: number = 12;
 
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 20))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('ANALYTICS_RECENT_ORDERS_LIMIT')
-  readonly recentOrdersLimit: number = 20;
+  recentOrdersLimit: number = 20;
 
-  @IsOptional()
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 5))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('ANALYTICS_TOP_VENDORS_LIMIT')
   topVendorsLimit: number = 5;
 
-  @IsOptional()
-  @IsNumber()
-  @Transform(({ value }) => (value ? parseInt(value, 10) : 10))
+  @IsInt()
+  @Min(1)
+  @IntegerFromEnv()
   @EnvVariable('ANALYTICS_TOP_PRODUCTS_LIMIT')
   topProductsLimit: number = 10;
 }

@@ -3,6 +3,10 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AnalyticsRepository } from '../repositories/analytics.repository';
+import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
+import { jobContext, requireJobShop } from '../../iam/tenant-context/job-context';
+import { Clock } from '../../common/time/clock';
+import { purchaseBusinessDates } from '../analytics-dates';
 
 @Processor('purchase-analytics')
 export class AnalyticsProcessorService extends WorkerHost {
@@ -10,32 +14,39 @@ export class AnalyticsProcessorService extends WorkerHost {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly repository: AnalyticsRepository
+    private readonly repository: AnalyticsRepository,
+    private readonly tenantContext: TenantContextService,
+    private readonly clock: Clock,
   ) {
     super();
   }
 
+  /** Every aggregation runs in the shop's tenant context (roadmap 4.1, audit P2-5). */
   async process(job: Job<any, any, string>): Promise<any> {
     this.logger.debug(`Processing Analytics job ${job.id} of type ${job.name}`);
-    
-    switch (job.name) {
-      case 'aggregate-daily-dashboard':
-        return this.aggregateDailyDashboard(job.data.shopId);
-      case 'aggregate-vendor-performance':
-        return this.aggregateVendorPerformance(job.data.shopId);
-      case 'aggregate-category-spend':
-        return this.aggregateCategorySpend(job.data.shopId);
-      case 'aggregate-trends':
-        return this.aggregateTrends(job.data.shopId);
-      default:
-        this.logger.warn(`Unknown job type: ${job.name}`);
-    }
+    const shopId = requireJobShop(job.data, job.name);
+    return this.tenantContext.runWithContext(jobContext(shopId, job.id), () => {
+      switch (job.name) {
+        case 'aggregate-daily-dashboard':
+          return this.aggregateDailyDashboard(shopId);
+        case 'aggregate-vendor-performance':
+          return this.aggregateVendorPerformance(shopId);
+        case 'aggregate-category-spend':
+          return this.aggregateCategorySpend(shopId);
+        case 'aggregate-trends':
+          return this.aggregateTrends(shopId);
+        default:
+          this.logger.warn(`Unknown job type: ${job.name}`);
+          return undefined;
+      }
+    });
   }
 
   private async aggregateDailyDashboard(shopId: string) {
     this.logger.log(`Materializing daily analytics snapshot for Shop ${shopId}`);
-    
-    const today = new Date();
+
+    // The shop's business day, not the server's (release audit #26).
+    const { dateKey } = await purchaseBusinessDates(this.prisma, shopId, this.clock.now());
     
     const totalOrdersCount = await this.prisma.purchaseOrder.count({ where: { shopId } });
     const pendingOrdersCount = await this.prisma.purchaseOrder.count({ where: { shopId, status: 'SUBMITTED' } });
@@ -53,15 +64,17 @@ export class AnalyticsProcessorService extends WorkerHost {
       _sum: { outstandingAmount: true }
     });
     
-    // Compute exact Average Lead Time across all historical GRNs using PostgreSQL aggregation
-    const leadTimeRaw: any[] = await this.prisma.$queryRaw`
-      SELECT AVG(EXTRACT(EPOCH FROM ("receivedDate" - "createdAt")) / 86400) as avg_days 
-      FROM "GoodsReceipt" 
-      WHERE "shopId" = ${shopId} AND "status" = 'COMPLETED' AND "receivedDate" IS NOT NULL
+    // Average lead time (days from receipt creation to goods received) over
+    // accepted and completed receipts. MySQL syntax (roadmap 4.2): the former
+    // PostgreSQL query (EXTRACT(EPOCH ...), quoted identifiers) never ran here.
+    const leadTimeRaw: Array<{ avg_days: number | string | null }> = await this.prisma.$queryRaw`
+      SELECT AVG(TIMESTAMPDIFF(SECOND, createdAt, receivedDate) / 86400) AS avg_days
+      FROM GoodsReceipt
+      WHERE shopId = ${shopId} AND status IN ('ACCEPTED', 'COMPLETED', 'CLOSED') AND receivedDate IS NOT NULL AND isDeleted = false
     `;
     const averageLeadTimeDays = leadTimeRaw.length > 0 && leadTimeRaw[0].avg_days ? Math.ceil(Number(leadTimeRaw[0].avg_days)) : 0;
 
-    await this.repository.upsertDashboardSnapshot(shopId, today, {
+    await this.repository.upsertDashboardSnapshot(shopId, dateKey, {
       totalPurchases: totalPurchasesAgg._sum.totalAmount || 0,
       totalOrdersCount,
       pendingOrdersCount,
@@ -135,13 +148,13 @@ export class AnalyticsProcessorService extends WorkerHost {
 
   private async aggregateTrends(shopId: string) {
     this.logger.log(`Aggregating purchase trends for Shop ${shopId}`);
-    const today = new Date();
-    const normalizedDate = new Date(Date.UTC(today.getFullYear(), today.getMonth(), 1)); // Monthly
-    
+    // The shop's current month: keyed by its first calendar day, counted from the instant it began there.
+    const { monthKey: normalizedDate, monthStart } = await purchaseBusinessDates(this.prisma, shopId, this.clock.now());
+
     const monthlyAgg = await this.prisma.purchaseOrder.aggregate({
-      where: { 
-        shopId, 
-        createdAt: { gte: normalizedDate },
+      where: {
+        shopId,
+        createdAt: { gte: monthStart },
         status: { notIn: ['DRAFT', 'CANCELLED'] } 
       },
       _sum: { totalAmount: true },

@@ -1,0 +1,32 @@
+#cloud-config
+# First boot of the DukaanAI VM on Azure (Ubuntu 24.04): clone the repository
+# and run deploy/azure/bootstrap.sh once. main.bicep passes this file as the
+# VM's custom data, with __DUKAANAI_REF__ replaced by its bootstrapRef
+# parameter (blank lets bootstrap.sh choose: the newest release tag that
+# carries deploy/azure, else main; once IMAGE_TAG is set, that release).
+# It holds no secret and must never hold one: custom data is readable from
+# the VM and from the deployment history. Every secret is generated on the
+# VM into /etc/dukaanai/dukaanai.env by bootstrap.sh.
+# Exit code 3 of the bootstrap means "host ready, waiting for the owner's
+# values" and is a successful first boot; the output is in
+# /var/log/cloud-init-output.log.
+package_update: true
+packages:
+  - git
+  - ca-certificates
+runcmd:
+  - - bash
+    - -c
+    - |
+      set -euo pipefail
+      DUKAANAI_REPO=https://github.com/shoryabansalgithub/DukanAi-real.git
+      DUKAANAI_REF='__DUKAANAI_REF__'
+      if [ ! -d /opt/dukaanai/.git ]; then
+        git clone --quiet "$DUKAANAI_REPO" /opt/dukaanai
+        if [ -n "$DUKAANAI_REF" ]; then
+          git -C /opt/dukaanai -c advice.detachedHead=false checkout --quiet "$DUKAANAI_REF"
+        fi
+      fi
+      rc=0
+      bash /opt/dukaanai/deploy/azure/bootstrap.sh ${DUKAANAI_REF:+--ref "$DUKAANAI_REF"} || rc=$?
+      [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]

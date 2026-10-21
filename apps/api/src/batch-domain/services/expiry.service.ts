@@ -9,16 +9,18 @@ export class ExpiryService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Sweeps the database for expired batches and quarantines them.
-   * Prevents any further allocation of these batches.
+   * Quarantines one shop's expired batches so they can no longer be
+   * allocated. Always per shop: the route passes the caller's shop and the
+   * BatchExpirySweepScheduler passes each shop in turn.
    */
-  async quarantineExpiredBatches() {
-    this.logger.log('Starting Expiry Sweep...');
+  async quarantineExpiredBatches(shopId: string) {
+    this.logger.log(`Starting Expiry Sweep for shop ${shopId}...`);
 
     const now = new Date();
 
     const result = await this.prisma.batch.updateMany({
       where: {
+        shopId,
         status: BatchStatus.AVAILABLE,
         expiryDate: { lte: now }
       },

@@ -1,68 +1,80 @@
-import { ConsoleLogger, Injectable } from '@nestjs/common';
+import { ConsoleLogger, ConsoleLoggerOptions } from '@nestjs/common';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 
-@Injectable()
+const SENSITIVE_KEYS = ['password', 'token', 'cookie', 'secret', 'payment', 'authorization', 'creditcard', 'refresh_token', 'access_token'];
+const MAX_DEPTH = 8;
+
+/**
+ * Application logger (roadmap 2.14): one JSON line per entry, carrying the
+ * correlation id of the request (or `system-job` outside one), with
+ * sensitive keys redacted. Redaction copies the value, never mutates it, and
+ * is safe on cycles (`[Circular]`) and deep graphs (`[Truncated]`); Errors
+ * are written as name, message and stack. The JSON mode of Nest's
+ * ConsoleLogger prints a single line per call, so log shippers get one record
+ * per entry instead of a multi-line `Object(2)` dump.
+ */
 export class CorrelationLogger extends ConsoleLogger {
-  constructor(context?: string) {
-    super(context || '');
+  constructor(context?: string, options: ConsoleLoggerOptions = {}) {
+    super(context ?? '', { json: true, colors: false, ...options });
   }
 
-  private formatMessageWithCorrelation(message: any): any {
+  /** Attaches the correlation id and redacts; exported for tests. */
+  formatMessageWithCorrelation(message: unknown): Record<string, unknown> {
     const correlationId = TenantContextService.asAsyncLocalStorage.getStore()?.correlationId || 'system-job';
-    
-    let safeMessage = message;
-
-    if (typeof message === 'object' && message !== null) {
-      safeMessage = this.redact(message);
-      return { ...safeMessage, correlationId };
+    if (message instanceof Error) {
+      return { message: message.message, error: message.name, stack: message.stack, correlationId };
     }
-    
-    return { message: safeMessage, correlationId };
-  }
-
-  private redact(obj: any): any {
-    if (Array.isArray(obj)) {
-      return obj.map(item => {
-        if (typeof item === 'object' && item !== null) {
-          return this.redact(item);
-        }
-        return item;
-      });
+    if (typeof message === 'object' && message !== null && !Array.isArray(message)) {
+      const redacted = redact(message) as Record<string, unknown>;
+      // An object that names its own correlation id (the access line of a
+      // request that ended in a guard, before any tenant context) keeps it.
+      const explicit = typeof redacted.correlationId === 'string' && redacted.correlationId ? redacted.correlationId : undefined;
+      return { ...redacted, correlationId: explicit ?? correlationId };
     }
-
-    // Prevent mutating the original object
-    const copy = { ...obj };
-    const sensitiveKeys = ['password', 'token', 'cookie', 'secret', 'payment', 'authorization', 'creditcard'];
-    
-    for (const key of Object.keys(copy)) {
-      if (sensitiveKeys.some(sk => key.toLowerCase().includes(sk))) {
-        copy[key] = '[REDACTED]';
-      } else if (Array.isArray(copy[key])) {
-        copy[key] = this.redact(copy[key]);
-      } else if (typeof copy[key] === 'object' && copy[key] !== null) {
-        copy[key] = this.redact(copy[key]);
-      }
-    }
-    return copy;
+    return { message: typeof message === 'string' ? message : redact(message), correlationId };
   }
 
-  log(message: any, context?: string) {
-    super.log(this.formatMessageWithCorrelation(message), context);
+  // ConsoleLogger reads the context (and, for error, the stack) from the
+  // trailing optional parameters; an explicit `undefined` there is printed as
+  // a second, empty entry, so only the parameters that were given are passed on.
+  log(message: unknown, context?: string) {
+    super.log(this.formatMessageWithCorrelation(message), ...given(context));
   }
 
-  error(message: any, trace?: string, context?: string) {
-    super.error(this.formatMessageWithCorrelation(message), trace, context);
+  error(message: unknown, trace?: string, context?: string) {
+    super.error(this.formatMessageWithCorrelation(message), ...given(trace, context));
   }
 
-  warn(message: any, context?: string) {
-    super.warn(this.formatMessageWithCorrelation(message), context);
+  warn(message: unknown, context?: string) {
+    super.warn(this.formatMessageWithCorrelation(message), ...given(context));
   }
 
-  debug(message: any, context?: string) {
-    super.debug(this.formatMessageWithCorrelation(message), context);
+  debug(message: unknown, context?: string) {
+    super.debug(this.formatMessageWithCorrelation(message), ...given(context));
   }
 
-  verbose(message: any, context?: string) {
-    super.verbose(this.formatMessageWithCorrelation(message), context);
+  verbose(message: unknown, context?: string) {
+    super.verbose(this.formatMessageWithCorrelation(message), ...given(context));
   }
+}
+
+function given(...params: Array<string | undefined>): string[] {
+  return params.filter((p): p is string => typeof p === 'string');
+}
+
+/** Deep copy with sensitive keys replaced, cycle- and depth-safe. */
+export function redact(value: unknown, seen: WeakSet<object> = new WeakSet(), depth = 0): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+  if (value instanceof Date) return value.toISOString();
+  if (seen.has(value)) return '[Circular]';
+  if (depth >= MAX_DEPTH) return '[Truncated]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => redact(item, seen, depth + 1));
+  const copy: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const lower = key.toLowerCase();
+    copy[key] = SENSITIVE_KEYS.some((sensitive) => lower.includes(sensitive)) ? '[REDACTED]' : redact(entry, seen, depth + 1);
+  }
+  return copy;
 }

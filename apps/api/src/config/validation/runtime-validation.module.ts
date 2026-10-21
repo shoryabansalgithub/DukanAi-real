@@ -6,14 +6,12 @@ import { StartupValidatorService } from './startup-validator.service';
 
 // Rules
 import { StorageInfrastructureRule } from './rules/storage-infrastructure.rule';
-import { SwaggerEnvironmentRule } from './rules/swagger-environment.rule';
 import { RedisInfrastructureRule } from './rules/redis-infrastructure.rule';
 import { DatabaseEnvironmentRule } from './rules/database-environment.rule';
 import { EnterpriseConfigModule } from '../enterprise-config.module';
 
 const rules = [
   StorageInfrastructureRule,
-  SwaggerEnvironmentRule,
   RedisInfrastructureRule,
   DatabaseEnvironmentRule
 ];

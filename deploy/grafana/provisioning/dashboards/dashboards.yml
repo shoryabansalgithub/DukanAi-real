@@ -1,0 +1,14 @@
+# The dashboards in deploy/grafana/dashboards are loaded from disk (folder
+# "DukaanAI") and re-read every 30 s; edit the JSON in the repository, not
+# in the UI (a UI edit is overwritten).
+apiVersion: 1
+providers:
+  - name: dukaanai
+    folder: DukaanAI
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

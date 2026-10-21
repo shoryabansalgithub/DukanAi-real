@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class ReservationValidationService {
@@ -27,13 +28,10 @@ export class ReservationValidationService {
       }
     });
 
-    let totalAvailable = 0;
-    for (const item of inventoryItems) {
-      // Available = onHand - reserved (this is cached by Phase 3.2.1 and maintained by Phase 3.2.4)
-      totalAvailable += (item.onHand.toNumber() - item.reserved.toNumber());
-    }
+    // Available = onHand - reserved, in Decimal (release audit S16).
+    const totalAvailable = inventoryItems.reduce((sum, item) => sum.plus(item.onHand.minus(item.reserved)), new Prisma.Decimal(0));
 
-    if (totalAvailable < requestedQuantity) {
+    if (totalAvailable.lessThan(requestedQuantity)) {
       this.logger.warn(`Oversell Prevented! Requested: ${requestedQuantity}, Available: ${totalAvailable} for Product ${productId}`);
       throw new BadRequestException(
         `Insufficient stock. Requested ${requestedQuantity}, but only ${totalAvailable} available across all locations.`

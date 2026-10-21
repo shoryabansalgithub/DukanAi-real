@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -13,12 +13,13 @@ export class PurchaseValidationService {
       where: { id: supplierId }
     });
 
-    if (!supplier || supplier.shopId !== shopId) {
-      throw new BadRequestException('Supplier not found or unauthorized.');
+    // A foreign or deleted supplier does not exist for this shop (release audit S21).
+    if (!supplier || supplier.shopId !== shopId || supplier.isDeleted) {
+      throw new NotFoundException({ message: 'Supplier not found.', code: 'SUPPLIER_NOT_FOUND' });
     }
 
-    if (supplier.isDeleted || !supplier.isActive) {
-      throw new BadRequestException('Cannot raise a Purchase Order for an inactive or deleted supplier.');
+    if (!supplier.isActive) {
+      throw new BadRequestException({ message: 'Cannot raise a Purchase Order for an inactive supplier.', code: 'SUPPLIER_INACTIVE' });
     }
   }
 

@@ -1,0 +1,74 @@
+# The Azure services stood in for by deploy/azure/e2e.sh, layered over
+# docker-compose.prod.yml and deploy/azure/compose.yml for the test only:
+#   azure-mysql  MySQL 8.4.11 configured as the Bicep deployment configures
+#                Azure Database for MySQL Flexible Server B1ms (TLS only, the
+#                server parameters, Azure's default lower_case_table_names=1
+#                and sql_generate_invisible_primary_key=ON), reached by its
+#                Azure-style name with a certificate from a throwaway CA, and
+#                an admin account with exactly the Azure admin's privileges
+#   fake-b2      an S3 endpoint (rclone serve s3) in place of Backblaze B2's
+#                S3 API: the same rclone backend type and provider the target
+#                uses, only the endpoint differs
+services:
+  azure-mysql:
+    image: mysql:8.4.11
+    command:
+      - --require-secure-transport=ON
+      - --tls-version=TLSv1.2
+      - --ssl-ca=/certs/ca.pem
+      - --ssl-cert=/certs/server.pem
+      - --ssl-key=/certs/server.key
+      - --log-bin-trust-function-creators=ON
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+      - --lower-case-table-names=1
+      - --sql-generate-invisible-primary-key=ON
+      - --max-connections=171
+      - --innodb-buffer-pool-size=512M
+    environment:
+      MYSQL_ROOT_PASSWORD: ${E2E_MYSQL_ROOT_PASSWORD:?}
+      AZURE_MYSQL_ADMIN_USER: ${AZURE_MYSQL_ADMIN_USER:?}
+      AZURE_MYSQL_ADMIN_PASSWORD: ${AZURE_MYSQL_ADMIN_PASSWORD:?}
+    volumes:
+      - ${E2E_CERT_DIR:?}:/certs:ro
+      - ./deploy/azure/e2e/azure-admin.sh:/docker-entrypoint-initdb.d/10-azure-admin.sh:ro
+    networks:
+      default:
+        aliases: ["${AZURE_MYSQL_HOST:?}"]
+    healthcheck:
+      # Over TCP, so the init-time server (socket only) never passes.
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h127.0.0.1 --protocol=tcp -uroot --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  fake-b2:
+    image: ${IMAGE_REGISTRY}/dukaanai-db-ops:${IMAGE_TAG}
+    user: "0:0"
+    entrypoint: ["sh", "-c", "mkdir -p /data/${E2E_B2_BUCKET:?} && exec rclone serve s3 /data --addr :9000 --auth-key \"$$RCLONE_CONFIG_B2_ACCESS_KEY_ID,$$RCLONE_CONFIG_B2_SECRET_ACCESS_KEY\""]
+    environment:
+      HOME: /tmp
+      RCLONE_CONFIG_B2_ACCESS_KEY_ID: ${RCLONE_CONFIG_B2_ACCESS_KEY_ID:?}
+      RCLONE_CONFIG_B2_SECRET_ACCESS_KEY: ${RCLONE_CONFIG_B2_SECRET_ACCESS_KEY:?}
+    volumes:
+      - fake-b2-data:/data
+
+  db-init:
+    depends_on:
+      azure-mysql:
+        condition: service_healthy
+
+  migrate:
+    depends_on:
+      azure-mysql:
+        condition: service_healthy
+
+  backup-agent:
+    depends_on:
+      fake-b2:
+        condition: service_started
+
+volumes:
+  fake-b2-data:

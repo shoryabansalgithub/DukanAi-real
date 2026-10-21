@@ -1,0 +1,5 @@
+# Written by load/setup.mjs, load/run.sh and load/upload-gate.sh (see load/README.md)
+.state.json
+reports/
+.business-day.state.json
+.business-day-run/

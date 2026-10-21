@@ -1,306 +1,191 @@
-# DukaanAI - AI-Powered Retail Operating System
+# DukaanAI
 
-> **Status**: Active full-stack application. The web and API applications build successfully; deployment still requires provisioned MySQL, Redis, and Google OAuth credentials.
+Point of sale and back office for small Indian retail shops: GST invoices and
+returns, customer credit (udhar), shifts and cash drawers, products and stock,
+expenses, suppliers, dashboards, and a reconciliation of every business day.
+One API serves many shops (multi-tenant), a web app runs the counter and the
+back office.
 
-A world-class, enterprise-grade AI-powered retail operating system designed for small to medium-sized businesses. Built with cutting-edge technologies for scalability, performance, and user experience.
+**Status:** release candidate `v1.0.0-rc3`. The engineering roadmap
+(phases 0 to 9) is built and certified on every release tag; the go-live gate
+(staging, the pilot in a real shop, the external penetration test, the owner's
+sign-off) is open: [`docs/GO_LIVE.md`](./docs/GO_LIVE.md).
 
-## 🎯 Project Overview
+## What is built
 
-DukaanAI is a comprehensive retail OS that combines:
+**API** (`apps/api`, NestJS): POS billing (sales, cumulative returns,
+cancellations, repayments; one database transaction each, idempotent),
+shifts and drawers, customers and udhar, products, variants, categories and
+search, batches and expiry, reservations, stock counts, warehouses, a
+double-entry ledger, dashboards and CSV exports, nightly analytics and
+reorder recommendations, the nightly financial reconciliation, OCR bill
+scanning (Google Gemini), product media, bulk imports for onboarding, signed
+webhooks, notifications, staff invitations, password reset by email,
+sessions with rotating refresh tokens, Prometheus metrics, health probes and
+a graceful shutdown. Procurement (purchase orders, goods receipts, vendor
+bills, purchase returns, credit notes) exists in the API only; keep it
+paused with `FEATURE_PROCUREMENT_ENABLED=false` until the open findings of
+the 2026-10-11 audit on it are fixed (`docs/SUPPORT.md`, feature pause).
 
-- **AI Voice Billing** - Voice-activated point-of-sale
-- **Smart Inventory** - Real-time stock management
-- **Customer Udhar** - Credit/tab tracking system
-- **Analytics** - Predictive business insights
-- **Multi-Shop Support** - Enterprise multi-tenant architecture
-- **WhatsApp Integration** - Direct customer communication
-- **OCR Invoice Scanner** - Automated invoice processing
+**Web** (`apps/web`, Next.js): sign-in, registration (and joining a shop by
+invitation), password reset, dashboard, billing (POS, barcode scanner,
+receipts), invoices, customers, products, inventory (batches and expiry, low
+stock), suppliers, expenses, shifts, employees, notifications, analytics,
+the AI bill scanner, Smart Capture and settings. Every action calls the
+API; there is no mock data.
 
-## 🏗️ Architecture
+**Not built:** voice billing, WhatsApp messaging, an AI chat assistant,
+variant-level POS pricing, tax-inclusive pricing, coupons, FIFO or
+weighted-average costing, a web screen for procurement.
 
-### Tech Stack
+## Stack
 
-**Frontend:**
-- Next.js 14+ (App Router)
-- TypeScript
-- Tailwind CSS
-- shadcn/ui components
-- Framer Motion (animations)
-- Recharts (charts)
-- Zustand (state management)
+| Part | What |
+|---|---|
+| API | Node.js 22, NestJS 11, Prisma 6.19 on MySQL 8, BullMQ and a Keyv cache on Redis 7, Socket.IO, prom-client, Sentry (optional) |
+| Web | Next.js 16 (App Router, Turbopack) on React 19, NextAuth 4, Tailwind CSS, Zustand, Recharts, Framer Motion |
+| Money | `packages/invoice-math`: the one invoice and return engine, shared by the API and the web (`CALCULATION_SPEC.md` there) |
+| Tests | Jest (unit, integration against real MySQL and Redis, security, boot regression), Playwright (browser), promtool, artillery (load) |
+| Delivery | Docker images built once per commit by `.github/workflows/release.yml` after CI passed, Docker Compose or Kubernetes, Caddy at the edge, Prometheus / Alertmanager / Loki / Grafana |
 
-**Backend:**
-- NestJS (production-grade Node.js)
-- MySQL (PlanetScale)
-- Prisma ORM
-- Redis (caching)
-- Socket.IO (real-time)
-
-**AI & ML:**
-- FastAPI (Python microservices)
-- OpenAI API (LLM)
-- Langchain (prompt engineering)
-- Tesseract OCR
-
-**Search & Analytics:**
-- MeiliSearch → Elasticsearch (search)
-- Prometheus + Grafana (monitoring)
-- Sentry (error tracking)
-
-See [TECH_STACK_ARCHITECTURE.md](./TECH_STACK_ARCHITECTURE.md) for detailed architecture documentation.
-
-## 📁 Project Structure
+## Repository layout
 
 ```
-DukaanAI/
-├── apps/
-│   ├── web/                    # Next.js frontend and NextAuth integration
-│       ├── src/
-│       │   ├── app/           # App Router pages
-│       │   ├── components/    # Reusable UI components
-│       │   ├── lib/           # Utilities & helpers
-│       │   ├── hooks/         # Custom React hooks
-│       │   ├── store/         # Zustand state
-│       │   ├── types/         # TypeScript types
-│       │   └── data/          # Mock data
-│       └── package.json
-│   └── api/                    # NestJS API, Prisma schema, workers, and domain modules
-├── TECH_STACK_ARCHITECTURE.md
-└── README.md
+apps/api/                 NestJS API: src/, prisma/ (schema, migrations, MIGRATIONS.md), test/, load/
+apps/web/                 Next.js web app: src/app (pages), src/components, src/lib, e2e*/ (Playwright)
+packages/invoice-math/    the shared invoice engine (build it before the apps: they import its dist/)
+deploy/                   edge (Caddy), Kubernetes, Prometheus rules, Alertmanager, Grafana, db-ops image
+scripts/                  backups and restore drills, compose smokes, certification, release checks, drills
+docs/                     everything an operator, a support person or a developer needs (map below)
+docker-compose.yml        the reference stack (everything bundled, local)
+docker-compose.prod.yml   the production variant (managed MySQL and Redis, HTTPS edge, backup agent)
 ```
 
-## 🚀 Quick Start
+## Run it with Docker (the reference stack)
 
-### Prerequisites
-
-- Node.js 20 LTS
-- MySQL 8+
-- Redis 6.2+
-- Google OAuth web-client credentials (only when Google sign-in is enabled)
-
-### Installation
+Needs Docker with Compose 2.24.4 or newer.
 
 ```bash
-# Install dependencies from the repository root
-npm install
-
-# Create local environment files from the committed templates
-cp apps/api/.env.example apps/api/.env
-cp apps/web/.env.example apps/web/.env.local
-
-# Apply database migrations, then start API and web in separate terminals
-cd apps/api && npx prisma migrate deploy && npm run start:dev
-cd apps/web && npm run dev
+cp .env.example .env
+sed -i "s/^JWT_SECRET=.*/JWT_SECRET=$(openssl rand -hex 32)/; s/^NEXTAUTH_SECRET=.*/NEXTAUTH_SECRET=$(openssl rand -hex 32)/; s/^GRAFANA_ADMIN_PASSWORD=.*/GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)/" .env
+docker compose up --build -d --wait
 ```
 
-The API listens on `http://localhost:3001/api`; the web app listens on `http://localhost:3002` when started with its configured port. See [ENVIRONMENT_REQUIREMENTS.md](./ENVIRONMENT_REQUIREMENTS.md) and [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md) before deploying.
+Open <http://localhost:3000>, register a shop (the owner's password needs
+12 or more characters and must not be a common one), then fill in the shop
+profile under Settings (state and GSTIN: counter sales are billed CGST + SGST in
+the shop's state). `docker compose down` stops
+it; add `-v` to delete the data. The monitoring stack is
+`docker compose --profile ops up -d prometheus alertmanager blackbox loki alloy grafana`
+(Grafana on <http://127.0.0.1:3001>). Details: [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
 
-### Keeping the database schema in sync
+## Run it for development
 
-The Prisma schema evolves with the code. If your local database was created
-from an older checkout, API endpoints that touch new tables/columns will fail
-with Prisma `P2021` (missing table) or `P2022` (missing column) errors - the
-API now detects this at boot with a schema probe, logs a loud
-`SCHEMA DRIFT DETECTED` error, and refuses to start. The fix is always:
+Prerequisites: Node.js 22 (`nvm use` reads `.nvmrc`), MySQL 8 (or MariaDB
+10.11) and Redis 7.
+
+The committed `apps/api/.env.development` and `apps/web/.env.development`
+already describe a local setup: MySQL at `localhost:3306` as `root` /
+`password` with a database `dukaanai`, Redis at `localhost:6379`, the API on
+port 3002, the web on port 3010. Put only what differs on your machine in
+`apps/api/.env.local` / `apps/web/.env.local` (git-ignored; they win over the
+templates). Do not copy an `.env.example` there: it would override every
+development default.
 
 ```bash
-cd apps/api && npx prisma db push
+npm ci                                   # from the repository root
+npm run build -w @dukaanai/invoice-math  # the apps import its dist/
+
+# The database (create it first: CREATE DATABASE dukaanai CHARACTER SET utf8mb4;)
+cd apps/api
+DATABASE_URL=mysql://root:password@localhost:3306/dukaanai npx prisma migrate deploy
+cd ../..
 ```
 
-Run it after every `git pull` that changes `prisma/schema.prisma` (make sure
-`DATABASE_URL` in your environment points at your local database).
+Then choose how you sign in:
 
-### Seeding demo data
-
-An idempotent seed populates a realistic Indian retail dataset (shop products,
-customers with udhaar balances, suppliers, employees, expenses, notifications,
-and a month of invoices) so every page has real backend data:
+- **Real sign-in:** `echo NEXT_PUBLIC_AUTH_DISABLED=false >> apps/web/.env.local`,
+  and register a shop at <http://localhost:3010/register>.
+- **No sign-in (development only):** `echo AUTH_DISABLED=true >> apps/api/.env.local`.
+  The web template already sets `NEXT_PUBLIC_AUTH_DISABLED=true`; every
+  request then runs as a provisioned system user (`system@dukaanai.local`,
+  OWNER of its own shop). Both builds and the API refuse the flag in
+  production. Set both flags the same way.
 
 ```bash
-# API must be running (it validates the real write paths via HTTP)
-cd apps/api && npm run seed
+npm run dev    # turbo: the API (nest start --watch, port 3002) and the web (next dev, port 3010)
 ```
 
-The script creates entities through the public API where endpoints exist and
-falls back to Prisma for the rest. Re-running it is safe - existing records
-are detected and skipped. In auth-bypass mode the data lands in the system
-shop; with real auth enabled it logs in as (or registers) the demo account
-`demo@dukaan.local` / `Demo@1234` and seeds that shop instead.
+The API answers on <http://localhost:3002/api> (`/api/health`, Swagger at
+`/api/docs` outside production) and the web on <http://localhost:3010>.
 
-### Verification
+After every `git pull` that brings a migration, run the `migrate deploy`
+above again: the API refuses to start while a migration of the checkout is
+not applied, and prints which (`SCHEMA DRIFT DETECTED`). Never use
+`prisma db push`; failed or edited migrations: `apps/api/prisma/MIGRATIONS.md`.
+After changing `schema.prisma` or switching branches, `npx prisma generate`.
+
+## Tests
+
+From the repository root:
 
 ```bash
-npm run type-check
-npm test --workspace=api -- --runInBand
-npm run build --workspace=api
-npm run build --workspace=dukaanai-web
+npm run type-check     # every workspace
+npm run lint
+npm test               # unit tests: invoice-math and the API
+npm run build
 ```
 
-### Disabling authentication (development / demo only)
+API suites (`cd apps/api`):
 
-Authentication can be switched off behind an explicit, reversible flag. It is
-OFF by default: when the variables are unset, empty, or anything other than an
-explicit truthy value (`true`, `1`, `yes`, `on`), normal login is required. An
-unrecognized value makes the API refuse to boot rather than guess.
+```bash
+npm test                                   # unit (src/**/*.spec.ts)
+DATABASE_URL=mysql://root:password@localhost:3306/dukaanai_test npx prisma migrate deploy
+npm run test:integration                   # real MySQL + Redis from .env.test (database dukaanai_test, Redis db 1)
+npm run test:security                      # the security regression suite alone
+npm run build && npm run test:e2e          # the boot regression of the built entrypoint
+```
 
-- API: set `AUTH_DISABLED=true` in the API environment. Every request then runs
-  as a provisioned system user (`system@dukaanai.local`, role OWNER, own shop),
-  and the API logs a loud `AUTH DISABLED` warning at startup. The real auth code
-  paths (including Google account provisioning and token verification) remain
-  intact - the flag only gates access, it never accepts unverified identity.
-- Web: set `NEXT_PUBLIC_AUTH_DISABLED=true` in the web environment. The login
-  gate is skipped and the app loads directly. The value is inlined at build
-  time, so for production builds it must be set before `next build`.
+`TEST_DATABASE_URL` / `TEST_REDIS_URL` point the integration suites
+elsewhere. Web browser tests (`cd apps/web`):
+`npx playwright install chromium`, then `npm run test:e2e` (with the auth
+bypass) and `npm run test:e2e:auth` (real sign-in). CI
+(`.github/workflows/ci.yml`) runs all of it, the integration suites on MySQL
+8.0 and 8.4, plus the compose smokes, the backup drills, gitleaks and the
+dependency audit.
 
-Set both flags together, and never enable them for a production deployment.
+## Documentation
 
-## 📋 Development Phases
+Release and operations:
+- [`RELEASE.md`](./RELEASE.md): versions, tagging, certification, staging, rollback
+- [`DEPLOYMENT_CHECKLIST.md`](./DEPLOYMENT_CHECKLIST.md): the go-live order for one release
+- [`docs/GO_LIVE.md`](./docs/GO_LIVE.md): the go-live gate and who signs what
+- [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md): topology, images, environment, compose, Kubernetes, the edge, monitoring access
+- [`docs/STAGING.md`](./docs/STAGING.md): staging, promotion, deploying by digest
+- [`docs/OBSERVABILITY.md`](./docs/OBSERVABILITY.md) and [`docs/RUNBOOKS.md`](./docs/RUNBOOKS.md): logs, metrics, alerts, one page per alert
+- [`docs/BACKUP_RESTORE.md`](./docs/BACKUP_RESTORE.md) and [`docs/DATA_SAFETY.md`](./docs/DATA_SAFETY.md): backups, restore drills, recovery objectives
+- [`docs/SECRETS.md`](./docs/SECRETS.md): every secret, its owner and rotation
+- [`docs/DRILLS.md`](./docs/DRILLS.md), [`docs/BUSINESS_DAY.md`](./docs/BUSINESS_DAY.md), [`docs/PRODUCTION_LIMITS.md`](./docs/PRODUCTION_LIMITS.md), [`docs/LOAD_TEST_BASELINE.md`](./docs/LOAD_TEST_BASELINE.md): the evidence behind the limits
+- [`ENVIRONMENT_REQUIREMENTS.md`](./ENVIRONMENT_REQUIREMENTS.md): what the infrastructure must provide
 
-### ✅ PHASE 1: Tech Stack Architecture
-- [x] Proposed production-grade tech stack
-- [x] Architectural decisions with reasoning
-- [x] Scalability strategy
-- [x] Folder structure
+Product and support:
+- [`docs/guides/`](./docs/guides): the cashier's and the owner's guides, the FAQ
+- [`docs/SUPPORT.md`](./docs/SUPPORT.md), [`docs/ONBOARDING.md`](./docs/ONBOARDING.md), [`docs/PILOT.md`](./docs/PILOT.md)
+- [`docs/privacy/`](./docs/privacy), [`docs/compliance/GST_INVOICE_CHECK.md`](./docs/compliance/GST_INVOICE_CHECK.md), [`docs/security/`](./docs/security)
 
-### ✅ PHASE 2: UI Implementation (CURRENT)
-- [x] Project scaffolding with Next.js
-- [x] Tailwind CSS setup
-- [x] Component library (shadcn/ui style)
-- [x] Reusable components
-- [x] Dashboard page
-- [x] Navigation (Sidebar + Navbar)
-- [x] Mock data
-- [x] Charts & visualizations
-- [x] Professional styling
-- [x] Responsive design
-- [x] Dark mode ready
+Engineering:
+- [`AGENTS.md`](./AGENTS.md): architecture decisions and sharp edges, roadmap row by row
+- [`docs/POS_BILLING_CONTRACT.md`](./docs/POS_BILLING_CONTRACT.md): the binding API and engine contract
+- [`apps/api/prisma/MIGRATIONS.md`](./apps/api/prisma/MIGRATIONS.md): migrations and rollbacks
+- [`docs/architecture/environment-architecture.md`](./docs/architecture/environment-architecture.md): how configuration is loaded and validated; every API variable is in `apps/api/.env.example`
+- [`CHANGELOG.md`](./CHANGELOG.md)
 
-### ✅ Backend & authentication
+Historical (kept for the record, superseded by the documents above; each
+says so at the top): `TECH_STACK_ARCHITECTURE.md`, `PROJECT_ANALYSIS_REPORT.md`,
+`full_codebase_audit.md`, `plan.md`, `teach.md`, `PHASE2_SUMMARY.md`,
+`FEATURES_GUIDE.md`, `FILE_INDEX.md`, `IMPLEMENTATION_PLAN.md`,
+`SETUP_GUIDE.md`, `ROADMAP.md`, `PROJECT_STRUCTURE.md`, `docs/audits/`.
 
-- [x] NestJS API and Prisma schema
-- [x] Credentials and Google OAuth authentication
-- [x] Server-side Google ID-token verification and rotating refresh tokens
-- [x] Tenant-scoped REST API endpoints and WebSocket authentication
-- [x] HMAC-signed webhook delivery with audit records
+## License
 
-### 🤖 PHASE 4: AI Features (After Backend)
-- [ ] AI Assistant chat
-- [ ] Voice billing
-- [ ] OCR invoice scanning
-- [ ] Predictive analytics
-- [ ] Smart recommendations
-
-### 🔧 PHASE 5: Production Optimization
-- [ ] Performance optimization
-- [ ] Redis caching
-- [ ] Docker containerization
-- [ ] CI/CD pipeline
-- [ ] Security hardening
-- [ ] Monitoring setup
-
-## 🎨 UI Components
-
-### Available Components
-
-**UI Elements:**
-- Button (primary, secondary, outline, ghost, danger)
-- Card (with header, footer, content)
-- Badge (colored variants)
-- Input (with validation)
-
-**Dashboard Components:**
-- StatCard (metrics with trends)
-- DataTable (sortable, filterable)
-- Charts (Sales, Bar, Pie - using Recharts)
-
-**Navigation:**
-- Sidebar (collapsible, responsive)
-- Navbar (theme toggle, notifications, profile)
-
-## 🎯 Features Implemented (Phase 2)
-
-### Dashboard Page ✅
-- Key metrics (Sales, Profit, Udhar, Stock)
-- Sales trend chart
-- Category distribution pie chart
-- AI Business Insights
-- Top customers list
-- Recent transactions table
-
-### Navigation ✅
-- Responsive sidebar
-- Top navbar with theme toggle
-- Active route highlighting
-- Mobile hamburger menu
-
-### Pages Created ✅
-- Dashboard (complete demo)
-- Billing (POS) - placeholder
-- Customers - placeholder
-- Inventory - placeholder
-- Analytics - placeholder
-- AI Assistant - placeholder
-- Database Manager - placeholder
-- Settings - placeholder
-
-## 🔄 Mock Data
-
-Pre-configured mock data for development:
-- Dashboard statistics
-- Sales data (weekly trends)
-- Products (7 items)
-- Customers (5 items)
-- Transactions (4 items)
-- Category breakdown
-- Payment modes
-
-Located in: `src/data/mockData.ts`
-
-## 🎨 Design System
-
-### Colors
-- **Primary**: Deep Purple (#7c3aed)
-- **Success**: Green (#10b981)
-- **Warning**: Amber (#f59e0b)
-- **Danger**: Red (#ef4444)
-- **Background**: Light/Dark mode support
-
-### Typography
-- **Headings**: Bold, large sizes
-- **Body**: Clear, readable
-- **Labels**: Small, semibold
-
-### Spacing
-- Consistent 8px grid
-- Generous padding/margins
-- Proper visual hierarchy
-
-## Deployment
-
-Use the checklist in [DEPLOYMENT_CHECKLIST.md](./DEPLOYMENT_CHECKLIST.md). Google OAuth must be configured with the exact callback URL `https://YOUR_WEB_ORIGIN/api/auth/callback/google`; set the matching `GOOGLE_CLIENT_ID` in both applications and enable it in the web environment.
-
-## 📚 Documentation
-
-- [Tech Stack Architecture](./TECH_STACK_ARCHITECTURE.md) - Detailed tech decisions
-- [Component Library](./docs/COMPONENTS.md) - Coming soon
-- [API Documentation](./docs/API.md) - Coming soon
-- [Database Schema](./docs/DATABASE.md) - Coming soon
-
-## 🤝 Contributing
-
-This is a professional project. Follow these guidelines:
-1. Use TypeScript everywhere
-2. Follow component naming conventions
-3. Write reusable components
-4. Add proper documentation
-5. Test responsive design
-
-## 📄 License
-
-Proprietary - DukaanAI
-
-## 👨‍💼 Architecture by
-
-Senior Full-Stack Engineer | SaaS Architect | AI Systems Developer
-
-Built for enterprise-grade scalability and production-ready performance.
+Proprietary.

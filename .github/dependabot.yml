@@ -1,0 +1,63 @@
+# Roadmap 7.4 / 9.14: dependency and action updates arrive as pull requests,
+# grouped so a week's bumps are one review, never a floating tag or an
+# unreviewed lockfile change. github-actions moves the SHA pins (and their
+# version comments); npm moves the workspace dependencies, which the CI
+# `npm audit --omit=dev --audit-level=high` and the Trivy image gate guard;
+# docker and docker-compose move the pinned base and service images.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # npm workspaces from the root only: Dependabot then reads every workspace's
+  # package.json through the root's `workspaces` and rewrites the one root
+  # package-lock.json with them. Listing the workspace directories as well
+  # (as this file once did) makes pull requests that change a workspace's
+  # package.json without the root lockfile, and `npm ci` fails on every one.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Patch and minor bumps of production and dev dependencies in one PR per
+      # week; a major bump comes as its own PR so it is reviewed on its own.
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # Base images of the three Dockerfiles (audit 2026-10-11, R23): the db-ops
+  # MySQL client image is pinned to a patch release. The Node base of the API
+  # and web images is `node:${NODE_VERSION}-...` with NODE_VERSION pinned in
+  # the Dockerfile and in .nvmrc together: Dependabot cannot follow an ARG,
+  # so a Node bump stays a deliberate change of both files.
+  - package-ecosystem: docker
+    directories:
+      - /apps/api
+      - /apps/web
+      - /deploy/db-ops
+    schedule:
+      interval: weekly
+    groups:
+      docker-images:
+        patterns: ["*"]
+
+  # The images the compose files pin (MySQL, Redis, Caddy, the monitoring
+  # stack). The CI service containers (.github/workflows/ci.yml) and
+  # scripts/certify/migrate-diff.sh carry the same MySQL / Redis / MariaDB
+  # pins by hand: move them in the same pull request.
+  - package-ecosystem: docker-compose
+    directories:
+      - /
+      - /deploy/observability
+      - /scripts/smoke-prod
+    schedule:
+      interval: weekly
+    groups:
+      compose-images:
+        patterns: ["*"]

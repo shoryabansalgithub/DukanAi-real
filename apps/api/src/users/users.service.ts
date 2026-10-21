@@ -13,6 +13,7 @@ import {
   userWithPasswordSelect,
 } from './user.mapper';
 import { SecurityConfig } from '../config/domains/security.config';
+import { canonicalEmail, sameEmailAddress } from '../common/email-address';
 
 @Injectable()
 export class UsersService {
@@ -23,13 +24,19 @@ export class UsersService {
     private securityConfig: SecurityConfig
   ) {}
 
+  /**
+   * The account whose stored address is `email` in canonical form. The column
+   * collation would also return an accented lookalike's row (audit P0-1), so
+   * the row is re-checked before it is used.
+   */
   async findByEmailWithPassword(
     email: string,
   ): Promise<UserWithPasswordRecord | null> {
-    return this.prisma.user.findUnique({
-      where: { email },
+    const user = await this.prisma.user.findUnique({
+      where: { email: canonicalEmail(email) },
       select: userWithPasswordSelect,
     });
+    return user && sameEmailAddress(user.email, email) ? user : null;
   }
 
   async findSafeById(id: string): Promise<SafeUserDto | null> {
@@ -66,7 +73,7 @@ export class UsersService {
         const createdUser = await tx.user.create({
           data: {
             id: userId,
-            email: data.email,
+            email: canonicalEmail(data.email),
             name: data.name,
             role: Role.OWNER,
             password: hashedPassword,
@@ -117,26 +124,22 @@ export class UsersService {
   ): Promise<SafeUserDto> {
     // 1. Match by Google ID — returning user
     const byGoogle = await this.prisma.user.findFirst({
-      // @ts-ignore
       where: { googleId },
       select: safeUserSelect,
     });
     if (byGoogle) return UserMapper.toSafeUserDto(byGoogle);
 
-    // 2. Match by email — account linking for existing password users
-    const byEmail = await this.prisma.user.findUnique({
-      where: { email },
-      select: safeUserSelect,
-    });
+    // 2. An account with this email that was not created through Google is
+    //    never linked automatically: anyone can register a password account
+    //    under someone else's address, and linking would hand that account to
+    //    whoever later signs in with the real Google identity (P2-19). The
+    //    owner signs in with their password; linking needs an explicit,
+    //    authenticated step.
+    const address = canonicalEmail(email);
+    const byEmail = await this.prisma.user.findUnique({ where: { email: address }, select: { id: true } });
     if (byEmail) {
-      const updated = await this.prisma.user.update({
-        where: { id: byEmail.id },
-        // @ts-ignore
-        data: { googleId },
-        select: safeUserSelect,
-      });
-      this.logger.log(`Linked Google account to existing user ${byEmail.id}`);
-      return UserMapper.toSafeUserDto(updated);
+      this.logger.warn(`Google sign-in refused for ${email}: an account with this email exists and is not linked to Google`);
+      throw new ConflictException('An account with this email already exists. Sign in with your password.');
     }
 
     // 3. New user — create user + shop atomically
@@ -155,9 +158,8 @@ export class UsersService {
         const createdUser = await tx.user.create({
           data: {
             id: userId,
-            email,
+            email: address,
             name,
-            // @ts-ignore
             googleId,
             role: Role.OWNER,
             shopId,
@@ -180,35 +182,54 @@ export class UsersService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        // Race: another request created the user between our lookups
-        const retry = await this.prisma.user.findUnique({
-          where: { email },
+        // Race: a concurrent sign-in with the same Google identity created the
+        // user between our lookups. Only that account is returned; a password
+        // account registered under the address in the meantime is never handed
+        // to the Google identity (roadmap 2.9).
+        const retry = await this.prisma.user.findFirst({
+          where: { googleId },
           select: safeUserSelect,
         });
         if (retry) return UserMapper.toSafeUserDto(retry);
+        throw new ConflictException('An account with this email already exists. Sign in with your password.');
       }
       this.logger.error('Failed to create Google OAuth user', error);
       throw error;
     }
   }
 
+  /**
+   * Counts a failed password in one atomic statement (two concurrent failures
+   * can no longer read the same value and both write +1), then locks the
+   * account once the counter reaches the limit. The lock only blocks new
+   * logins for `lockoutDurationMs`; it never touches open sessions.
+   */
   async incrementFailedAttempts(userId: string): Promise<void> {
-    const user = await this.prisma.user.findUnique({
+    const { failedAttempts } = await this.prisma.user.update({
       where: { id: userId },
+      data: { failedAttempts: { increment: 1 } },
       select: { failedAttempts: true },
     });
-    
-    if (!user) return;
-    const newAttempts = user.failedAttempts + 1;
-    
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        failedAttempts: newAttempts,
-        isLocked: newAttempts >= this.securityConfig.maxLoginAttempts,
-        lockedUntil: newAttempts >= this.securityConfig.maxLoginAttempts ? new Date(Date.now() + this.securityConfig.lockoutDurationMs) : null,
-      },
-    });
+    if (failedAttempts >= this.securityConfig.maxLoginAttempts) {
+      await this.prisma.user.updateMany({
+        where: { id: userId, isLocked: false },
+        data: { isLocked: true, lockedUntil: new Date(Date.now() + this.securityConfig.lockoutDurationMs) },
+      });
+    }
+  }
+
+  /**
+   * A lock whose `lockedUntil` has passed is over: clear it and the counter so
+   * the next failures start a fresh window instead of re-locking on the first
+   * one. Returns true when the account is (still) locked.
+   */
+  async isLockedNow(user: { id: string; isLocked: boolean; lockedUntil: Date | null }, now = new Date()): Promise<boolean> {
+    if (!user.isLocked) return false;
+    if (user.lockedUntil && user.lockedUntil <= now) {
+      await this.resetFailedAttempts(user.id);
+      return false;
+    }
+    return true;
   }
 
   async resetFailedAttempts(userId: string): Promise<void> {

@@ -4,7 +4,8 @@ import { CreateReservationDto } from '../dto/reservation.dto';
 import { ReservationValidationService } from './reservation-validation.service';
 import { AllocationService } from './allocation.service';
 import { ReservationStatus } from '@prisma/client';
-import { EventPublisherService } from '../../events-domain/services/event-publisher.service';
+import { assertOwnedMany } from '../../prisma/tenant-ownership';
+import { assertVariantOfProduct } from '../../inventory-domain/services/inventory-domain.service';
 
 @Injectable()
 export class ReservationService {
@@ -13,14 +14,17 @@ export class ReservationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly validation: ReservationValidationService,
-    private readonly allocation: AllocationService,
-    private readonly eventPublisher: EventPublisherService
+    private readonly allocation: AllocationService
   ) {}
 
   /**
    * Creates a reservation, locking the inventory physically.
    */
   async createReservation(shopId: string, dto: CreateReservationDto) {
+    await assertOwnedMany(this.prisma, 'product', dto.items.map((i) => i.productId), shopId, { isDeleted: false });
+    // A variant must be one of its line's product (release audit T6e).
+    for (const item of dto.items) await assertVariantOfProduct(this.prisma, shopId, item.productId, item.variantId);
+
     // 1. Pre-flight Validation check (prevent obvious oversells before entering the transaction)
     for (const item of dto.items) {
       await this.validation.validateAvailabilityOrThrow(
@@ -31,12 +35,8 @@ export class ReservationService {
     // 2. Open Serializable Transaction
     return this.prisma.$transaction(async (tx) => {
       
-      // Calculate Expiry
-      let expiresAt = null;
-      if (dto.expiresInSeconds) {
-        expiresAt = new Date();
-        expiresAt.setSeconds(expiresAt.getSeconds() + dto.expiresInSeconds);
-      }
+      // Every reservation expires (the DTO bounds the TTL); the per-shop sweep frees the stock.
+      const expiresAt = new Date(Date.now() + dto.expiresInSeconds * 1000);
 
       // 3. Create Reservation Header
       const reservation = await tx.stockReservation.create({
@@ -64,7 +64,7 @@ export class ReservationService {
 
         // Run the physical Allocation Strategy (FIFO)
         await this.allocation.allocateStockFifo(
-          tx, shopId, item.id, item.productId, item.variantId || null, item.requestedQuantity.toNumber()
+          tx, shopId, item.id, item.productId, item.variantId || null, item.requestedQuantity
         );
         
         // Also update the Product.currentStock cache for Epic 2 backward compatibility
@@ -75,18 +75,7 @@ export class ReservationService {
         }
       }
 
-      // Publish Outbox Event
-      await this.eventPublisher.publish(tx, shopId, {
-        type: 'StockReserved',
-        entityType: 'StockReservation',
-        entityId: reservation.id,
-        payload: {
-          reservationId: reservation.id,
-          source: reservation.source,
-          items: dto.items
-        }
-      });
-
+      // No outbox row: nothing consumed the former `StockReserved` event (roadmap 4.5/4.6).
       return reservation;
     });
   }

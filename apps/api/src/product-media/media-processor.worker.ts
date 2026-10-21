@@ -2,10 +2,11 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CdnManagerService } from './cdn-manager.service';
+import { CdnManagerService, mediaFileUrl } from './cdn-manager.service';
 import sharp from 'sharp';
 import * as path from 'path';
-import * as fs from 'fs';
+import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
+import { jobContext } from '../iam/tenant-context/job-context';
 
 @Processor('media-processing')
 @Injectable()
@@ -15,11 +16,18 @@ export class MediaProcessorWorker extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cdn: CdnManagerService,
+    private readonly tenantContext: TenantContextService,
   ) {
     super();
   }
 
-  async process(job: Job<any, any, string>): Promise<any> {
+  process(job: Job<any, any, string>): Promise<any> {
+    const shopId = job.data?.shopId;
+    if (typeof shopId !== 'string' || !shopId) throw new Error(`Media job ${String(job.id)} has no shopId`);
+    return this.tenantContext.runWithContext(jobContext(shopId, String(job.id)), () => this.processForShop(job));
+  }
+
+  private async processForShop(job: Job<any, any, string>): Promise<any> {
     switch (job.name) {
       case 'generate-thumbnails':
         return this.handleImageThumbnails(job.data);
@@ -67,7 +75,8 @@ export class MediaProcessorWorker extends WorkerHost {
           .webp({ quality: 80 })
           .toFile(thumbPath);
 
-        const cdnUrl = this.cdn.generateCdnUrl(thumbPath);
+        // Served by the authenticated route (GET /api/media/assets/:id/file?size=), never a static path.
+        const cdnUrl = mediaFileUrl(assetId, size.key);
 
         await this.prisma.mediaThumbnail.create({
           data: {

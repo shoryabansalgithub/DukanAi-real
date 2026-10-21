@@ -1,0 +1,25 @@
+# DukaanAiBackupNeverRecorded never goes quiet because the topology's
+# expectations were not loaded (deploy/prometheus/topology/*.rules.yml next
+# to alerts.yml; render.sh does it in compose): it fires as kind
+# "no-topology-rules" even when every backup is fresh.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'backup_last_success_timestamp_seconds{job="dukaanai-api", instance="api:3002", kind="dump"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: DukaanAiBackupNeverRecorded
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              kind: no-topology-rules
+            exp_annotations:
+              runbook_url: "https://github.com/shoryabansalgithub/DukanAi-real/blob/main/docs/RUNBOOKS.md#dukaanaibackupneverrecorded"
+              summary: "Backup job no-topology-rules has never recorded a success"
+              description: "No backup_last_success_timestamp_seconds series for kind no-topology-rules. Either the job is not scheduled, or the API cannot read BACKUP_STATUS_DIR (the db-backups volume mounted read-only), or the job writes its stamp elsewhere."

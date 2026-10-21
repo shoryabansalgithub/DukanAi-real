@@ -1,126 +1,462 @@
+import { Inject, Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, UnrecoverableError } from 'bullmq';
-import { Logger } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import type { Cache } from 'cache-manager';
+import { NotificationType, Prisma } from '@prisma/client';
+import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
-import { Prisma } from '@prisma/client';
 import { TenantContextService } from '../../iam/tenant-context/tenant-context.service';
 import { TenantContext } from '../../iam/tenant-context/tenant-context.interface';
-import * as crypto from 'crypto';
+import { InventoryGateway } from '../../inventory/inventory.gateway';
+import {
+  asOptionalString,
+  LEGACY_CORRELATION_ID,
+  parseOutboxPayload,
+  SystemEventJobData,
+} from './outbox-routing';
 
+import { invalidateAnalyticsCache } from '../cache/analytics-cache-keys';
+import { OUTBOX_CLAIMED_STATUSES } from './outbox-claim.service';
+
+/** Contract §6: keys the event processor invalidates after any invoice mutation. */
+export { analyticsCacheKeys } from '../cache/analytics-cache-keys';
+
+export const SYSTEM_EVENT_PROCESSED_ACTION = 'SYSTEM_EVENT_PROCESSED';
+
+/** `OutboxEvent.error` is TEXT (roadmap 8.1); the cap keeps a runaway message out of the row. */
+const MAX_ERROR_LENGTH = 4000;
+
+/** Prisma codes that mean "try again later", not "this event is broken". */
+/** P2024/P2028: pool wait or transaction start timed out under load; P2034: deadlock / write conflict. */
+const TRANSIENT_PRISMA_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1011', 'P1017', 'P2024', 'P2028', 'P2034']);
+
+export type SystemEventOutcome = { status: 'processed' | 'skipped-duplicate' | 'ignored-unknown' };
+
+/** The claim a job was enqueued for: its job id is `<OutboxEvent id>.<retryCount>` (`OutboxClaimService.jobIdFor`). */
+export interface OutboxClaimRef {
+  retryCount: number;
+}
+
+export function claimOf(jobId: string | undefined): OutboxClaimRef | undefined {
+  const match = /^.+\.(\d+)$/.exec(jobId ?? '');
+  return match ? { retryCount: Number(match[1]) } : undefined;
+}
+
+/** The idempotency marker's primary key for an event: one per event, so the insert itself is the guard. */
+export function markerIdFor(eventId: string): string {
+  return `sysevt.${eventId}`;
+}
+
+function settleWhere(eventId: string, claim: OutboxClaimRef | undefined): Prisma.OutboxEventWhereInput {
+  return { id: eventId, status: { in: [...OUTBOX_CLAIMED_STATUSES] }, ...(claim ? { retryCount: claim.retryCount } : {}) };
+}
+
+interface LowStockAlert {
+  productId: string;
+  productName: string;
+  currentStock: number;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : JSON.stringify(error);
+}
+
+function toDecimal(value: unknown): Prisma.Decimal | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  try {
+    const decimal = new Prisma.Decimal(value);
+    return decimal.isNaN() ? null : decimal;
+  } catch {
+    return null;
+  }
+}
+
+function extractProductIds(items: unknown): string[] {
+  if (!Array.isArray(items)) return [];
+  const ids = new Set<string>();
+  for (const item of items) {
+    const productId = asOptionalString((item as { productId?: unknown } | null)?.productId);
+    if (productId) ids.add(productId);
+  }
+  return [...ids];
+}
+
+/**
+ * Consumer of the `system-events` queue (POS/billing outbox events, contract §7).
+ *
+ * Every job runs inside an explicit tenant context built from the top-level
+ * `shopId` of the job data (fallback: payload.shopId), because Product,
+ * Notification, Customer and AuditLog are tenant-scoped in the Prisma extension.
+ */
 @Processor('system-events')
 export class SystemEventsProcessor extends WorkerHost {
   private readonly logger = new Logger(SystemEventsProcessor.name);
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenantContext: TenantContextService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
+    private readonly inventoryGateway: InventoryGateway,
+  ) {
     super();
   }
 
-  async process(job: Job<any, any, string>): Promise<any> {
-    const eventId = job.opts.jobId;
+  async process(job: Job<SystemEventJobData, unknown, string>): Promise<SystemEventOutcome> {
+    // The job id is `<OutboxEvent id>.<retryCount>` (roadmap 4.7); the row id itself travels in the data.
+    const eventId = asOptionalString(job.data?.eventId) ?? (job.opts.jobId ? String(job.opts.jobId).split('.')[0] : undefined);
+    // The claim this job was enqueued for (audit R10): the row is settled only
+    // while it is still that claim, so a worker that outlived the stale-claim
+    // window cannot end the row a newer claim is working on.
+    const claim = claimOf(job.opts.jobId);
     if (!eventId) {
+      // Without the OutboxEvent id there is no row to mark; the job is dropped loudly.
+      this.logger.error(`Job ${String(job.id)} (${job.name}) carries no OutboxEvent id; dropping it.`);
       throw new UnrecoverableError('Job missing jobId (OutboxEvent.id) for idempotency tracking.');
     }
 
-    const correlationId = job.data?.correlationId || 'legacy-event';
+    const payload = parseOutboxPayload(job.data?.payload);
+    const shopId = asOptionalString(job.data?.shopId) ?? asOptionalString(payload.shopId);
+    if (!shopId) {
+      const message = `OutboxEvent ${eventId} (${job.name}) has no shopId at job level or in its payload; tenant context cannot be established.`;
+      this.logger.error(message);
+      await this.markFailed(eventId, message, claim);
+      throw new UnrecoverableError(message);
+    }
+
     const context: TenantContext = {
-      correlationId,
-      requestId: crypto.randomUUID(),
-      shopId: job.data?.shopId,
-      userId: job.data?.userId,
+      shopId,
+      userId: asOptionalString(job.data?.userId) ?? asOptionalString(payload.userId),
+      correlationId:
+        asOptionalString(job.data?.correlationId) ??
+        asOptionalString(payload.correlationId) ??
+        LEGACY_CORRELATION_ID,
+      requestId: randomUUID(),
     };
 
-    return new Promise((resolve, reject) => {
-      TenantContextService.asAsyncLocalStorage.run(context, async () => {
-        this.logger.debug(`Processing job ${job.name} (Event ID: ${eventId})`);
+    try {
+      const outcome = await this.tenantContext.runWithContext(context, () =>
+        this.handle(job, eventId, shopId, payload, context),
+      );
+      // The relay only claims the row (roadmap 4.7); the worker is what ends it.
+      await this.markDone(eventId, claim);
+      this.logger.log(`System event ${eventId} (${job.name}) for shop ${shopId}: ${outcome.status}`);
+      return outcome;
+    } catch (error) {
+      const message = errorMessage(error);
+      if (error instanceof UnrecoverableError || !this.isTransientError(error)) {
+        this.logger.error(`Permanent failure on system event ${eventId} (${job.name}): ${message}`);
+        await this.markFailed(eventId, message, claim);
+        throw error instanceof UnrecoverableError ? error : new UnrecoverableError(`Permanent failure: ${message}`);
+      }
+      // The worker is the only place a processing failure can be recorded.
+      // Once BullMQ has no retries left nothing else runs, so the final
+      // attempt must mark the row FAILED here or it stays CLAIMED until the
+      // reaper finds it.
+      const maxAttempts = job.opts.attempts ?? 1;
+      const attempt = job.attemptsMade + 1;
+      if (attempt >= maxAttempts) {
+        this.logger.error(
+          `System event ${eventId} (${job.name}) exhausted ${maxAttempts} attempt(s); marking FAILED: ${message}`,
+        );
+        await this.markFailed(eventId, message, claim);
+        throw error;
+      }
+      // BullMQ retries under the same job (the same claim): the row keeps its
+      // retryCount, which names the claim, and records the error.
+      this.logger.warn(`Transient failure on system event ${eventId} (${job.name}), attempt ${attempt}: ${message}`);
+      await this.recordTransientError(eventId, message, claim);
+      throw error;
+    }
+  }
 
-        try {
-      await this.prisma.$transaction(async (tx) => {
-        // 1. Database-Level Idempotency Check
-        const alreadyProcessed = await tx.auditLog.findFirst({
-          where: {
-            entity: 'OutboxEvent',
-            entityId: eventId,
-            action: 'SYSTEM_EVENT_PROCESSED'
-          }
-        });
+  private async handle(
+    job: Job<SystemEventJobData, unknown, string>,
+    eventId: string,
+    shopId: string,
+    payload: Record<string, unknown>,
+    context: TenantContext,
+  ): Promise<SystemEventOutcome> {
+    const lowStockAlerts: LowStockAlert[] = [];
+    let invalidateCache = false;
 
-        if (alreadyProcessed) {
-          this.logger.warn(`Idempotency hit: Event ${eventId} was already successfully handled. Skipping.`);
-          return;
-        }
-
-        // 2. Dispatch domain logic
-        const payload = job.data?.payload || job.data;
-        switch (job.name) {
-          case 'INVOICE_CREATED':
-            await this.handleInvoiceCreated(tx, payload);
-            break;
-          case 'BILL_SCANNED':
-            await this.handleBillScanned(tx, payload);
-            break;
-          default:
-            this.logger.warn(`Unknown job name: ${job.name}. Marking as processed to ignore.`);
-            break;
-        }
-
-        // 3. Commit Idempotency Record
+    const outcome = await this.prisma.$transaction(async (tx): Promise<SystemEventOutcome> => {
+      // Idempotency guard (audit R10). The marker is inserted FIRST, under a
+      // primary key derived from the event (`markerIdFor`), so it is the lock:
+      // a second worker on the same event (a claim the reaper returned while
+      // its first worker was still running, a redelivered job) blocks on that
+      // insert until the first transaction ends, then gets P2002 and skips;
+      // if the first rolled back, the second goes ahead. The former
+      // check-then-insert let two concurrent workers both find no marker and
+      // both raise the notifications. The lookup below only spares a
+      // sequential redelivery the duplicate-key error (and honours a marker
+      // written before the key was deterministic, under a random id); it is
+      // not the guard.
+      const existing = await tx.auditLog.findFirst({
+        where: { shopId, entity: 'OutboxEvent', entityId: eventId, action: SYSTEM_EVENT_PROCESSED_ACTION },
+        select: { id: true },
+      });
+      if (existing) {
+        this.logger.warn(`Idempotency hit: event ${eventId} (${job.name}) was already handled; skipping.`);
+        return { status: 'skipped-duplicate' };
+      }
+      try {
         await tx.auditLog.create({
           data: {
-            shopId: job.data?.shopId || null,
-            userId: job.data?.userId || 'SYSTEM',
-            action: 'SYSTEM_EVENT_PROCESSED',
+            id: markerIdFor(eventId),
+            shopId,
+            userId: await this.resolveActorId(tx, shopId, context.userId),
+            action: SYSTEM_EVENT_PROCESSED_ACTION,
             entity: 'OutboxEvent',
             entityId: eventId,
-            afterData: payload || {},
-          }
+            afterData: payload as unknown as Prisma.InputJsonObject,
+          },
         });
-      });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          this.logger.warn(`Idempotency hit: event ${eventId} (${job.name}) was already handled; skipping.`);
+          return { status: 'skipped-duplicate' };
+        }
+        throw error;
+      }
 
-      this.logger.log(`Successfully processed event ${eventId}`);
-      resolve(true);
-    } catch (error: any) {
-      this.logger.error(`Failed to process job ${job.id}: ${error.message}`);
-      
-      if (this.isTransientError(error)) {
-        reject(error);
-      } else {
-        reject(new UnrecoverableError(`Permanent failure: ${error.message}`));
+      let status: SystemEventOutcome['status'] = 'processed';
+      switch (job.name) {
+        case 'INVOICE_CREATED':
+          this.assertInvoicePayload(payload, job.name);
+          invalidateCache = true;
+          lowStockAlerts.push(...(await this.raiseLowStockNotifications(tx, shopId, payload)));
+          break;
+        case 'INVOICE_RETURNED':
+        case 'INVOICE_CANCELLED':
+          this.assertInvoicePayload(payload, job.name);
+          invalidateCache = true;
+          break;
+        case 'CUSTOMER_PAYMENT_RECORDED':
+          await this.handleCustomerPaymentRecorded(tx, shopId, payload);
+          // outstandingUdhar is part of the dashboard summary (contract §6).
+          invalidateCache = true;
+          break;
+        case 'BILL_SCANNED':
+          this.handleBillScanned(payload);
+          break;
+        default:
+          this.logger.warn(`Unknown job name ${job.name} for event ${eventId}; marking as processed so it is not retried.`);
+          status = 'ignored-unknown';
+      }
+
+      return { status };
+    }, { maxWait: 30_000, timeout: 60_000 });
+
+    // Post-commit, best effort (audit R10): the marker is committed, so neither
+    // the cache nor a socket may fail the job. The cache store never throws
+    // into a transaction anyway (Keyv answers a miss on a Redis error), so
+    // invalidating inside it only widened the window in which a dashboard read
+    // re-cached figures from before the commit. The billing flow already
+    // invalidated after its own commit; this second pass covers a read that
+    // raced it.
+    if (invalidateCache) {
+      try {
+        await invalidateAnalyticsCache(this.cache, shopId);
+        this.logger.debug(`${job.name} for event ${eventId}: analytics cache invalidated for shop ${shopId}`);
+      } catch (error) {
+        this.logger.warn(`Analytics cache invalidation after event ${eventId} failed: ${errorMessage(error)}`);
       }
     }
-      });
+    for (const alert of lowStockAlerts) {
+      try {
+        this.inventoryGateway.broadcastLowStockAlert(alert);
+      } catch (error) {
+        this.logger.warn(`Could not broadcast low-stock alert for product ${alert.productId}: ${errorMessage(error)}`);
+      }
+    }
+
+    return outcome;
+  }
+
+  /**
+   * Ledger, stock, udhar and shift were written atomically in the billing
+   * transaction; this worker only owns secondary effects (notifications, the
+   * cache, sockets). An invoice event without its invoice id is broken for good.
+   */
+  private assertInvoicePayload(payload: Record<string, unknown>, eventType: string): void {
+    if (!asOptionalString(payload.invoiceId)) {
+      throw new UnrecoverableError(`Invalid payload for ${eventType}: invoiceId is missing`);
+    }
+  }
+
+  /**
+   * One unread LOW_STOCK notification per product; re-raised only after the
+   * previous one was read. Three statements for the whole invoice (roadmap
+   * 5.7): the products of the sale, the unread LOW_STOCK notifications that
+   * already exist for them, and one `createMany` for the rest.
+   */
+  private async raiseLowStockNotifications(
+    tx: Prisma.TransactionClient,
+    shopId: string,
+    payload: Record<string, unknown>,
+  ): Promise<LowStockAlert[]> {
+    const invoiceId = asOptionalString(payload.invoiceId) ?? null;
+    const productIds = extractProductIds(payload.items);
+    if (productIds.length === 0) return [];
+
+    const products = await tx.product.findMany({
+      where: { id: { in: productIds }, shopId, isDeleted: false },
+      select: { id: true, name: true, currentStock: true, reorderPoint: true },
+    });
+    const found = new Set(products.map((p) => p.id));
+    for (const productId of productIds) {
+      if (!found.has(productId)) {
+        this.logger.warn(`Product ${productId} from invoice ${invoiceId} not found in shop ${shopId}; skipping low-stock check.`);
+      }
+    }
+
+    const lowStock = products.filter((product) => !product.currentStock.gt(product.reorderPoint));
+    if (lowStock.length === 0) return [];
+
+    const existing = await tx.notification.findMany({
+      where: { shopId, type: NotificationType.LOW_STOCK, entityId: { in: lowStock.map((p) => p.id) }, isRead: false, isDeleted: false },
+      select: { id: true, entityId: true },
+    });
+    const alreadyRaised = new Set(existing.map((n) => n.entityId));
+    for (const notification of existing) {
+      this.logger.debug(`Unread LOW_STOCK notification ${notification.id} already exists for product ${notification.entityId}; not duplicating.`);
+    }
+
+    const toRaise = lowStock.filter((product) => !alreadyRaised.has(product.id));
+    if (toRaise.length === 0) return [];
+
+    await tx.notification.createMany({
+      data: toRaise.map((product) => ({
+        shopId,
+        type: NotificationType.LOW_STOCK,
+        title: 'Low Stock Alert',
+        message: `${product.name} is low on stock: ${product.currentStock.toString()} left (reorder point ${product.reorderPoint.toString()}).`,
+        entityId: product.id,
+        metadata: {
+          productId: product.id,
+          currentStock: product.currentStock.toString(),
+          reorderPoint: product.reorderPoint.toString(),
+          invoiceId,
+        },
+      })),
+    });
+    return toRaise.map((product) => ({ productId: product.id, productName: product.name, currentStock: product.currentStock.toNumber() }));
+  }
+
+  private async handleCustomerPaymentRecorded(
+    tx: Prisma.TransactionClient,
+    shopId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const customerId = asOptionalString(payload.customerId);
+    const amount = toDecimal(payload.amount);
+    if (!customerId || !amount) {
+      throw new UnrecoverableError('Invalid payload for CUSTOMER_PAYMENT_RECORDED: customerId or amount is missing');
+    }
+
+    const customer = await tx.customer.findFirst({ where: { id: customerId, shopId }, select: { name: true } });
+    if (!customer) {
+      this.logger.warn(`Customer ${customerId} not found in shop ${shopId}; recording payment notification without a name.`);
+    }
+    const customerName = customer?.name ?? 'customer';
+    const tender = asOptionalString(payload.tender);
+
+    await tx.notification.create({
+      data: {
+        shopId,
+        type: NotificationType.PAYMENT_RECEIVED,
+        title: 'Payment received',
+        message: `Received ₹${amount.toFixed(2)} from ${customerName}${tender ? ` via ${tender}` : ''}.`,
+        entityId: customerId,
+        metadata: {
+          customerId,
+          transactionId: asOptionalString(payload.transactionId) ?? null,
+          amount: amount.toFixed(2),
+          tender: tender ?? null,
+        },
+      },
     });
   }
 
-  private isTransientError(error: any): boolean {
-    const msg = error.message?.toLowerCase() || '';
-    if (msg.includes('deadlock') || msg.includes('timeout') || msg.includes('connection')) {
-      return true;
+  private handleBillScanned(payload: Record<string, unknown>): void {
+    const billId = asOptionalString(payload.billId);
+    const fileUrl = asOptionalString(payload.fileUrl);
+    if (!billId || !fileUrl) {
+      throw new UnrecoverableError('Invalid payload for BILL_SCANNED: billId or fileUrl is missing');
     }
-    if (error.code && ['P1001', 'P1002', 'P1008', 'P1011'].includes(error.code)) {
-      return true;
-    }
-    return false;
+    this.logger.log(`Dispatching OCR job for bill ${billId} with url ${fileUrl}`);
   }
 
-  // Domain handlers using transaction client
-  private async handleInvoiceCreated(tx: Prisma.TransactionClient, data: any) {
-    if (!data.invoiceId || !data.shopId) {
-      throw new UnrecoverableError('Invalid payload for INVOICE_CREATED');
+  /**
+   * AuditLog.userId is a FK to User. Contract §7 guarantees userId on every
+   * payload; legacy rows may lack it, in which case the shop owner is used for
+   * the marker. No id is ever invented.
+   */
+  private async resolveActorId(tx: Prisma.TransactionClient, shopId: string, userId?: string): Promise<string> {
+    if (userId) return userId;
+    const shop = await tx.shop.findUnique({ where: { id: shopId }, select: { ownerId: true } });
+    if (!shop?.ownerId) {
+      throw new UnrecoverableError(`Cannot record idempotency marker for shop ${shopId}: event has no userId and the shop has no owner`);
     }
-
-    // Ledger entries are already created atomically inside the BillingService transaction.
-    // This worker handles secondary side-effects only (notifications, analytics, etc).
-    // Do NOT create duplicate ledger entries here.
-    this.logger.log(`Invoice ${data.invoiceId} event acknowledged. Ledger entries were created atomically in the billing transaction.`);
-    
-    // Future: Send notifications, update analytics, trigger reports, etc.
+    this.logger.warn(`Event has no userId; recording idempotency marker as shop ${shopId} owner ${shop.ownerId}`);
+    return shop.ownerId;
   }
 
-  private async handleBillScanned(tx: Prisma.TransactionClient, data: any) {
-    if (!data.billId || !data.fileUrl) {
-      throw new UnrecoverableError('Invalid payload for BILL_SCANNED');
+  /**
+   * OutboxEvent is tenant-owned (it carries shopId), and the row is settled
+   * after the tenant context of `handle` has ended (or never existed, when
+   * the job names no shop), so the worker settles it as the system tenant by
+   * id. Every settle is guarded (audit R10): only a row this job's claim still
+   * holds (CLAIMED / PROCESSING, and the retryCount of the job id) changes; a
+   * row the reaper handed back or another worker already ended is left alone.
+   */
+  private async settle(eventId: string, claim: OutboxClaimRef | undefined, data: Prisma.OutboxEventUpdateManyMutationInput, what: string): Promise<void> {
+    try {
+      // Awaited inside the scope: a PrismaPromise is lazy and would run outside the bypass otherwise.
+      const updated = await this.tenantContext.runAsSuperAdmin(async () =>
+        await this.prisma.outboxEvent.updateMany({ where: settleWhere(eventId, claim), data }),
+      );
+      if (updated.count === 0) this.logger.warn(`OutboxEvent ${eventId} not marked ${what}: it is no longer this job's claim`);
+    } catch (error) {
+      this.logger.error(`Could not mark OutboxEvent ${eventId} ${what}: ${errorMessage(error)}`);
     }
+  }
 
-    this.logger.log(`Dispatching OCR job for bill ${data.billId} with url ${data.fileUrl}`);
+  private markDone(eventId: string, claim?: OutboxClaimRef): Promise<void> {
+    return this.settle(eventId, claim, { status: 'DONE', processedAt: new Date(), error: null }, 'DONE');
+  }
+
+  private markFailed(eventId: string, message: string, claim?: OutboxClaimRef): Promise<void> {
+    return this.settle(eventId, claim, { status: 'FAILED', error: message.slice(0, MAX_ERROR_LENGTH), retryCount: { increment: 1 }, processedAt: new Date() }, 'FAILED');
+  }
+
+  private recordTransientError(eventId: string, message: string, claim?: OutboxClaimRef): Promise<void> {
+    return this.settle(eventId, claim, { error: message.slice(0, MAX_ERROR_LENGTH) }, 'with its transient error');
+  }
+
+  private isTransientError(error: unknown): boolean {
+    if (error instanceof UnrecoverableError) return false;
+    if (
+      error instanceof Prisma.PrismaClientInitializationError ||
+      error instanceof Prisma.PrismaClientRustPanicError
+    ) {
+      return true;
+    }
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code === 'string' && TRANSIENT_PRISMA_CODES.has(code)) return true;
+
+    const message = errorMessage(error).toLowerCase();
+    return (
+      message.includes('deadlock') ||
+      message.includes('unable to start a transaction') ||
+      message.includes('timeout') ||
+      message.includes('timed out') ||
+      message.includes('connection') ||
+      message.includes('econnrefused') ||
+      message.includes('econnreset') ||
+      message.includes('enableofflinequeue')
+    );
   }
 }

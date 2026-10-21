@@ -2,6 +2,8 @@ import { Injectable, Inject, Optional } from '@nestjs/common';
 import { VALIDATION_RULE, ValidationRule } from './interfaces/validation-rule.interface';
 import { ValidationContext } from './validation.context';
 import { ValidationError } from './interfaces/validation-error.interface';
+import { ValidationCategory } from './enums/validation-category.enum';
+import { ValidationSeverity } from './enums/validation-severity.enum';
 
 @Injectable()
 export class ValidationEngine {
@@ -28,8 +30,8 @@ export class ValidationEngine {
         allErrors.push({
           domain: 'ValidationEngine',
           reason: `Rule execution failed: ${error.message}`,
-          severity: require('./enums/validation-severity.enum').ValidationSeverity.CRITICAL,
-          category: require('./enums/validation-category.enum').ValidationCategory.RUNTIME,
+          severity: ValidationSeverity.CRITICAL,
+          category: ValidationCategory.RUNTIME,
           resolution: 'Ensure the validation rule is purely functional and does not throw exceptions.'
         });
       }

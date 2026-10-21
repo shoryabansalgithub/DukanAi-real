@@ -1,9 +1,9 @@
-import { UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { AuthConfig, parseGoogleClientId } from '../config/domains/auth.config';
 import { GoogleIdentityService } from './google-identity.service';
 
 describe('GoogleIdentityService', () => {
-  const config = { getOrThrow: jest.fn().mockReturnValue('web-client-id') } as unknown as ConfigService;
+  const config = { authDisabled: false, googleClientId: 'web-client-id' } as AuthConfig;
   const service = new GoogleIdentityService(config);
   const originalFetch = global.fetch;
 
@@ -49,5 +49,22 @@ describe('GoogleIdentityService', () => {
     global.fetch = jest.fn().mockResolvedValue({ ok: false });
 
     await expect(service.verifyIdToken('expired-token')).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('answers 503 GOOGLE_SIGNIN_NOT_CONFIGURED without a client id, before calling Google (roadmap 9.19)', async () => {
+    global.fetch = jest.fn();
+    const unconfigured = new GoogleIdentityService({ authDisabled: false } as AuthConfig);
+    const outcome = unconfigured.verifyIdToken('signed-id-token');
+    await expect(outcome).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(outcome).rejects.toMatchObject({ response: { code: 'GOOGLE_SIGNIN_NOT_CONFIGURED' } });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('treats a blank or template client id as Google sign-in off', () => {
+    expect(parseGoogleClientId(undefined)).toBeUndefined();
+    expect(parseGoogleClientId('  ')).toBeUndefined();
+    expect(parseGoogleClientId('___REPLACE_ME_IN_PRODUCTION___')).toBeUndefined();
+    expect(parseGoogleClientId('your_google_client_id.apps.googleusercontent.com')).toBeUndefined();
+    expect(parseGoogleClientId(' 123-abc.apps.googleusercontent.com ')).toBe('123-abc.apps.googleusercontent.com');
   });
 });

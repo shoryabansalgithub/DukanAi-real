@@ -73,6 +73,23 @@
     --input: 217.2 32.6% 17.5%;
     --ring: 262.1 83.3% 57.8%;
   }
+
+  /* The sidebar is dark navy in both themes, so it keeps the light theme's
+     palette: inverted, its white brand name and card titles turned near
+     black on navy. */
+  .dark .sidebar-bg {
+    --color-white: #ffffff;
+    --color-gray-50: #f9fafb;
+    --color-gray-100: #f3f4f6;
+    --color-gray-200: #e5e7eb;
+    --color-gray-300: #d1d5db;
+    --color-gray-400: #9ca3af;
+    --color-gray-500: #6b7280;
+    --color-gray-600: #4b5563;
+    --color-gray-700: #374151;
+    --color-gray-800: #1f2937;
+    --color-gray-900: #111827;
+  }
 }
 
 @layer base {
@@ -82,10 +99,96 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Native controls (date pickers, scrollbars, checkboxes) follow the theme. */
+  .dark {
+    color-scheme: dark;
+  }
+  /* A field without a background class sits on the themed surface: the
+     browser's own field colour stays white in dark mode while the text
+     inherits the light foreground, which made every dialog form white on
+     white. `:where` keeps this below any utility class. `white` and the grays
+     are already inverted by `.dark` above, so a `dark:` variant on them flips
+     them back (a dark-mode gray-900 background renders white): never add one
+     (e2e/dark-mode.spec.ts scans for them). */
+  input:where(:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file'], [type='button'], [type='submit'], [type='reset'], [type='image'])),
+  textarea,
+  select {
+    background-color: var(--color-white);
+  }
 }
 
 @layer utilities {
   .sidebar-bg {
     background-color: #111122; /* Very dark navy/indigo */
+  }
+  /* The menu list scrolls on short windows: a thin, visible scrollbar says so. */
+  .sidebar-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Receipt printing (EXEC-006C). The receipt page renders into a body-level
+   `.receipt-print-root` portal; while it is mounted only that element prints,
+   sized by the page's own `@page` rule (roadmap 6.7: print CSS per page).
+   Everything marked `.print-hidden` is dropped on every page.
+   --------------------------------------------------------------------------- */
+/* Skeleton pulse (roadmap 6.8): the same 0.5 → 0.8 → 0.5 opacity cycle the
+   framer-motion loop produced, now a compositor-only CSS animation. */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.8; }
+}
+.skeleton-pulse {
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-pulse { animation: none; opacity: 0.6; }
+}
+
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Every page: the shell (sidebar, navbar, banners, toolbars) is dropped; the page's own <PrintPageStyle> sets @page. */
+  .print-hidden {
+    display: none !important;
+  }
+
+  /* Receipt page: only the 80 mm portal prints. */
+  body:has(.receipt-print-root) > *:not(.receipt-print-root) {
+    display: none !important;
+  }
+
+  .receipt-print-root {
+    position: static !important;
+    inset: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    z-index: auto !important;
+  }
+
+  .receipt-paper {
+    width: auto !important;
+    max-width: 72mm;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-shadow: none !important;
+    border: 0 !important;
+  }
+
+  /* Documents (invoice detail): cards flatten to paper, no hover chrome. */
+  .print-document {
+    max-width: none !important;
+  }
+  .print-document .hoverable,
+  .print-document [class*='shadow'] {
+    box-shadow: none !important;
   }
 }

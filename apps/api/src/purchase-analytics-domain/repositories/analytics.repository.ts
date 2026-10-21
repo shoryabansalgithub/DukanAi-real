@@ -12,9 +12,9 @@ export class AnalyticsRepository {
 
   // Low-level snapshot insertion utilized heavily by the Background Jobs
   
-  async upsertDashboardSnapshot(shopId: string, date: Date, data: any) {
-    // Normalize date to midnight UTC for unique grouping
-    const normalizedDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  /** `dateKey` is the shop's business date as UTC midnight (`purchaseBusinessDates`); it is stored as given. */
+  async upsertDashboardSnapshot(shopId: string, dateKey: Date, data: any) {
+    const normalizedDate = new Date(Date.UTC(dateKey.getUTCFullYear(), dateKey.getUTCMonth(), dateKey.getUTCDate()));
     
     return this.prisma.purchaseAnalyticsSnapshot.upsert({
       where: {
@@ -61,22 +61,26 @@ export class AnalyticsRepository {
     });
   }
 
-  async upsertCategorySpendSnapshot(shopId: string, categoryId: string, data: any) {
+  async upsertCategorySpendSnapshot(shopId: string, categoryId: string, data: any, departmentId: string | null = null) {
+    // The unique key is (shopId, categoryId, departmentKey): departmentKey
+    // mirrors departmentId with '-' for "no department", because MySQL never
+    // compares NULLs in a unique index (phase 8 exit gate). Both are written.
+    const departmentKey = departmentId ?? '-';
     return this.prisma.purchaseCategorySpendSnapshot.upsert({
-      // We assume departmentId is null for this simple aggregation
       where: {
-        shopId_categoryId_departmentId: { shopId, categoryId, departmentId: '' } // empty string or null depending on schema
+        shopId_categoryId_departmentKey: { shopId, categoryId, departmentKey },
       },
       update: {
         totalSpend: data.totalSpend,
-        growthPct: data.growthPct
+        growthPct: data.growthPct,
       },
       create: {
         shopId,
         categoryId,
-        departmentId: '',
-        ...data
-      }
+        departmentId,
+        departmentKey,
+        ...data,
+      },
     });
   }
 

@@ -2,6 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { WorkflowBudgetService } from './workflow-budget.service';
 
+/** Where each document type lives and which instance column binds it. */
+const DOCUMENT_BINDINGS: Record<string, { table: Prisma.Sql; column: 'purchaseOrderId' | 'vendorBillId' | 'goodsReceiptId' | 'purchaseReturnId' | 'supplierCreditId' }> = {
+  PURCHASE_ORDER: { table: Prisma.raw('PurchaseOrder'), column: 'purchaseOrderId' },
+  VENDOR_BILL: { table: Prisma.raw('VendorBill'), column: 'vendorBillId' },
+  GRN: { table: Prisma.raw('GoodsReceipt'), column: 'goodsReceiptId' },
+  PURCHASE_RETURN: { table: Prisma.raw('PurchaseReturn'), column: 'purchaseReturnId' },
+  SUPPLIER_CREDIT: { table: Prisma.raw('SupplierCreditNote'), column: 'supplierCreditId' },
+};
+
 @Injectable()
 export class WorkflowEngineService {
   private readonly logger = new Logger(WorkflowEngineService.name);
@@ -26,6 +35,22 @@ export class WorkflowEngineService {
       return null;
     }
 
+    // One active workflow per document (release audit T4): a redelivered
+    // event or a resubmission does not start a second approval chain. The
+    // document row is locked first so two concurrent deliveries decide one
+    // after the other.
+    const binding = DOCUMENT_BINDINGS[documentType];
+    if (!binding) {
+      this.logger.warn(`Unknown workflow document type ${documentType}`);
+      return null;
+    }
+    await tx.$queryRaw`SELECT id FROM ${binding.table} WHERE id = ${documentId} AND shopId = ${shopId} FOR UPDATE`;
+    const active = await tx.workflowInstance.findFirst({ where: { shopId, status: 'ACTIVE', [binding.column]: documentId }, select: { id: true } });
+    if (active) {
+      this.logger.log(`${documentType} ${documentId} already has the active workflow ${active.id}; not starting another.`);
+      return null;
+    }
+
     // In a real enterprise engine, we evaluate `def.conditions` (JSON expression) against `payload`
     // to pick the exact matching definition. For MVP, we pick the first one.
     const definition = defs[0];
@@ -42,15 +67,10 @@ export class WorkflowEngineService {
       workflowDefinitionId: definition.id,
       status: 'ACTIVE',
       currentStepOrder: 1,
-      startedBy: 'SYSTEM'
+      startedBy: 'SYSTEM',
+      // Bind Document
+      [binding.column]: documentId,
     };
-
-    // Bind Document
-    if (documentType === 'PURCHASE_ORDER') instanceData.purchaseOrderId = documentId;
-    if (documentType === 'VENDOR_BILL') instanceData.vendorBillId = documentId;
-    if (documentType === 'GRN') instanceData.goodsReceiptId = documentId;
-    if (documentType === 'PURCHASE_RETURN') instanceData.purchaseReturnId = documentId;
-    if (documentType === 'SUPPLIER_CREDIT') instanceData.supplierCreditId = documentId;
 
     const instance = await tx.workflowInstance.create({
       data: instanceData

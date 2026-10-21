@@ -1,4 +1,4 @@
-import { SetMetadata } from '@nestjs/common';
+import { Abstract, SetMetadata, Type } from '@nestjs/common';
 import { ConfigDomainMetadata } from './registry.types';
 import { Expose } from 'class-transformer';
 
@@ -20,4 +20,7 @@ export function EnvVariable(name: string): PropertyDecorator {
   };
 }
 
-export const RuleDependencies = (domains: Function[]) => SetMetadata(RULE_DEPENDENCIES_KEY, domains);
+/** A class carrying `@ConfigDomain` metadata (the provider token or metatype). */
+export type ConfigDomainClass = Type<unknown> | Abstract<unknown>;
+
+export const RuleDependencies = (domains: ConfigDomainClass[]) => SetMetadata(RULE_DEPENDENCIES_KEY, domains);

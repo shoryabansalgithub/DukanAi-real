@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": {
+      "value": "dukaanai"
+    },
+    "location": {
+      "value": "centralindia"
+    },
+    "sshSourceCidr": {
+      "value": "203.0.113.7/32"
+    },
+    "vmAdminUser": {
+      "value": "dukaan"
+    },
+    "osDiskType": {
+      "value": "StandardSSD_LRS"
+    },
+    "mysqlAdminUser": {
+      "value": "dukaanadmin"
+    },
+    "bootstrapRef": {
+      "value": ""
+    }
+  }
+}
