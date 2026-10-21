@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import dynamic from 'next/dynamic';
@@ -23,6 +23,23 @@ export const TREND_RANGES: Array<{ label: string; days: number }> = [
   { label: 'This Year', days: 365 },
 ];
 
+/** recharts measures its container; with no box (the card is hidden on phones) it can only warn, so the chart waits for one. */
+function useHasBox() {
+  const [node, setNode] = useState<HTMLDivElement | null>(null);
+  const [hasBox, setHasBox] = useState(false);
+  useLayoutEffect(() => {
+    if (!node) {
+      setHasBox(false);
+      return;
+    }
+    setHasBox(node.getBoundingClientRect().width > 0);
+    const observer = new ResizeObserver(([entry]) => setHasBox(entry.contentRect.width > 0));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [node]);
+  return [setNode, hasBox] as const;
+}
+
 interface SalesTrendCardProps {
   trend: TrendPoint[] | null;
   loading: boolean;
@@ -37,6 +54,7 @@ interface SalesTrendCardProps {
 export function SalesTrendCard({ trend, loading, error, days, onDaysChange, onRetry, className = '' }: SalesTrendCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [chartBox, hasBox] = useHasBox();
   const current = TREND_RANGES.find((range) => range.days === days) ?? TREND_RANGES[1];
 
   useEffect(() => {
@@ -105,8 +123,8 @@ export function SalesTrendCard({ trend, loading, error, days, onDaysChange, onRe
           <ErrorState compact title="Trend unavailable" message={error} onRetry={onRetry} retrying={loading} />
         </div>
       ) : hasData ? (
-        <div className="mt-2 h-[190px] w-full">
-          <SalesTrendChart trend={trend ?? []} />
+        <div ref={chartBox} className="mt-2 h-[190px] w-full">
+          {hasBox && <SalesTrendChart trend={trend ?? []} />}
         </div>
       ) : (
         <div className="mt-4 flex h-[180px] items-center justify-center rounded-lg border border-dashed border-gray-200 bg-gray-50 px-6 text-center text-sm text-gray-500">
