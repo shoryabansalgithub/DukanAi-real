@@ -7,6 +7,7 @@ import { SkeletonBox } from '@/components/ui/Skeleton';
 import { useToast } from '@/components/ui/Toast';
 import { shiftsApi } from '@/lib/api-client';
 import type { Shift } from '@/types';
+import { DRAWER_AMOUNT_BLANK_MESSAGE } from '@/lib/drawer-amount';
 import { backgroundRetryDelayMs, extractApiError, isRetryableFailure } from './api-errors';
 import { money, signedMoney, timeOnly } from './format';
 
@@ -218,7 +219,7 @@ export function OpenShiftModal({ isOpen, onClose, onOpened, onAlreadyOpen }: Ope
     e.preventDefault();
     const amount = Number(openingCash);
     if (!Number.isFinite(amount) || amount < 0) {
-      setError('Enter the cash in the drawer (0 or more).');
+      setError(DRAWER_AMOUNT_BLANK_MESSAGE.open);
       return;
     }
     setSubmitting(true);
@@ -315,7 +316,7 @@ export function CloseShiftModal({ isOpen, shift, onClose, onClosed }: CloseShift
     // A blank field is not a count: Number('') is 0 and closed the drawer at ₹0 (audit W5).
     const amount = closingCash.trim() === '' ? Number.NaN : Number(closingCash);
     if (!Number.isFinite(amount) || amount < 0) {
-      setError('Enter the cash counted in the drawer (0 or more).');
+      setError(DRAWER_AMOUNT_BLANK_MESSAGE.close);
       return;
     }
     setSubmitting(true);
