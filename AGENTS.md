@@ -814,7 +814,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
   same `deepmerge` export; `prisma generate` / `migrate` run on it),
-  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 (next 16
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, `@nestjs/platform-express`'s
+  exact `multer` pin (2.4.0) to 2.5.x, and `postcss` to 8.5.28 (next 16
   pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
