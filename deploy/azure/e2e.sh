@@ -377,7 +377,15 @@ step_backups() {
   printf '%s\n' "$out" | grep '==>' || true
   raw="$(dc exec -T fake-b2 sh -c "cd /data/$BUCKET/prod && find . -type f" 2>/dev/null)"
   note "$(wc -l <<<"$raw" | tr -d ' ') objects under $BUCKET/prod"
-  if grep -Eqi 'sql|tar|sha256|hourly|documents|status|dukaanai' <<<"$raw"; then fail "a readable name in the bucket"; fi
+  # Standard crypt names are lowercase base32hex (0-9a-v), so a substring grep
+  # for "sql" or "tar" matches random names now and then. Instead every stored
+  # segment must be base32hex and equal to no plaintext segment of the listing.
+  if awk -F/ 'NR == FNR { plain[$0] = 1; next }
+      { for (i = 2; i <= NF; i++) if (($i in plain) || $i !~ /^[0-9a-v]+$/) bad = 1 }
+      END { exit !bad }' \
+      <(awk '{ print $NF }' <<<"$listing" | tr '/' '\n') <(printf '%s\n' "$raw"); then
+    fail "a readable name in the bucket"
+  fi
   header="$(dc exec -T fake-b2 sh -c "cd /data/$BUCKET/prod && head -c 8 \"\$(find . -type f | head -n 1)\"" 2>/dev/null | head -c 6)"
   [ "$header" = RCLONE ] || fail "the objects are not rclone crypt files (header '$header')"
   detail "hourly dump + push ($new new of $total, the rest confirmed); hourly dump and documents archive listed; full check passed; names and bytes encrypted"

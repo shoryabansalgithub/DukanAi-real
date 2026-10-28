@@ -6,13 +6,13 @@ import { useRouter } from 'next/navigation';
 import { Bell, Check, Moon, Search, Sun } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useSession } from 'next-auth/react';
-import { signOutEverywhere } from '@/lib/sign-out';
 import { useTheme } from '@/hooks/useTheme';
 import { AUTH_DISABLED } from '@/lib/auth-bypass';
 import { notificationsApi, type NotificationView } from '@/lib/api-client';
 import { describeApiError } from '@/lib/api-error';
 import { useVisibilityPolling } from '@/components/dashboard/useVisibilityPolling';
 import { isManagement } from '@/components/customers/permissions';
+import { ProfileMenu } from '@/components/navigation/ProfileMenu';
 
 const NOTIFICATION_POLL_MS = 60 * 1000;
 const DROPDOWN_LIMIT = 5;
@@ -293,19 +293,8 @@ export function Navbar() {
         )}
 
         <div className="relative">
-          {status === 'authenticated' ? (
-            <button
-              type="button"
-              onClick={() => void signOutEverywhere('/login')}
-              className="flex items-center gap-3 pl-5 border-l border-gray-100 hover:bg-gray-50 p-2 rounded-xl transition-colors"
-              title="Sign out"
-            >
-              <div className="text-right hidden sm:block">
-                <p className="text-[13px] font-bold text-gray-800 leading-tight">{session.user?.name || session.user?.email}</p>
-                <p className="text-[11px] text-red-500 font-bold mt-0.5 hover:underline">Sign Out</p>
-              </div>
-              <div className="flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 bg-violet-100 text-sm font-bold text-violet-700">{(session.user?.name || session.user?.email || 'U').slice(0, 1).toUpperCase()}</div>
-            </button>
+          {status === 'authenticated' && session.user ? (
+            <ProfileMenu user={session.user} />
           ) : AUTH_DISABLED ? (
             <div
               className="flex items-center gap-3 pl-5 border-l border-gray-100 p-2"
