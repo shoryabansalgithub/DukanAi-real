@@ -175,9 +175,9 @@ test.describe('marketing site', () => {
   test('the application and sign-in pages stay out of the index', async ({ request }) => {
     const robots = await (await request.get('/robots.txt')).text();
     expect(robots).toContain(`Sitemap: ${SITE_ORIGIN}/sitemap.xml`);
-    // Every app route directory is closed to crawlers.
+    // Every app route directory is closed to crawlers (route groups and the `[...missing]` catch-all are not addresses).
     const appDir = path.resolve(__dirname, '../src/app/(app)');
-    const routes = fs.readdirSync(appDir, { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('('));
+    const routes = fs.readdirSync(appDir, { withFileTypes: true }).filter((d) => d.isDirectory() && !/^[([]/.test(d.name));
     expect(routes.length).toBeGreaterThan(10);
     for (const route of routes) expect(robots, route.name).toContain(`Disallow: /${route.name}\n`);
 
