@@ -15,7 +15,10 @@ const SIZES = [
 ];
 
 async function renderedFontFamily(page: Page, selector: string) {
-  return page.locator(selector).first().evaluate((el) => getComputedStyle(el).fontFamily);
+  return page
+    .locator(selector)
+    .first()
+    .evaluate((el) => getComputedStyle(el).fontFamily);
 }
 
 for (const size of SIZES) {
