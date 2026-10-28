@@ -52,6 +52,14 @@ const nextConfig = {
   async headers() {
     return [{ source: '/(.*)', headers: SECURITY_HEADERS }];
   },
+  /**
+   * Every public page has a Markdown twin for AI agents at the same path
+   * plus `.md` (`/index.md` for the home page), listed in /llms.txt and
+   * served by src/app/markdown/[...slug]/route.ts.
+   */
+  async rewrites() {
+    return { beforeFiles: [{ source: '/:path*.md', destination: '/markdown/:path*' }] };
+  },
 };
 
 module.exports = nextConfig;

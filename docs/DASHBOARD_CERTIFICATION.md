@@ -5,7 +5,7 @@ held by an automated test, so the certification is re-checked by running the
 suites listed at the end.
 
 The API contract is `docs/POS_BILLING_CONTRACT.md` §6. The page is
-`apps/web/src/app/dashboard/page.tsx`.
+`apps/web/src/app/(app)/dashboard/page.tsx`.
 
 ## Targets
 

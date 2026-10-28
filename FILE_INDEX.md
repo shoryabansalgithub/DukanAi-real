@@ -26,7 +26,7 @@
 - [README.md](./README.md) - Project overview
 
 ### 💻 **Frontend Code** (Want to build?)
-- [apps/web/src/app/dashboard/page.tsx](./apps/web/src/app/dashboard/page.tsx) - Main dashboard
+- [apps/web/src/app/(app)/dashboard/page.tsx](./apps/web/src/app/(app)/dashboard/page.tsx) - Main dashboard
 - [apps/web/src/components/](./apps/web/src/components/) - All components
 - `apps/web/src/lib/api-client.ts` - every page reads and writes through the API (the former `src/data/mockData.ts` is gone: there is no mock data)
 
@@ -76,7 +76,7 @@ apps/web/
 ```
 src/app/
 ├── 📄 layout.tsx                    Root layout wrapper
-├── 📄 page.tsx                      Home page (redirect)
+├── 📁 (marketing)/                  Public landing, features, guides (indexable)
 ├── 📄 globals.css                   Global styles & theme
 │
 ├── 📁 dashboard/
@@ -391,7 +391,7 @@ apps/web/package.json       ← Build scripts
 ## 🔗 Quick Links
 
 - **Frontend**: `apps/web/`
-- **Dashboard**: `apps/web/src/app/dashboard/page.tsx`
+- **Dashboard**: `apps/web/src/app/(app)/dashboard/page.tsx`
 - **Components**: `apps/web/src/components/`
 - **Types**: `apps/web/src/types/index.ts`
 - **Mock Data**: `apps/web/src/data/mockData.ts`

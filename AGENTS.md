@@ -684,7 +684,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `fetch('data:…')` is a connection under `connect-src` and is refused:
   decode data URLs with `dataUrlToBlob` (`src/lib/data-url.ts`), never fetch
   them.
-- 6.5 web robustness: `app/error.tsx` (page segment, keeps the shell) and
+- 6.5 web robustness: `app/(app)/error.tsx` (page segment, keeps the shell) and
   `app/global-error.tsx` (root layout, inline styles only). `src/lib/uuid.ts`
   is the one uuid v4 (falls back from `crypto.randomUUID` to
   `getRandomValues`); the POS store and `RecordPaymentModal` use it. The POS

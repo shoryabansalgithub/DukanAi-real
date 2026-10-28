@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getToken } from 'next-auth/jwt';
 import { AUTH_BYPASS_REFUSED, AUTH_DISABLED } from '@/lib/auth-bypass';
+import { isMarketingPath } from '@/marketing/paths';
 
 /**
  * Route gate and per-request security policy (roadmap 6.4). Next.js 16 runs this as the
  * `proxy` (the former middleware convention) on the Node.js runtime for every matched request.
+ *
+ * The marketing pages (`src/marketing/paths.ts`) are public and indexable;
+ * the root `/` is the landing page for a visitor without a session and sends
+ * a signed-in one (or any request under the auth bypass) to /dashboard, as it
+ * always did.
  *
  * Every app page needs a valid NextAuth session: the JWT inside the cookie is
  * verified with `getToken` (signature, expiry, and no refresh failure), not
@@ -82,23 +88,28 @@ function withSecurityPolicy(req: NextRequest, response?: NextResponse): NextResp
   return res;
 }
 
+async function hasSession(req: NextRequest): Promise<boolean> {
+  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  return Boolean(token && !token.error);
+}
+
 export async function proxy(req: NextRequest) {
   if (AUTH_BYPASS_REFUSED) {
     // A production server started with NEXT_PUBLIC_AUTH_DISABLED (next.config.js already refuses to boot).
     return new NextResponse('Authentication bypass is not permitted in production.', { status: 503 });
   }
 
-  if (AUTH_DISABLED) {
-    return withSecurityPolicy(req);
-  }
-
   const { pathname, search } = req.nextUrl;
-  if (isPublicPath(pathname)) {
+  if (pathname === '/') {
+    const signedIn = AUTH_DISABLED || (await hasSession(req));
+    return signedIn ? withSecurityPolicy(req, NextResponse.redirect(new URL('/dashboard', req.url))) : withSecurityPolicy(req);
+  }
+
+  if (AUTH_DISABLED || isPublicPath(pathname) || isMarketingPath(pathname)) {
     return withSecurityPolicy(req);
   }
 
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
-  if (token && !token.error) {
+  if (await hasSession(req)) {
     return withSecurityPolicy(req);
   }
 
