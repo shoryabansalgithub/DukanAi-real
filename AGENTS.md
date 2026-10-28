@@ -814,7 +814,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
   same `deepmerge` export; `prisma generate` / `migrate` run on it),
-  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 (next 16
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, `multer` to 2.5.x
+  (`@nestjs/platform-express` 11 pins 2.4.0 exactly; a scoped override is
+  ignored for that pin, so it is global and equals the API's own range),
+  and `postcss` to 8.5.28 (next 16
   pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
@@ -1936,7 +1939,13 @@ the fixes made true, and must stay true:
   sidebar is navy in both themes. The sidebar pins Notifications and Settings
   under the scrolling list inside the same `nav` "Main" (`pinned` items) and
   the Upgrade card shrinks under `max-height` 820 / 640 px
-  (`e2e/sidebar.spec.ts`, five window sizes). Expense receipts:
+  (`e2e/sidebar.spec.ts`, five window sizes). Tailwind's `font-sans` stack
+  starts with `var(--font-sans)`, defined in `globals.css` `:root`: an
+  undefined `var()` voids the whole `font-family` and every page fell back
+  to serif (Times). On a phone the navbar search takes the width the icons
+  leave and starts clear of the sidebar's fixed menu button (`pl-16`);
+  `e2e/navbar-typography.spec.ts` checks the font at 1440 and 390 px and
+  the search at 390 px. Expense receipts:
   `POST /expenses/:id/receipt` (MANAGEMENT_ROLES, `documents` feature gate,
   multer memory storage with `expenseReceiptUploadPolicy`: JPEG / PNG / PDF,
   10 MB, bytes sniffed) writes `<shop>/Expenses/<id>/receipt-<stamp>.<ext>`
