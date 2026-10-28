@@ -8,14 +8,22 @@ import { expect, test, type Page } from '@playwright/test';
 
 const PASSWORD = 'Str0ng-Passw0rd!';
 
-async function registerOwner(page: Page): Promise<{ name: string; email: string; shopName: string }> {
+async function registerOwner(
+  page: Page
+): Promise<{ name: string; email: string; shopName: string }> {
   const id = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
-  const owner = { name: 'Popup Owner', email: `popup-${id}@example.com`, shopName: `Popup Kirana ${id}` };
+  const owner = {
+    name: 'Popup Owner',
+    email: `popup-${id}@example.com`,
+    shopName: `Popup Kirana ${id}`,
+  };
   // On a cold dev server the register page's concurrent session reads each set a different NextAuth CSRF
   // cookie and the credentials callback is refused. Settle the cookie on the login page first.
   await page.goto('/login');
   await expect
-    .poll(async () => (await page.context().cookies()).some((c) => c.name === 'next-auth.csrf-token'))
+    .poll(async () =>
+      (await page.context().cookies()).some((c) => c.name === 'next-auth.csrf-token')
+    )
     .toBe(true);
   await page.goto('/register');
   await page.getByPlaceholder('Rajesh Kumar').fill(owner.name);
@@ -28,11 +36,20 @@ async function registerOwner(page: Page): Promise<{ name: string; email: string;
 }
 
 async function sessionUser(page: Page): Promise<boolean> {
-  return page.evaluate(() => fetch('/api/auth/session').then((r) => r.json()).then((s) => Boolean(s && s.user)));
+  return page.evaluate(() =>
+    fetch('/api/auth/session')
+      .then((r) => r.json())
+      .then((s) => Boolean(s && s.user))
+  );
 }
 
-for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
-  test(`at ${viewport.width}px the name and avatar open a profile popup that closes every way and signs out only from its button`, async ({ page }) => {
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`at ${viewport.width}px the name and avatar open a profile popup that closes every way and signs out only from its button`, async ({
+    page,
+  }) => {
     await page.setViewportSize(viewport);
     const owner = await registerOwner(page);
     const trigger = page.getByRole('button', { name: `${owner.name}, account` });

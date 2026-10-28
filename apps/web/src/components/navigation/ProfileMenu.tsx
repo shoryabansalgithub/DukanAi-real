@@ -37,7 +37,7 @@ export function ProfileMenu({ user }: { user: ProfileUser }) {
 
   const displayName = user.name || user.email || 'Account';
   const email = user.name ? user.email : null;
-  const roleLabel = user.role ? ROLE_LABELS[user.role] ?? user.role : null;
+  const roleLabel = user.role ? (ROLE_LABELS[user.role] ?? user.role) : null;
 
   const close = useCallback((returnFocus: boolean) => {
     setOpen(false);
@@ -114,7 +114,9 @@ export function ProfileMenu({ user }: { user: ProfileUser }) {
         aria-label={`${displayName}, account`}
         className="group flex items-center gap-2.5 rounded-xl p-1.5 sm:pl-3 transition-colors hover:bg-gray-50 aria-expanded:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
       >
-        <span className="hidden sm:block max-w-[12rem] truncate text-[13px] font-bold leading-tight text-gray-800">{displayName}</span>
+        <span className="hidden sm:block max-w-[12rem] truncate text-[13px] font-bold leading-tight text-gray-800">
+          {displayName}
+        </span>
         <span
           aria-hidden="true"
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-violet-100 text-sm font-bold text-violet-700"
@@ -138,8 +140,22 @@ export function ProfileMenu({ user }: { user: ProfileUser }) {
             aria-labelledby={titleId}
             tabIndex={-1}
             initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: -4 }}
-            animate={{ opacity: 1, scale: 1, y: 0, transition: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, y: -2, transition: { duration: 0.1, ease: [0.4, 0, 1, 1] } }}
+            animate={{
+              opacity: 1,
+              scale: 1,
+              y: 0,
+              transition: { duration: 0.16, ease: [0.2, 0, 0, 1] },
+            }}
+            exit={
+              reduceMotion
+                ? { opacity: 0 }
+                : {
+                    opacity: 0,
+                    scale: 0.98,
+                    y: -2,
+                    transition: { duration: 0.1, ease: [0.4, 0, 1, 1] },
+                  }
+            }
             // Grows out of the avatar it hangs from.
             className="absolute right-0 top-full z-50 mt-[1.125rem] w-[min(18rem,calc(100vw-2rem))] origin-top-right overflow-hidden rounded-xl border border-gray-100 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06),0_16px_40px_-12px_rgba(15,23,42,0.28)] focus:outline-none"
           >
@@ -152,7 +168,11 @@ export function ProfileMenu({ user }: { user: ProfileUser }) {
               </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <p id={titleId} className="min-w-0 truncate text-sm font-bold leading-5 text-gray-800" title={displayName}>
+                  <p
+                    id={titleId}
+                    className="min-w-0 truncate text-sm font-bold leading-5 text-gray-800"
+                    title={displayName}
+                  >
                     {displayName}
                   </p>
                   {roleLabel && (
@@ -180,9 +200,15 @@ export function ProfileMenu({ user }: { user: ProfileUser }) {
                 <div className="min-w-0 flex-1">
                   <p className="text-[11px] leading-4 text-gray-500">Signed in to</p>
                   {shopName === undefined ? (
-                    <span className="skeleton-pulse mt-1 block h-3.5 w-28 rounded bg-gray-200" aria-label="Loading shop" />
+                    <span
+                      className="skeleton-pulse mt-1 block h-3.5 w-28 rounded bg-gray-200"
+                      aria-label="Loading shop"
+                    />
                   ) : (
-                    <p className="truncate text-[13px] font-semibold leading-5 text-gray-800" title={shopName}>
+                    <p
+                      className="truncate text-[13px] font-semibold leading-5 text-gray-800"
+                      title={shopName}
+                    >
                       {shopName}
                     </p>
                   )}
