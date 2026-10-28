@@ -31,7 +31,10 @@
   },
   "overrides": {
     "next-auth": {
-      "nodemailer": "^10.0.13"
+      "nodemailer": "^10.1.4"
+    },
+    "@nestjs/platform-express": {
+      "multer": "^2.5.0"
     },
     "@prisma/config": {
       "deepmerge-ts": "^8.0.2"
