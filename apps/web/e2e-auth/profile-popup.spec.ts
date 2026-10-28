@@ -11,6 +11,12 @@ const PASSWORD = 'Str0ng-Passw0rd!';
 async function registerOwner(page: Page): Promise<{ name: string; email: string; shopName: string }> {
   const id = `${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
   const owner = { name: 'Popup Owner', email: `popup-${id}@example.com`, shopName: `Popup Kirana ${id}` };
+  // On a cold dev server the register page's concurrent session reads each set a different NextAuth CSRF
+  // cookie and the credentials callback is refused. Settle the cookie on the login page first.
+  await page.goto('/login');
+  await expect
+    .poll(async () => (await page.context().cookies()).some((c) => c.name === 'next-auth.csrf-token'))
+    .toBe(true);
   await page.goto('/register');
   await page.getByPlaceholder('Rajesh Kumar').fill(owner.name);
   await page.getByPlaceholder('Kumar General Store').fill(owner.shopName);
