@@ -47,7 +47,9 @@ async function signIn(page: Page, email: string, password: string): Promise<void
 }
 
 async function signOut(page: Page): Promise<void> {
-  await page.getByTitle('Sign out').click();
+  // Sign out lives in the profile popup the top bar's name and avatar open.
+  await page.getByRole('button', { name: /, account$/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Sign out' }).click();
   await page.waitForURL('**/login**');
   // The URL changes before NextAuth has finished clearing the session: wait until the session endpoint is empty,
   // or the next protected navigation can still carry the old cookie.
