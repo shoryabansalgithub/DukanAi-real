@@ -1,4 +1,4 @@
-import { absoluteUrl } from '@/config/site';
+import { absoluteUrl, siteIndexable } from '@/config/site';
 import { pageMarkdown } from '@/marketing/export';
 import { MARKDOWN_HEADERS } from '@/marketing/llms';
 import { pageByPath } from '@/marketing/registry';
@@ -11,6 +11,7 @@ import { pageByPath } from '@/marketing/registry';
 export const dynamic = 'force-dynamic';
 
 export async function GET(_req: Request, { params }: { params: Promise<{ slug: string[] }> }) {
+  if (!siteIndexable()) return new Response('Not found', { status: 404, headers: { 'X-Robots-Tag': 'noindex' } });
   const { slug } = await params;
   const path = slug.length === 1 && slug[0] === 'index' ? '/' : `/${slug.join('/')}`;
   const page = pageByPath(path);

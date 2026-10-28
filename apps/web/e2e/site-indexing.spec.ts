@@ -3,6 +3,7 @@ import robots from '../src/app/robots';
 import sitemap from '../src/app/sitemap';
 import { GET as llmsTxt } from '../src/app/llms.txt/route';
 import { GET as llmsFullTxt } from '../src/app/llms-full.txt/route';
+import { GET as markdownTwin } from '../src/app/markdown/[...slug]/route';
 import { siteIndexable } from '../src/config/site';
 import { pageMetadata } from '../src/marketing/metadata';
 import { MARKETING_PAGES } from '../src/marketing/registry';
@@ -34,6 +35,10 @@ function withEnv(env: Partial<Record<(typeof KEYS)[number], string>>, fn: () => 
   };
 }
 
+function twin(slug: string[]) {
+  return markdownTwin(new Request('http://localhost/x.md'), { params: Promise.resolve({ slug }) });
+}
+
 async function assertIndexable() {
   expect(siteIndexable()).toBe(true);
   const rules = robots();
@@ -41,8 +46,10 @@ async function assertIndexable() {
   expect(rules.rules).toEqual([expect.objectContaining({ allow: '/' })]);
   expect(sitemap().length).toBe(MARKETING_PAGES.length);
   expect(pageMetadata(MARKETING_PAGES[0]).robots).toMatchObject({ index: true, follow: true });
+  expect(pageMetadata(MARKETING_PAGES[0]).alternates?.types).toEqual({ 'text/markdown': '/index.md' });
   expect(llmsTxt().status).toBe(200);
   expect(llmsFullTxt().status).toBe(200);
+  expect((await twin(['index'])).status).toBe(200);
 }
 
 async function assertClosed() {
@@ -51,9 +58,15 @@ async function assertClosed() {
   expect(rules.sitemap).toBeUndefined();
   expect(rules.rules).toEqual([{ userAgent: '*', disallow: '/' }]);
   expect(sitemap()).toEqual([]);
-  for (const page of MARKETING_PAGES) expect(pageMetadata(page).robots, page.path).toEqual({ index: false, follow: false });
+  for (const page of MARKETING_PAGES) {
+    expect(pageMetadata(page).robots, page.path).toEqual({ index: false, follow: false });
+    expect(pageMetadata(page).alternates, page.path).toEqual({ canonical: page.path });
+  }
   expect(llmsTxt().status).toBe(404);
   expect(llmsFullTxt().status).toBe(404);
+  const closedTwin = await twin(['index']);
+  expect(closedTwin.status).toBe(404);
+  expect(closedTwin.headers.get('X-Robots-Tag')).toBe('noindex');
 }
 
 test.describe('site indexing switch', () => {

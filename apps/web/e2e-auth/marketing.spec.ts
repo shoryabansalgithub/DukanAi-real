@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
+import { MARKETING_SECTIONS } from '../src/marketing/paths';
 
 /**
  * The public marketing surface (src/app/(marketing)) as a visitor and a
@@ -82,6 +83,33 @@ test.describe('marketing site', () => {
       .toBe(false);
     await page.goto('/');
     expect(new URL(page.url()).pathname).toBe('/');
+  });
+
+  test('an unknown address under a marketing section is the marketing 404 for a visitor, never the app shell', async ({ page }) => {
+    const apiCalls: string[] = [];
+    page.on('request', (req) => {
+      if (req.url().includes('/api/')) apiCalls.push(req.url());
+    });
+    for (const section of MARKETING_SECTIONS) {
+      for (const missing of [`${section}/no-such-page`, `${section}/no-such-page/deeper`]) {
+        const response = await page.goto(missing);
+        expect(response?.status(), missing).toBe(404);
+        expect(new URL(page.url()).pathname, missing).toBe(missing);
+        await expect(page.getByTestId('marketing-not-found'), missing).toBeVisible();
+        await expect(page.getByTestId('app-not-found'), missing).toHaveCount(0);
+        await expect(page.getByRole('complementary'), missing).toHaveCount(0);
+        await expect(page.getByText('Guest preview'), missing).toHaveCount(0);
+        await expect(page.locator('meta[name="robots"]').first(), missing).toHaveAttribute('content', /noindex/);
+      }
+    }
+    expect(apiCalls).toEqual([]);
+
+    // Anything else that is not a page sends a visitor to sign in rather than into the shell.
+    for (const missing of ['/login/no-such-page', '/apple-icon/no-such-page', '/no-such-app-page']) {
+      await page.goto(missing);
+      await page.waitForURL('**/login?callbackUrl=**');
+      await expect(page.getByRole('complementary'), missing).toHaveCount(0);
+    }
   });
 
   test('every sitemap page is indexable with its own title, canonical, card, JSON-LD and Markdown twin', async ({ request }) => {

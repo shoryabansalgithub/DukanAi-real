@@ -30,7 +30,7 @@ const PUBLIC_PATHS = ['/login', '/register', '/forgot-password', '/reset-passwor
 const IS_DEV = process.env.NODE_ENV === 'development';
 
 function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+  return PUBLIC_PATHS.includes(pathname);
 }
 
 function apiOrigin(): string | null {

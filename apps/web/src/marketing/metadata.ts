@@ -12,11 +12,12 @@ import { markdownPath, ogImagePath } from './registry';
 export function pageMetadata(page: MarketingPage): Metadata {
   const article = page.section === 'blog' && Boolean(page.published);
   const image = { url: ogImagePath(page.path), width: 1200, height: 630, alt: page.h1 };
+  const indexable = siteIndexable();
   return {
     title: { absolute: page.title },
     description: page.description,
-    alternates: { canonical: page.path, types: { 'text/markdown': markdownPath(page.path) } },
-    robots: siteIndexable() ? { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1 } : { index: false, follow: false },
+    alternates: indexable ? { canonical: page.path, types: { 'text/markdown': markdownPath(page.path) } } : { canonical: page.path },
+    robots: indexable ? { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1 } : { index: false, follow: false },
     openGraph: {
       type: article ? 'article' : 'website',
       url: page.path,
