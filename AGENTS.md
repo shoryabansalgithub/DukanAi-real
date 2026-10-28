@@ -2180,7 +2180,9 @@ the fixes made true, and must stay true:
   through `issueTokens`/`httpAs` (`test/security/security-fixtures.ts`, async):
   a bare `jwtService.sign` token names no session and is refused. The web's
   sign-out buttons call `signOutEverywhere` (`apps/web/src/lib/sign-out.ts`),
-  which hits `/auth/logout` before NextAuth `signOut`.
+  which hits `/auth/logout` before NextAuth `signOut`. The top bar's name and
+  avatar open `ProfileMenu` (`components/navigation`), whose last item is
+  Sign out; clicking the name never signs out (`e2e-auth/profile-popup.spec.ts`).
 
 ## Git attribution rule
 

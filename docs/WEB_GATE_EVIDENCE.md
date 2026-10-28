@@ -31,6 +31,7 @@ uploads), never through optimistic UI state:
 | POS | anonymous cart carried into the shop scope | `web-hardening.spec.ts` |
 | Checkout, dashboard | sale persisted with stock and totals; every dashboard state | `pos-checkout.spec.ts`, `dashboard.spec.ts` |
 | Real sign-in | register, bounce with callback, wrong password, sign-out, every repaired page, VIEWER gating (UI and 403) | `e2e-auth/real-auth.spec.ts` |
+| Profile popup | the top bar's name and avatar open a popup (name, email, role, shop); only its **Sign out** ends the session | `e2e-auth/profile-popup.spec.ts` |
 
 Cart edits on the POS page (add line, custom item, hold) are browser state
 until checkout and claim nothing else; the analytics CSV export is a
