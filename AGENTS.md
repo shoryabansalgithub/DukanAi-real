@@ -818,7 +818,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `multer` to 2.5.x (Nest 11 pins 2.4.0), and `postcss` to 8.5.28 (next 16
   pins 8.5.23; the override keeps every copy on the patched line). Resolve
   the lockfile with Node 22's npm 10 (`npx npm@10 install`): npm 11.12
-  ignores the overrides and un-patches the lock. Keep an override scoped to its consumer: a blanket
+  ignores the overrides and un-patches the lock, and it once dropped
+  `body-parser`, `qs`, `raw-body` and `archiver` (the API died with
+  MODULE_NOT_FOUND). npm 10 never re-adds an entry a damaged lock lacks, so
+  repair one by deleting the lock and `node_modules` and resolving afresh;
+  check `npx npm@10 ci` and `grep -c '"extraneous"' package-lock.json` = 0. Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
