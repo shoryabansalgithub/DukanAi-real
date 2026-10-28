@@ -842,7 +842,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere (`engines`, `.nvmrc`).
 
 - 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
-  19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
+  19, framer-motion 14, lucide-react 1.x, recharts 2.15, zod 4: write
+  `z.url()`, not `z.string().url()`, and `code: 'custom'`, not
+  `z.ZodIssueCode`, as `src/config/env.ts` does). What the major
   changed here: `next lint` is gone, so `npm run lint` in apps/web is
   `eslint .` over `eslint.config.mjs` (ESLint 9 flat config: `eslint-config-next`
   core-web-vitals + typescript; the React Compiler rules of
