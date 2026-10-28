@@ -1936,7 +1936,13 @@ the fixes made true, and must stay true:
   sidebar is navy in both themes. The sidebar pins Notifications and Settings
   under the scrolling list inside the same `nav` "Main" (`pinned` items) and
   the Upgrade card shrinks under `max-height` 820 / 640 px
-  (`e2e/sidebar.spec.ts`, five window sizes). Expense receipts:
+  (`e2e/sidebar.spec.ts`, five window sizes). Tailwind's `font-sans` stack
+  starts with `var(--font-sans)`, defined in `globals.css` `:root`: an
+  undefined `var()` voids the whole `font-family` and every page fell back
+  to serif (Times). On a phone the navbar search takes the width the icons
+  leave and starts clear of the sidebar's fixed menu button (`pl-16`);
+  `e2e/navbar-typography.spec.ts` checks the font at 1440 and 390 px and
+  the search at 390 px. Expense receipts:
   `POST /expenses/:id/receipt` (MANAGEMENT_ROLES, `documents` feature gate,
   multer memory storage with `expenseReceiptUploadPolicy`: JPEG / PNG / PDF,
   10 MB, bytes sniffed) writes `<shop>/Expenses/<id>/receipt-<stamp>.<ext>`
