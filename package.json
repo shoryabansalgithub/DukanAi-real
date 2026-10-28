@@ -31,7 +31,7 @@
   },
   "overrides": {
     "next-auth": {
-      "nodemailer": "^10.0.13"
+      "nodemailer": "^10.2.1"
     },
     "@prisma/config": {
       "deepmerge-ts": "^8.0.2"
@@ -39,7 +39,8 @@
     "@nestjs/swagger": {
       "js-yaml": "^5.4.2"
     },
-    "postcss": "^8.5.28"
+    "postcss": "^8.5.28",
+    "multer": "^2.5.0"
   },
   "dependencies": {
     "cross-env": "^10.1.0"

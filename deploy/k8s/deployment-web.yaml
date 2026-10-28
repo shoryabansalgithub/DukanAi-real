@@ -48,6 +48,10 @@ spec:
             # the browser): one image per release for every environment.
             - name: API_PUBLIC_URL
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: API_PUBLIC_URL } }
+            - name: SITE_URL
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SITE_URL } }
+            - name: SITE_INDEXABLE
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SITE_INDEXABLE } }
             - name: API_INTERNAL_URL
               value: http://dukaanai-api:3002/api
             - name: NEXTAUTH_SECRET

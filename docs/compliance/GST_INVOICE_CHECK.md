@@ -19,7 +19,7 @@ checked against the code.
 Documents checked:
 
 - the 80 mm POS receipt (`apps/web/src/components/invoices/ReceiptView.tsx`);
-- the A4 invoice page (`apps/web/src/app/invoices/[id]`);
+- the A4 invoice page (`apps/web/src/app/(app)/invoices/[id]`);
 - the data behind both: `GET /billing/invoices/:id/receipt`, built from
   `Invoice`, `InvoiceItem`, `Shop` and `ShopSettings`.
 

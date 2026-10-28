@@ -192,3 +192,10 @@
     box-shadow: none !important;
   }
 }
+
+/* The marketing pages (src/app/(marketing)) use the system sans-serif stack.
+   Tailwind's `font-sans` reads --font-sans, which nothing else defines, so
+   it is set here for that surface only. */
+.marketing-root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+}

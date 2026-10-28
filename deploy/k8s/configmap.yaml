@@ -15,6 +15,12 @@ data:
   # fallback of a container started without it).
   WEB_ORIGIN: https://app.example.com
   API_PUBLIC_URL: https://api.example.com/api
+  # The marketing site's canonical address (sitemap, robots.txt, Open Graph,
+  # llms.txt), read by the web server at run time; normally WEB_ORIGIN.
+  SITE_URL: https://app.example.com
+  # "false" on staging: noindex pages, robots.txt Disallow: /, no sitemap or
+  # llms.txt.
+  SITE_INDEXABLE: "true"
   # Exactly one proxy hop in front of the API: the Ingress controller (the
   # web server forwards the X-Forwarded-For it received on sign-in). A cloud
   # load balancer that rewrites X-Forwarded-For before the Ingress is a

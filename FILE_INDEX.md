@@ -26,7 +26,7 @@
 - [README.md](./README.md) - Project overview
 
 ### 💻 **Frontend Code** (Want to build?)
-- [apps/web/src/app/dashboard/page.tsx](./apps/web/src/app/dashboard/page.tsx) - Main dashboard
+- [apps/web/src/app/(app)/dashboard/page.tsx](./apps/web/src/app/(app)/dashboard/page.tsx) - Main dashboard
 - [apps/web/src/components/](./apps/web/src/components/) - All components
 - `apps/web/src/lib/api-client.ts` - every page reads and writes through the API (the former `src/data/mockData.ts` is gone: there is no mock data)
 
@@ -76,33 +76,34 @@ apps/web/
 ```
 src/app/
 ├── 📄 layout.tsx                    Root layout wrapper
-├── 📄 page.tsx                      Home page (redirect)
+├── 📁 (marketing)/                  Public landing, features, guides (indexable)
 ├── 📄 globals.css                   Global styles & theme
 │
-├── 📁 dashboard/
-│   └── 📄 page.tsx                  ✅ MAIN DASHBOARD PAGE (Full UI)
-│       [Key Metrics, Charts, Tables, AI Insights]
-│
-├── 📁 billing/
-│   └── 📄 page.tsx                  🔜 POS Billing system
-│
-├── 📁 customers/
-│   └── 📄 page.tsx                  🔜 Customer management
-│
-├── 📁 inventory/
-│   └── 📄 page.tsx                  🔜 Inventory management
-│
-├── 📁 analytics/
-│   └── 📄 page.tsx                  🔜 Analytics & reporting
-│
-├── 📁 ai-assistant/
-│   └── 📄 page.tsx                  🔜 AI assistant chat
-│
-├── 📁 database/
-│   └── 📄 page.tsx                  🔜 Database manager
-│
-└── 📁 settings/
-    └── 📄 page.tsx                  🔜 Settings & config
+└── 📁 (app)/                        Signed-in app (session shell, noindex)
+    ├── 📁 dashboard/
+    │   └── 📄 page.tsx                  ✅ MAIN DASHBOARD PAGE (Full UI)
+    │       [Key Metrics, Charts, Tables, AI Insights]
+    │
+    ├── 📁 billing/
+    │   └── 📄 page.tsx                  🔜 POS Billing system
+    │
+    ├── 📁 customers/
+    │   └── 📄 page.tsx                  🔜 Customer management
+    │
+    ├── 📁 inventory/
+    │   └── 📄 page.tsx                  🔜 Inventory management
+    │
+    ├── 📁 analytics/
+    │   └── 📄 page.tsx                  🔜 Analytics & reporting
+    │
+    ├── 📁 ai-assistant/
+    │   └── 📄 page.tsx                  🔜 AI assistant chat
+    │
+    ├── 📁 database/
+    │   └── 📄 page.tsx                  🔜 Database manager
+    │
+    └── 📁 settings/
+        └── 📄 page.tsx                  🔜 Settings & config
 ```
 
 ### Components: `src/components/`
@@ -337,7 +338,7 @@ ROADMAP.md                   ← What's coming next
 ```
 apps/web/src/
 ├── components/           ← Copy these for new components
-├── app/dashboard/        ← Copy this for new pages
+├── app/(app)/dashboard/  ← Copy this for new pages
 └── data/mockData.ts      ← Use this mock data
 ```
 
@@ -391,7 +392,7 @@ apps/web/package.json       ← Build scripts
 ## 🔗 Quick Links
 
 - **Frontend**: `apps/web/`
-- **Dashboard**: `apps/web/src/app/dashboard/page.tsx`
+- **Dashboard**: `apps/web/src/app/(app)/dashboard/page.tsx`
 - **Components**: `apps/web/src/components/`
 - **Types**: `apps/web/src/types/index.ts`
 - **Mock Data**: `apps/web/src/data/mockData.ts`
