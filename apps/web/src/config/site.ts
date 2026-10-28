@@ -27,6 +27,23 @@ export function siteUrl(): string {
 }
 
 /**
+ * Whether search engines and AI crawlers may index the site. On unless
+ * `SITE_INDEXABLE=false` (staging), and off by itself on a Vercel preview
+ * (`VERCEL_ENV` set to anything but "production"), so production ranks
+ * without anyone setting a flag. Off: robots.txt is `Disallow: /`, every page
+ * is noindex and neither the sitemap nor llms.txt is published.
+ */
+export function siteIndexable(): boolean {
+  const raw = (process.env.SITE_INDEXABLE ?? '').trim().toLowerCase();
+  if (raw !== '' && raw !== 'true' && raw !== 'false') {
+    throw new Error(`SITE_INDEXABLE must be "true" or "false": "${process.env.SITE_INDEXABLE}"`);
+  }
+  if (raw === 'false') return false;
+  const vercelEnv = (process.env.VERCEL_ENV ?? '').trim();
+  return vercelEnv === '' || vercelEnv === 'production';
+}
+
+/**
  * `path` ("/features") as an absolute URL on the site. The home page is the
  * bare origin, the form Next.js renders as its canonical, so the sitemap,
  * llms.txt and JSON-LD all name it the same way.

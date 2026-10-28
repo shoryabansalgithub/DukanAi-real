@@ -3,7 +3,9 @@ import { GLOSSARY, glossaryPage } from '@/marketing/content/glossary';
 import { pageMetadata } from '@/marketing/metadata';
 import { breadcrumbs, definedTermSet, graph, organization, webPage } from '@/marketing/structured-data';
 
-export const metadata = pageMetadata(glossaryPage);
+export function generateMetadata() {
+  return pageMetadata(glossaryPage);
+}
 
 export default function GlossaryPage() {
   const page = glossaryPage;

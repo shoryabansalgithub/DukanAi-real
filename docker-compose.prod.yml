@@ -146,6 +146,9 @@ services:
       # The marketing site's canonical address (sitemap, robots.txt, Open
       # Graph, llms.txt); the web origin unless the site lives elsewhere.
       SITE_URL: ${SITE_URL:-${WEB_ORIGIN}}
+      # false on staging: noindex pages, robots.txt Disallow: /, no sitemap
+      # or llms.txt (docs/STAGING.md).
+      SITE_INDEXABLE: ${SITE_INDEXABLE:-true}
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}

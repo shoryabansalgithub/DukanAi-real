@@ -68,6 +68,12 @@ test.describe('marketing site', () => {
     // A public page stays readable while signed in.
     expect((await page.goto('/features'))?.status()).toBe(200);
 
+    // An unknown address keeps the app shell for a signed-in user.
+    const missing = await page.goto('/no-such-app-page');
+    expect(missing?.status()).toBe(404);
+    await expect(page.getByTestId('app-not-found')).toBeVisible();
+    await expect(page.getByRole('complementary')).toBeVisible();
+
     await page.goto('/dashboard');
     await page.getByTitle('Sign out').click();
     await page.waitForURL('**/login**');

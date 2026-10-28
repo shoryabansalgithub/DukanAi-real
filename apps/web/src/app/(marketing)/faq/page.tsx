@@ -3,7 +3,9 @@ import { faqPage as faqContent } from '@/marketing/content/faq';
 import { pageMetadata } from '@/marketing/metadata';
 import { breadcrumbs, faqPage, graph, organization, webPage } from '@/marketing/structured-data';
 
-export const metadata = pageMetadata(faqContent);
+export function generateMetadata() {
+  return pageMetadata(faqContent);
+}
 
 export default function FaqPage() {
   const page = faqContent;

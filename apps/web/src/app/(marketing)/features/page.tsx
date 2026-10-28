@@ -11,7 +11,9 @@ import { pageMetadata } from '@/marketing/metadata';
 import { featuresHub } from '@/marketing/registry';
 import { breadcrumbs, graph, organization, softwareApplication, webPage } from '@/marketing/structured-data';
 
-export const metadata = pageMetadata(featuresHub);
+export function generateMetadata() {
+  return pageMetadata(featuresHub);
+}
 
 export default function FeaturesPage() {
   const page = featuresHub;

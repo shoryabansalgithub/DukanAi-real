@@ -3,7 +3,9 @@ import { alternativesPage } from '@/marketing/content/alternatives';
 import { pageMetadata } from '@/marketing/metadata';
 import { breadcrumbs, faqPage, graph, organization, softwareApplication, webPage } from '@/marketing/structured-data';
 
-export const metadata = pageMetadata(alternativesPage);
+export function generateMetadata() {
+  return pageMetadata(alternativesPage);
+}
 
 export default function AlternativesPage() {
   const page = alternativesPage;

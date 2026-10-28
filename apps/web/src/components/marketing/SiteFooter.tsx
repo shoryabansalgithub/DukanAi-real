@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { siteIndexable } from '@/config/site';
 import { BLOG_POSTS } from '@/marketing/content/blog';
 import { FEATURE_PAGES } from '@/marketing/content/features';
 import { BrandMark } from './BrandMark';
@@ -34,6 +35,7 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
 ];
 
 export function SiteFooter() {
+  const columns = siteIndexable() ? COLUMNS : COLUMNS.map((column) => ({ ...column, links: column.links.filter((link) => link.href !== '/llms.txt') }));
   return (
     <footer className="border-t border-slate-200 bg-slate-50">
       <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
@@ -47,7 +49,7 @@ export function SiteFooter() {
               GST billing, udhar, stock and cash control for kirana and retail shops in India.
             </p>
           </div>
-          {COLUMNS.map((column) => (
+          {columns.map((column) => (
             <div key={column.title}>
               <h2 className="text-sm font-semibold text-slate-900">{column.title}</h2>
               <ul className="mt-3 space-y-2.5">

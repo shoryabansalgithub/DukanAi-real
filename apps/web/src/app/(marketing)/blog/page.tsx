@@ -10,7 +10,9 @@ import { pageMetadata } from '@/marketing/metadata';
 import { blogHub } from '@/marketing/registry';
 import { breadcrumbs, graph, organization, webPage } from '@/marketing/structured-data';
 
-export const metadata = pageMetadata(blogHub);
+export function generateMetadata() {
+  return pageMetadata(blogHub);
+}
 
 export default function BlogIndexPage() {
   const page = blogHub;

@@ -19,7 +19,9 @@ import { faqPage, graph, organization, softwareApplication, webPage, website } f
  * any request under the auth bypass) never reaches it: the proxy sends `/`
  * to /dashboard.
  */
-export const metadata = pageMetadata(homePage);
+export function generateMetadata() {
+  return pageMetadata(homePage);
+}
 
 const HOME_FAQS = GENERAL_FAQS.filter((faq) =>
   ['What is DukaanAI?', 'Who is DukaanAI for?', 'What devices does it run on?', 'Does DukaanAI work offline?', 'Are DukaanAI bills GST compliant?', 'Can my staff use it with their own logins?'].includes(faq.q),
