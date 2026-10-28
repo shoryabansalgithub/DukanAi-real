@@ -800,6 +800,28 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   needs an `idempotencyKey`, and under the bypass `/login` leaves for the
   dashboard as soon as it hydrates, so a bypass test never clicks through
   it (read its served markup, then go to the target page).
+- Public marketing site (SEO / AI answers): `src/app` has two route groups
+  under a bare root layout. `(app)` holds the signed-in application and the
+  sign-in pages (its layout mounts Providers, toasts and `RootLayout`, every
+  page noindex, `[...missing]` renders unknown paths as the shell's 404);
+  `(marketing)` holds the public, indexable pages (server components only,
+  no session JS). `/` is the landing page without a session and redirects to
+  `/dashboard` with one (or under the bypass). Content is data:
+  `src/marketing/content/*` feeds `src/marketing/registry.ts`
+  (`MARKETING_PAGES`), the one list behind `sitemap.ts`, `/llms.txt`,
+  `/llms-full.txt`, the `.md` twins (`/<path>.md`, `/index.md`, rewritten
+  to `app/markdown/[...slug]` in `next.config.js`), the `/og/...` cards and
+  JSON-LD (`structured-data.ts`). A new section goes in
+  `MARKETING_SECTIONS` (`src/marketing/paths.ts`, read by the proxy), the
+  registry, and mounts `MarketingMissingPage` as its `[...missing]`, or
+  logged-out visitors are sent to /login / get the app shell's 404.
+  `robots.ts` disallows the app paths. `SITE_URL` (canonical origin, default
+  `https://dukan-ai-chi.vercel.app`) and `SITE_INDEXABLE` (`false` on
+  staging; a Vercel preview is never indexed; closed = noindex, `Disallow:
+  /`, empty sitemap, 404 llms.txt and twins) are read at run time
+  (`src/config/site.ts`); a malformed value stops the server in
+  `src/instrumentation.ts`. Specs: `e2e/site-indexing.spec.ts` (the switch)
+  and `e2e-auth/marketing.spec.ts` (every sitemap page, without the bypass).
 
 ## Dependencies (roadmap phase 7)
 
