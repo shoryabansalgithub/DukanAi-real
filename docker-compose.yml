@@ -196,6 +196,10 @@ services:
       # inlines it into the server and browser bundles at build time, so a
       # value here would change nothing (audit R14).
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
+      # The public address of the marketing site (canonical URLs, sitemap.xml,
+      # robots.txt, Open Graph, llms.txt), read at run time; unset, the image
+      # would publish the Vercel address.
+      SITE_URL: ${SITE_URL:-${WEB_ORIGIN:-http://localhost:3000}}
       # Sign-in and token refresh go to the API over the compose network.
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

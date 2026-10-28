@@ -143,6 +143,9 @@ services:
       # The API as the browser reaches it, read at run time: the same image
       # serves staging and production (roadmap 9.9).
       API_PUBLIC_URL: ${API_PUBLIC_URL:?Set API_PUBLIC_URL in .env (https://api.example.com/api)}
+      # The marketing site's canonical address (sitemap, robots.txt, Open
+      # Graph, llms.txt); the web origin unless the site lives elsewhere.
+      SITE_URL: ${SITE_URL:-${WEB_ORIGIN}}
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
