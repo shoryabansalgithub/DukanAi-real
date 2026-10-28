@@ -83,7 +83,15 @@ step "release step: migrate exited 0 and a second run is a no-op"
 
 if [ "$PREBUILT" != "1" ]; then
   step "ops: build the db-ops image (deploy/db-ops/Dockerfile: MySQL clients, GNU tar, rclone)"
-  "${COMPOSE[@]}" --profile ops build db-ops >/dev/null 2>&1 || fail "db-ops image build"
+  # Quiet on success; on a failure the tail of the plain build log goes to
+  # stderr, so a stalled package download names itself in the CI log.
+  build_log="$(mktemp)"
+  if ! "${COMPOSE[@]}" --progress plain --profile ops build db-ops >"$build_log" 2>&1; then
+    tail -n 60 "$build_log" >&2 || true
+    rm -f "$build_log"
+    fail "db-ops image build"
+  fi
+  rm -f "$build_log"
 fi
 
 step "ops (roadmap 9.2): a dump before the sale, with its binary-log position (db-ops backup)"
