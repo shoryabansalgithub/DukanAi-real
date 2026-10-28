@@ -8,5 +8,7 @@ import { headers } from 'next/headers';
 export async function JsonLd({ data }: { data: Record<string, unknown> }) {
   const nonce = (await headers()).get('x-nonce') ?? undefined;
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return <script type="application/ld+json" nonce={nonce} dangerouslySetInnerHTML={{ __html: json }} />;
+  return (
+    <script type="application/ld+json" nonce={nonce} dangerouslySetInnerHTML={{ __html: json }} />
+  );
 }

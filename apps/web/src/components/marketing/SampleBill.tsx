@@ -18,12 +18,17 @@ const TAX = [
 export function SampleBill() {
   return (
     <figure className="relative isolate mx-auto w-full max-w-[360px]">
-      <div aria-hidden="true" className="absolute -inset-4 -z-10 rounded-[2rem] bg-gradient-to-br from-indigo-100 via-violet-50 to-sky-100 blur-2xl" />
+      <div
+        aria-hidden="true"
+        className="absolute -inset-4 -z-10 rounded-[2rem] bg-gradient-to-br from-indigo-100 via-violet-50 to-sky-100 blur-2xl"
+      />
       <div className="rounded-2xl border border-slate-200 bg-white p-5 font-mono text-[12.5px] leading-[1.55] text-slate-800 shadow-xl shadow-indigo-900/10 sm:p-6">
         <div className="text-center">
           <p className="font-sans text-[15px] font-bold text-slate-900">Sharma General Store</p>
           <p className="text-slate-500">GSTIN 07ABCDE1234F1Z5</p>
-          <p className="mt-2 font-sans text-[11px] font-bold tracking-[0.2em] text-slate-900">TAX INVOICE</p>
+          <p className="mt-2 font-sans text-[11px] font-bold tracking-[0.2em] text-slate-900">
+            TAX INVOICE
+          </p>
         </div>
         <div className="mt-3 flex justify-between border-y border-dashed border-slate-300 py-1.5 text-slate-600">
           <span>INV-2627-000184</span>
@@ -55,10 +60,18 @@ export function SampleBill() {
           <caption className="sr-only">Tax by rate</caption>
           <thead>
             <tr>
-              <th scope="col" className="pt-1.5 text-left font-normal">Rate</th>
-              <th scope="col" className="pt-1.5 text-right font-normal">Taxable</th>
-              <th scope="col" className="pt-1.5 text-right font-normal">CGST</th>
-              <th scope="col" className="pt-1.5 text-right font-normal">SGST</th>
+              <th scope="col" className="pt-1.5 text-left font-normal">
+                Rate
+              </th>
+              <th scope="col" className="pt-1.5 text-right font-normal">
+                Taxable
+              </th>
+              <th scope="col" className="pt-1.5 text-right font-normal">
+                CGST
+              </th>
+              <th scope="col" className="pt-1.5 text-right font-normal">
+                SGST
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -91,7 +104,9 @@ export function SampleBill() {
           </div>
         </dl>
       </div>
-      <figcaption className="mt-4 text-center text-sm text-slate-500">A sample bill: CGST and SGST by rate, part paid by UPI, the rest on udhar.</figcaption>
+      <figcaption className="mt-4 text-center text-sm text-slate-500">
+        A sample bill: CGST and SGST by rate, part paid by UPI, the rest on udhar.
+      </figcaption>
     </figure>
   );
 }

@@ -18,7 +18,10 @@ export function SiteHeader({ current }: { current?: Section }) {
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/90 backdrop-blur supports-[backdrop-filter]:bg-white/75">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
-        <Link href="/" className="flex items-center gap-2.5 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-600">
+        <Link
+          href="/"
+          className="flex items-center gap-2.5 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-600"
+        >
           <BrandMark size={30} />
           <span className="text-[17px] font-extrabold tracking-tight text-slate-900">DukaanAI</span>
         </Link>
@@ -39,7 +42,10 @@ export function SiteHeader({ current }: { current?: Section }) {
         </nav>
 
         <div className="flex items-center gap-2">
-          <Link href="/login" className="hidden rounded-lg px-3 py-2 text-[15px] font-medium text-slate-700 hover:text-slate-900 sm:inline-flex">
+          <Link
+            href="/login"
+            className="hidden rounded-lg px-3 py-2 text-[15px] font-medium text-slate-700 hover:text-slate-900 sm:inline-flex"
+          >
             Log in
           </Link>
           <Link
@@ -58,16 +64,26 @@ export function SiteHeader({ current }: { current?: Section }) {
             <div className="absolute right-0 top-12 w-64 rounded-2xl border border-slate-200 bg-white p-2 shadow-xl">
               <nav aria-label="Main (mobile)" className="flex flex-col">
                 {NAV.map((item) => (
-                  <Link key={item.href} href={item.href} className="rounded-lg px-3 py-2.5 text-[15px] font-medium text-slate-700 hover:bg-slate-50">
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className="rounded-lg px-3 py-2.5 text-[15px] font-medium text-slate-700 hover:bg-slate-50"
+                  >
                     {item.label}
                   </Link>
                 ))}
               </nav>
               <div className="mt-2 flex flex-col gap-2 border-t border-slate-100 p-2 pt-3">
-                <Link href="/login" className="rounded-lg border border-slate-200 px-3 py-2.5 text-center text-[15px] font-semibold text-slate-800">
+                <Link
+                  href="/login"
+                  className="rounded-lg border border-slate-200 px-3 py-2.5 text-center text-[15px] font-semibold text-slate-800"
+                >
                   Log in
                 </Link>
-                <Link href="/register" className="rounded-lg bg-indigo-600 px-3 py-2.5 text-center text-[15px] font-semibold text-white">
+                <Link
+                  href="/register"
+                  className="rounded-lg bg-indigo-600 px-3 py-2.5 text-center text-[15px] font-semibold text-white"
+                >
                   Create shop account
                 </Link>
               </div>

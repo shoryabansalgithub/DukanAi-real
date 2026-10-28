@@ -70,18 +70,27 @@ export function parseMarkdown(source: string): Block[] {
     } else if (lines.every((line) => line.startsWith('- '))) {
       blocks.push({ kind: 'ul', items: lines.map((line) => parseInline(line.slice(2))) });
     } else if (lines.every((line) => /^\d+\. /.test(line))) {
-      blocks.push({ kind: 'ol', items: lines.map((line) => parseInline(line.replace(/^\d+\. /, ''))) });
+      blocks.push({
+        kind: 'ol',
+        items: lines.map((line) => parseInline(line.replace(/^\d+\. /, ''))),
+      });
     } else if (lines.every((line) => line.startsWith('> '))) {
-      blocks.push({ kind: 'callout', inline: parseInline(lines.map((line) => line.slice(2)).join(' ')) });
+      blocks.push({
+        kind: 'callout',
+        inline: parseInline(lines.map((line) => line.slice(2)).join(' ')),
+      });
     } else if (lines.every((line) => line.startsWith('|'))) {
-      if (lines.length < 3 || !/^\|[\s|:-]+\|$/.test(lines[1])) throw new Error(`A table needs a header and a separator row: "${first}"`);
+      if (lines.length < 3 || !/^\|[\s|:-]+\|$/.test(lines[1]))
+        throw new Error(`A table needs a header and a separator row: "${first}"`);
       blocks.push({
         kind: 'table',
         head: tableCells(lines[0]).map(parseInline),
         rows: lines.slice(2).map((line) => tableCells(line).map(parseInline)),
       });
     } else if (lines.some((line) => /^(- |\d+\. |> |\|)/.test(line))) {
-      throw new Error(`Mixed block (separate lists, tables and quotes from text with a blank line): "${first}"`);
+      throw new Error(
+        `Mixed block (separate lists, tables and quotes from text with a blank line): "${first}"`
+      );
     } else {
       blocks.push({ kind: 'p', inline: parseInline(lines.join(' ')) });
     }

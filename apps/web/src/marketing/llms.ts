@@ -6,7 +6,10 @@ import { MARKETING_PAGES, markdownPath } from './registry';
 const SECTIONS: { title: string; match: (page: MarketingPage) => boolean }[] = [
   { title: 'Product', match: (page) => page.section === 'home' || page.section === 'features' },
   { title: 'Guides', match: (page) => page.section === 'blog' },
-  { title: 'Reference', match: (page) => ['faq', 'glossary', 'alternatives'].includes(page.section) },
+  {
+    title: 'Reference',
+    match: (page) => ['faq', 'glossary', 'alternatives'].includes(page.section),
+  },
 ];
 
 /**
@@ -36,7 +39,12 @@ export function llmsTxt(): string {
     }
     lines.push('');
   }
-  lines.push('## Optional', '', `- [Everything in one file](${absoluteUrl('/llms-full.txt')}): every page above as Markdown.`, '');
+  lines.push(
+    '## Optional',
+    '',
+    `- [Everything in one file](${absoluteUrl('/llms-full.txt')}): every page above as Markdown.`,
+    ''
+  );
   return lines.join('\n');
 }
 

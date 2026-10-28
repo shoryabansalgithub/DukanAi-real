@@ -5,7 +5,14 @@ import { MARKETING_PAGES } from '@/marketing/registry';
 /** Built per request so SITE_URL is the runtime value (one image, any environment). */
 export const dynamic = 'force-dynamic';
 
-const PRIORITY: Record<string, number> = { home: 1, features: 0.9, alternatives: 0.8, faq: 0.7, blog: 0.7, glossary: 0.6 };
+const PRIORITY: Record<string, number> = {
+  home: 1,
+  features: 0.9,
+  alternatives: 0.8,
+  faq: 0.7,
+  blog: 0.7,
+  glossary: 0.6,
+};
 
 export default function sitemap(): MetadataRoute.Sitemap {
   if (!siteIndexable()) return [];

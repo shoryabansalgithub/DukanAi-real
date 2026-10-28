@@ -16,8 +16,7 @@ export const alternativesPage: MarketingPage = {
     'Comparing billing and udhar apps for Indian kirana stores: Vyapar, myBillBook, OkCredit, Khatabook and DukaanAI. What each one is for, from their own sites, and how to choose.',
   eyebrow: 'Compare',
   h1: 'Vyapar, Khatabook and OkCredit alternatives for kirana stores (2026)',
-  lede:
-    'If you are choosing an app for a kirana store, the first question is what you need most: a **digital khata** for udhar (OkCredit, Khatabook), a **full GST billing and accounting suite** (Vyapar, myBillBook), or **counter billing with udhar, stock and cash control in one place** for a shop with cashiers (DukaanAI). Below is what each one is for, taken from each product’s own website, and where DukaanAI is and is not the better choice.',
+  lede: 'If you are choosing an app for a kirana store, the first question is what you need most: a **digital khata** for udhar (OkCredit, Khatabook), a **full GST billing and accounting suite** (Vyapar, myBillBook), or **counter billing with udhar, stock and cash control in one place** for a shop with cashiers (DukaanAI). Below is what each one is for, taken from each product’s own website, and where DukaanAI is and is not the better choice.',
   body: `
 ## At a glance
 
@@ -84,6 +83,11 @@ Whichever you pick, make sure you can export your data, that each staff member h
       a: 'No. DukaanAI runs in the browser and needs a connection. If offline billing matters most to you, compare apps that list it, such as Vyapar.',
     },
   ],
-  related: ['/features', '/blog/manage-udhar-kirana-store', '/blog/gst-bill-format-kirana-store', '/faq'],
+  related: [
+    '/features',
+    '/blog/manage-udhar-kirana-store',
+    '/blog/gst-bill-format-kirana-store',
+    '/faq',
+  ],
   updated: '2026-10-28',
 };

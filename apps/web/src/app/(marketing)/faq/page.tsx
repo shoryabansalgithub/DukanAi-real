@@ -9,5 +9,15 @@ export function generateMetadata() {
 
 export default function FaqPage() {
   const page = faqContent;
-  return <ArticlePage page={page} schema={graph(webPage(page), breadcrumbs(page), faqPage(page.faqs ?? [], page.path), organization())} />;
+  return (
+    <ArticlePage
+      page={page}
+      schema={graph(
+        webPage(page),
+        breadcrumbs(page),
+        faqPage(page.faqs ?? [], page.path),
+        organization()
+      )}
+    />
+  );
 }

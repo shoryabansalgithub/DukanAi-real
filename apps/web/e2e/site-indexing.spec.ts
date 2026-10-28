@@ -17,7 +17,10 @@ import { MARKETING_PAGES } from '../src/marketing/registry';
  */
 const KEYS = ['SITE_INDEXABLE', 'VERCEL_ENV'] as const;
 
-function withEnv(env: Partial<Record<(typeof KEYS)[number], string>>, fn: () => void | Promise<void>) {
+function withEnv(
+  env: Partial<Record<(typeof KEYS)[number], string>>,
+  fn: () => void | Promise<void>
+) {
   return async () => {
     const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
     for (const key of KEYS) {
@@ -46,7 +49,9 @@ async function assertIndexable() {
   expect(rules.rules).toEqual([expect.objectContaining({ allow: '/' })]);
   expect(sitemap().length).toBe(MARKETING_PAGES.length);
   expect(pageMetadata(MARKETING_PAGES[0]).robots).toMatchObject({ index: true, follow: true });
-  expect(pageMetadata(MARKETING_PAGES[0]).alternates?.types).toEqual({ 'text/markdown': '/index.md' });
+  expect(pageMetadata(MARKETING_PAGES[0]).alternates?.types).toEqual({
+    'text/markdown': '/index.md',
+  });
   expect(llmsTxt().status).toBe(200);
   expect(llmsFullTxt().status).toBe(200);
   expect((await twin(['index'])).status).toBe(200);
@@ -71,11 +76,23 @@ async function assertClosed() {
 
 test.describe('site indexing switch', () => {
   test('production with nothing set is indexable', withEnv({}, assertIndexable));
-  test('SITE_INDEXABLE=true and Vercel production are indexable', withEnv({ SITE_INDEXABLE: 'true', VERCEL_ENV: 'production' }, assertIndexable));
-  test('SITE_INDEXABLE=false (staging) closes the site', withEnv({ SITE_INDEXABLE: 'false' }, assertClosed));
+  test(
+    'SITE_INDEXABLE=true and Vercel production are indexable',
+    withEnv({ SITE_INDEXABLE: 'true', VERCEL_ENV: 'production' }, assertIndexable)
+  );
+  test(
+    'SITE_INDEXABLE=false (staging) closes the site',
+    withEnv({ SITE_INDEXABLE: 'false' }, assertClosed)
+  );
   test('a Vercel preview is never indexed', withEnv({ VERCEL_ENV: 'preview' }, assertClosed));
-  test('SITE_INDEXABLE=false wins on Vercel production', withEnv({ SITE_INDEXABLE: 'FALSE', VERCEL_ENV: 'production' }, assertClosed));
-  test('any other value is refused', withEnv({ SITE_INDEXABLE: 'no' }, () => {
-    expect(() => siteIndexable()).toThrow(/SITE_INDEXABLE must be "true" or "false"/);
-  }));
+  test(
+    'SITE_INDEXABLE=false wins on Vercel production',
+    withEnv({ SITE_INDEXABLE: 'FALSE', VERCEL_ENV: 'production' }, assertClosed)
+  );
+  test(
+    'any other value is refused',
+    withEnv({ SITE_INDEXABLE: 'no' }, () => {
+      expect(() => siteIndexable()).toThrow(/SITE_INDEXABLE must be "true" or "false"/);
+    })
+  );
 });

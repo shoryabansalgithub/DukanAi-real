@@ -11,8 +11,7 @@ export const gstBilling: MarketingPage = {
     'Bill fast at the counter with CGST and SGST worked out on every line, barcode scanning, split payments and 80 mm thermal receipts. Built for Indian kirana stores.',
   eyebrow: 'GST billing',
   h1: 'GST billing software for kirana and retail stores',
-  lede:
-    'DukaanAI is a point-of-sale (POS) for Indian shops: scan or search items, and every bill is a GST **tax invoice** with CGST and SGST worked out per line, a numbered series per financial year, and a receipt that prints on an 80 mm thermal printer.',
+  lede: 'DukaanAI is a point-of-sale (POS) for Indian shops: scan or search items, and every bill is a GST **tax invoice** with CGST and SGST worked out per line, a numbered series per financial year, and a receipt that prints on an 80 mm thermal printer.',
   body: `
 ## What a bill looks like
 
@@ -64,7 +63,12 @@ We would rather you know before you start. Bills are made for counter sales to c
       a: 'Yes. Choose **Credit (udhar)** or put part of a split payment on credit. The customer must be selected, and their credit limit is checked before the sale. See [udhar tracking](/features/udhar-khata).',
     },
   ],
-  related: ['/blog/gst-bill-format-kirana-store', '/features/udhar-khata', '/features/inventory-management', '/glossary'],
+  related: [
+    '/blog/gst-bill-format-kirana-store',
+    '/features/udhar-khata',
+    '/features/inventory-management',
+    '/glossary',
+  ],
   updated: UPDATED,
 };
 
@@ -77,8 +81,7 @@ export const udharKhata: MarketingPage = {
     'Record udhar at the counter, set credit limits, take repayments in cash or UPI and see every customer’s ledger. A digital khata that is part of your billing.',
   eyebrow: 'Udhar (credit) tracking',
   h1: 'Udhar khata that is part of your billing',
-  lede:
-    'In DukaanAI, credit (udhar) is recorded on the bill itself: choose **Credit** at payment, and the customer’s balance, their ledger and your dashboard’s outstanding total all move at once. There is no second book to keep in step.',
+  lede: 'In DukaanAI, credit (udhar) is recorded on the bill itself: choose **Credit** at payment, and the customer’s balance, their ledger and your dashboard’s outstanding total all move at once. There is no second book to keep in step.',
   body: `
 ## How credit works at the counter
 
@@ -122,7 +125,12 @@ For practical advice on running credit without losing money, read [how to manage
       a: 'Not today. DukaanAI keeps the ledger and the balances; reminders by SMS or WhatsApp are not built.',
     },
   ],
-  related: ['/blog/manage-udhar-kirana-store', '/features/gst-billing', '/alternatives', '/glossary'],
+  related: [
+    '/blog/manage-udhar-kirana-store',
+    '/features/gst-billing',
+    '/alternatives',
+    '/glossary',
+  ],
   updated: UPDATED,
 };
 
@@ -135,8 +143,7 @@ export const inventoryManagement: MarketingPage = {
     'Stock goes down with every sale and up with every return. Low-stock alerts by reorder point, batches with expiry dates, stock history and restock suggestions.',
   eyebrow: 'Inventory management',
   h1: 'Inventory that updates itself with every bill',
-  lede:
-    'In DukaanAI there is one place stock changes: every sale, return, cancellation and adjustment moves it, and every movement is kept in the stock history. You see low stock and expiring batches before a customer asks for something you no longer have.',
+  lede: 'In DukaanAI there is one place stock changes: every sale, return, cancellation and adjustment moves it, and every movement is kept in the stock history. You see low stock and expiring batches before a customer asks for something you no longer have.',
   body: `
 ## Stock that follows your bills
 
@@ -176,7 +183,12 @@ Cashiers sell and see stock levels, but never your cost prices, profit, stock va
       a: 'Yes, by batch. **Inventory › Batches & Expiry** filters expired, expiring within 30 days, safe and depleted batches.',
     },
   ],
-  related: ['/blog/reorder-point-kirana-store', '/features/bill-scanner', '/features/gst-billing', '/glossary'],
+  related: [
+    '/blog/reorder-point-kirana-store',
+    '/features/bill-scanner',
+    '/features/gst-billing',
+    '/glossary',
+  ],
   updated: UPDATED,
 };
 
@@ -189,8 +201,7 @@ export const billScanner: MarketingPage = {
     'Take a photo of a supplier bill and DukaanAI reads its lines, matches them to your products with a confidence score, and exports them to CSV.',
   eyebrow: 'AI bill scanner',
   h1: 'Read a supplier bill from a photo',
-  lede:
-    'The **AI scanner** reads a photo of a printed supplier bill, lists each line it found, and matches it to the products you already sell with a confidence score. You check the matches instead of typing every line.',
+  lede: 'The **AI scanner** reads a photo of a printed supplier bill, lists each line it found, and matches it to the products you already sell with a confidence score. You check the matches instead of typing every line.',
   body: `
 ## How it works
 
@@ -225,7 +236,11 @@ Owners and managers. Purchase prices on supplier bills are financial information
       a: 'A flat, well-lit, printed bill with the whole page in frame. Phone photos of any size are accepted and scaled down before upload.',
     },
   ],
-  related: ['/features/inventory-management', '/features/gst-billing', '/blog/reorder-point-kirana-store'],
+  related: [
+    '/features/inventory-management',
+    '/features/gst-billing',
+    '/blog/reorder-point-kirana-store',
+  ],
   updated: UPDATED,
 };
 
@@ -238,8 +253,7 @@ export const cashDrawerShifts: MarketingPage = {
     'Open a shift with the cash in the drawer, and at closing DukaanAI tells you how much cash should be there. Variances show in red, per cashier, every day.',
   eyebrow: 'Cash drawer and shifts',
   h1: 'Know how much cash should be in the drawer',
-  lede:
-    'Each cashier opens a **shift** with the cash in their drawer. At closing, DukaanAI shows the cash expected: opening cash, plus cash sales and cash repayments, minus cash refunds and cash paid out. The cashier counts, and any difference is recorded as the shift’s **variance**.',
+  lede: 'Each cashier opens a **shift** with the cash in their drawer. At closing, DukaanAI shows the cash expected: opening cash, plus cash sales and cash repayments, minus cash refunds and cash paid out. The cashier counts, and any difference is recorded as the shift’s **variance**.',
   body: `
 ## A day at the counter
 
@@ -273,4 +287,10 @@ When an expense is paid in cash, it is recorded against the open shift, so the e
   updated: UPDATED,
 };
 
-export const FEATURE_PAGES: MarketingPage[] = [gstBilling, udharKhata, inventoryManagement, billScanner, cashDrawerShifts];
+export const FEATURE_PAGES: MarketingPage[] = [
+  gstBilling,
+  udharKhata,
+  inventoryManagement,
+  billScanner,
+  cashDrawerShifts,
+];

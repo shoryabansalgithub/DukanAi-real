@@ -3,7 +3,14 @@ import { notFound } from 'next/navigation';
 import { ArticlePage } from '@/components/marketing/ArticlePage';
 import { FEATURE_PAGES } from '@/marketing/content/features';
 import { pageMetadata } from '@/marketing/metadata';
-import { breadcrumbs, faqPage, graph, organization, softwareApplication, webPage } from '@/marketing/structured-data';
+import {
+  breadcrumbs,
+  faqPage,
+  graph,
+  organization,
+  softwareApplication,
+  webPage,
+} from '@/marketing/structured-data';
 
 type Props = { params: Promise<{ slug: string }> };
 

@@ -16,8 +16,12 @@ export function pageMetadata(page: MarketingPage): Metadata {
   return {
     title: { absolute: page.title },
     description: page.description,
-    alternates: indexable ? { canonical: page.path, types: { 'text/markdown': markdownPath(page.path) } } : { canonical: page.path },
-    robots: indexable ? { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1 } : { index: false, follow: false },
+    alternates: indexable
+      ? { canonical: page.path, types: { 'text/markdown': markdownPath(page.path) } }
+      : { canonical: page.path },
+    robots: indexable
+      ? { index: true, follow: true, 'max-image-preview': 'large', 'max-snippet': -1 }
+      : { index: false, follow: false },
     openGraph: {
       type: article ? 'article' : 'website',
       url: page.path,
@@ -28,6 +32,11 @@ export function pageMetadata(page: MarketingPage): Metadata {
       images: [image],
       ...(article ? { publishedTime: page.published, modifiedTime: page.updated } : {}),
     },
-    twitter: { card: 'summary_large_image', title: page.title, description: page.description, images: [image] },
+    twitter: {
+      card: 'summary_large_image',
+      title: page.title,
+      description: page.description,
+      images: [image],
+    },
   };
 }

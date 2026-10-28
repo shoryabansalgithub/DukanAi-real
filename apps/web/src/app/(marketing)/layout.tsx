@@ -9,5 +9,9 @@ import type { Viewport } from 'next';
 export const viewport: Viewport = { themeColor: '#ffffff' };
 
 export default function MarketingLayout({ children }: { children: React.ReactNode }) {
-  return <div className="marketing-root flex min-h-screen flex-col bg-white font-sans text-slate-900 antialiased [&>main]:flex-1">{children}</div>;
+  return (
+    <div className="marketing-root flex min-h-screen flex-col bg-white font-sans text-slate-900 antialiased [&>main]:flex-1">
+      {children}
+    </div>
+  );
 }

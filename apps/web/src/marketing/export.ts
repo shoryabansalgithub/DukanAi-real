@@ -14,9 +14,14 @@ export function pageMarkdown(page: MarketingPage): string {
   }
   const related = page.related.map(pageByPath).filter((p): p is MarketingPage => Boolean(p));
   if (related.length) {
-    parts.push('## Related', related.map((p) => `- [${p.label}](${p.path}): ${p.description}`).join('\n'));
+    parts.push(
+      '## Related',
+      related.map((p) => `- [${p.label}](${p.path}): ${p.description}`).join('\n')
+    );
   }
-  const dates = page.published ? `Published ${page.published}, updated ${page.updated}` : `Updated ${page.updated}`;
+  const dates = page.published
+    ? `Published ${page.published}, updated ${page.updated}`
+    : `Updated ${page.updated}`;
   parts.push(`---\nSource: ${absoluteUrl(page.path)} (${dates})`);
   return `${absolutiseLinks(parts.join('\n\n'), origin)}\n`;
 }

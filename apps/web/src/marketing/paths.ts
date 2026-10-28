@@ -6,12 +6,20 @@
  * to /login. Every section also mounts `MarketingMissingPage` as its
  * catch-all, or an unknown address under it renders the app shell's 404.
  */
-export const MARKETING_SECTIONS = ['/features', '/blog', '/faq', '/alternatives', '/glossary'] as const;
+export const MARKETING_SECTIONS = [
+  '/features',
+  '/blog',
+  '/faq',
+  '/alternatives',
+  '/glossary',
+] as const;
 
 /** Generated images: every page's social card (`/og/...`); the raster logo the Organization schema names is `/apple-icon` alone. */
 const MARKETING_ASSETS = ['/og'];
 
 export function isMarketingPath(pathname: string): boolean {
   if (pathname === '/' || pathname === '/apple-icon') return true;
-  return [...MARKETING_SECTIONS, ...MARKETING_ASSETS].some((path) => pathname === path || pathname.startsWith(`${path}/`));
+  return [...MARKETING_SECTIONS, ...MARKETING_ASSETS].some(
+    (path) => pathname === path || pathname.startsWith(`${path}/`)
+  );
 }

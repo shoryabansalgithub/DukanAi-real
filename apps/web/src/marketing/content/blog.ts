@@ -15,8 +15,7 @@ export const gstBillFormat: MarketingPage = {
     'The particulars a GST tax invoice must carry under Rule 46, explained for a kirana counter: serial numbers, CGST and SGST, the ₹50,000 rule, HSN digits and the ₹200 exception.',
   eyebrow: 'GST guide',
   h1: 'GST bill format for kirana stores: what every bill must show',
-  lede:
-    'A GST-registered kirana store issues a **tax invoice** for each sale. Rule 46 of the CGST Rules lists what it must carry: your name, address and GSTIN, a serial number of at most 16 characters that is unique for the financial year, the date, each item with quantity, taxable value, GST rate and tax amount, and a few details that apply only in some cases. Here is each one in plain words.',
+  lede: 'A GST-registered kirana store issues a **tax invoice** for each sale. Rule 46 of the CGST Rules lists what it must carry: your name, address and GSTIN, a serial number of at most 16 characters that is unique for the financial year, the date, each item with quantity, taxable value, GST rate and tax amount, and a few details that apply only in some cases. Here is each one in plain words.',
   body: `
 ## The particulars, one by one
 
@@ -101,8 +100,7 @@ export const manageUdhar: MarketingPage = {
     'Practical rules for giving credit to regular customers: limits per customer, who may approve credit, recording every rupee at the counter, and collecting on time.',
   eyebrow: 'Running the shop',
   h1: 'How to manage udhar in a kirana store without losing money',
-  lede:
-    'Udhar keeps regular customers coming back, but it is also where many shops quietly lose money. The fix is not to stop giving credit; it is to give it by rules: a **limit for each customer**, one person who can raise it, every credit sale written down at the moment of sale, and a regular day to collect.',
+  lede: 'Udhar keeps regular customers coming back, but it is also where many shops quietly lose money. The fix is not to stop giving credit; it is to give it by rules: a **limit for each customer**, one person who can raise it, every credit sale written down at the moment of sale, and a regular day to collect.',
   body: `
 ## 1. Give every customer a limit
 
@@ -160,8 +158,7 @@ export const reorderPoint: MarketingPage = {
     'Work out when to reorder each product: daily sales × supplier lead time + safety stock. Worked examples for fast and slow items, and how to treat expiry.',
   eyebrow: 'Inventory guide',
   h1: 'Reorder point for kirana stores: when to restock, with examples',
-  lede:
-    'A **reorder point** is the stock level at which you place the next order, so the new stock arrives before the shelf is empty. The usual formula is: **reorder point = average daily sales × days your supplier takes to deliver + safety stock**.',
+  lede: 'A **reorder point** is the stock level at which you place the next order, so the new stock arrives before the shelf is empty. The usual formula is: **reorder point = average daily sales × days your supplier takes to deliver + safety stock**.',
   body: `
 ## The three numbers you need
 
@@ -233,8 +230,7 @@ export const gstReturnsCreditNotes: MarketingPage = {
     'How a sales return works under GST: the credit note, what it must reference, the 30 November deadline in section 34, and refunds to customers who bought on credit.',
   eyebrow: 'GST guide',
   h1: 'Customer returns under GST: credit notes and the 30 November deadline',
-  lede:
-    'When a customer returns goods you billed with GST, you issue a **credit note** against the original invoice. It reduces your output tax for the returned value. Section 34 of the CGST Act sets a deadline: no credit note after **30 November** following the end of the financial year of the sale, or after you file that year’s annual return if that is earlier.',
+  lede: 'When a customer returns goods you billed with GST, you issue a **credit note** against the original invoice. It reduces your output tax for the returned value. Section 34 of the CGST Act sets a deadline: no credit note after **30 November** following the end of the financial year of the sale, or after you file that year’s annual return if that is earlier.',
   body: `
 ## What the credit note does
 
@@ -293,4 +289,9 @@ In DukaanAI a return is made from the original bill and refunds exactly what was
 };
 
 /** Newest first. */
-export const BLOG_POSTS: MarketingPage[] = [gstBillFormat, gstReturnsCreditNotes, manageUdhar, reorderPoint];
+export const BLOG_POSTS: MarketingPage[] = [
+  gstBillFormat,
+  gstReturnsCreditNotes,
+  manageUdhar,
+  reorderPoint,
+];

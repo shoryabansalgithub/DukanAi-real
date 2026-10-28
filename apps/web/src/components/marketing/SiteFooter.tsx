@@ -13,9 +13,18 @@ type FooterLink = { href: string; label: string };
 const COLUMNS: { title: string; links: FooterLink[] }[] = [
   {
     title: 'Product',
-    links: [{ href: '/features', label: 'All features' }, ...FEATURE_PAGES.map((page) => ({ href: page.path, label: page.label }))],
+    links: [
+      { href: '/features', label: 'All features' },
+      ...FEATURE_PAGES.map((page) => ({ href: page.path, label: page.label })),
+    ],
   },
-  { title: 'Guides', links: [{ href: '/blog', label: 'All guides' }, ...BLOG_POSTS.map((post) => ({ href: post.path, label: post.label }))] },
+  {
+    title: 'Guides',
+    links: [
+      { href: '/blog', label: 'All guides' },
+      ...BLOG_POSTS.map((post) => ({ href: post.path, label: post.label })),
+    ],
+  },
   {
     title: 'Resources',
     links: [
@@ -35,7 +44,12 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
 ];
 
 export function SiteFooter() {
-  const columns = siteIndexable() ? COLUMNS : COLUMNS.map((column) => ({ ...column, links: column.links.filter((link) => link.href !== '/llms.txt') }));
+  const columns = siteIndexable()
+    ? COLUMNS
+    : COLUMNS.map((column) => ({
+        ...column,
+        links: column.links.filter((link) => link.href !== '/llms.txt'),
+      }));
   return (
     <footer className="border-t border-slate-200 bg-slate-50">
       <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
@@ -43,7 +57,9 @@ export function SiteFooter() {
           <div className="col-span-2 max-w-xs lg:col-span-1">
             <Link href="/" className="inline-flex items-center gap-2.5">
               <BrandMark size={28} />
-              <span className="text-base font-extrabold tracking-tight text-slate-900">DukaanAI</span>
+              <span className="text-base font-extrabold tracking-tight text-slate-900">
+                DukaanAI
+              </span>
             </Link>
             <p className="mt-3 text-sm leading-relaxed text-slate-600">
               GST billing, udhar, stock and cash control for kirana and retail shops in India.
@@ -60,7 +76,10 @@ export function SiteFooter() {
                         {link.label}
                       </a>
                     ) : (
-                      <Link href={link.href} className="text-sm text-slate-600 hover:text-slate-900">
+                      <Link
+                        href={link.href}
+                        className="text-sm text-slate-600 hover:text-slate-900"
+                      >
                         {link.label}
                       </Link>
                     )}
@@ -70,7 +89,9 @@ export function SiteFooter() {
             </div>
           ))}
         </div>
-        <p className="mt-12 border-t border-slate-200 pt-6 text-sm text-slate-500">© {new Date().getFullYear()} DukaanAI. Made for Indian shops.</p>
+        <p className="mt-12 border-t border-slate-200 pt-6 text-sm text-slate-500">
+          © {new Date().getFullYear()} DukaanAI. Made for Indian shops.
+        </p>
       </div>
     </footer>
   );

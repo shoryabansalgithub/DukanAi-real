@@ -89,11 +89,13 @@ export const GLOSSARY: GlossaryTerm[] = [
   },
   {
     term: 'Safety stock',
-    definition: 'Extra stock kept to cover busy days and late deliveries, so a product does not run out before the next order arrives.',
+    definition:
+      'Extra stock kept to cover busy days and late deliveries, so a product does not run out before the next order arrives.',
   },
   {
     term: 'Lead time',
-    definition: 'The number of days between placing an order with a supplier and having the stock on your shelf.',
+    definition:
+      'The number of days between placing an order with a supplier and having the stock on your shelf.',
   },
   {
     term: 'SKU',

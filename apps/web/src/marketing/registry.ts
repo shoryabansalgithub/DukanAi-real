@@ -22,8 +22,7 @@ export const homePage: MarketingPage = {
     'Billing software for Indian kirana and retail shops: GST bills with CGST and SGST, udhar with credit limits, stock and expiry alerts, cash-drawer shifts and an AI bill scanner.',
   eyebrow: 'For kirana and retail shops in India',
   h1: 'GST billing, udhar and stock for your kirana store',
-  lede:
-    'DukaanAI is billing and shop-management software for Indian kirana and retail stores. One bill charges GST, moves your stock and records udhar, while shifts keep each cashier’s cash in check and the dashboard tells you what to restock.',
+  lede: 'DukaanAI is billing and shop-management software for Indian kirana and retail stores. One bill charges GST, moves your stock and records udhar, while shifts keep each cashier’s cash in check and the dashboard tells you what to restock.',
   body: `
 ## What DukaanAI does
 
@@ -54,9 +53,10 @@ export const featuresHub: MarketingPage = {
     'Everything DukaanAI does for a kirana store: GST billing at the counter, udhar with limits, inventory with low-stock and expiry alerts, cash-drawer shifts and an AI bill scanner.',
   eyebrow: 'Features',
   h1: 'Everything a kirana counter needs, in one place',
-  lede:
-    'Billing, udhar, stock and cash are one system in DukaanAI: a single bill updates all of them, so they agree at the end of the day.',
-  body: FEATURE_PAGES.map((page) => `## [${page.label}](${page.path})\n\n${page.description}`).join('\n\n'),
+  lede: 'Billing, udhar, stock and cash are one system in DukaanAI: a single bill updates all of them, so they agree at the end of the day.',
+  body: FEATURE_PAGES.map((page) => `## [${page.label}](${page.path})\n\n${page.description}`).join(
+    '\n\n'
+  ),
   related: ['/alternatives', '/faq', '/blog'],
   updated: UPDATED,
 };
@@ -71,7 +71,9 @@ export const blogHub: MarketingPage = {
   eyebrow: 'Blog',
   h1: 'Guides for running a kirana store',
   lede: 'Plain-language guides to GST billing, credit and stock for Indian shop owners.',
-  body: BLOG_POSTS.map((post) => `## [${post.h1}](${post.path})\n\n${post.description}`).join('\n\n'),
+  body: BLOG_POSTS.map((post) => `## [${post.h1}](${post.path})\n\n${post.description}`).join(
+    '\n\n'
+  ),
   related: ['/features', '/glossary', '/faq'],
   updated: UPDATED,
 };
