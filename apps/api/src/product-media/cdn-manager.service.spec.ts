@@ -10,7 +10,8 @@ describe('CdnManagerService', () => {
   let service: CdnManagerService;
 
   beforeEach(() => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cdn-spec-'));
+    // realpath: on macOS the temp dir is a /var -> /private/var symlink and the service resolves from process.cwd().
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cdn-spec-')));
     process.chdir(dir);
     service = new CdnManagerService();
   });
