@@ -840,7 +840,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   pins 8.5.23; the override keeps every copy on the patched line) and
   `multer` to 2.5.x (`@nestjs/platform-express` 11 pins 2.4.0). Change the
   lockfile with the pinned `npx npm@10.9.7`: npm 11 silently ignored these
-  overrides when re-resolving and wrote a second, vulnerable copy. Keep an override scoped to its consumer: a blanket
+  overrides when re-resolving and wrote a second, vulnerable copy. After a
+  bump, `npm ls --all` must show no `missing`: the multer 2.5 bump left a
+  lockfile without multer's nested `media-typer@0.3` / `mime-types@2.1`, so
+  its `type-is@1.6` loaded the hoisted 1.x, never saw multipart and every
+  upload arrived empty (`npm install --package-lock-only` trusts such a
+  lock; delete the package's entries and re-resolve). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
