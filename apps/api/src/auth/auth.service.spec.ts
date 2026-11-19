@@ -31,9 +31,9 @@ function build() {
     $transaction: jest.fn().mockImplementation((arg: unknown) => (typeof arg === 'function' ? (arg as (t: unknown) => unknown)(tx) : Promise.resolve([]))),
   };
   const sockets = { disconnectUser: jest.fn(), disconnectSession: jest.fn() };
-  const jwtConfig = { jwtRefreshExpiresIn: '7d', sessionAbsoluteLifetime: '30d', jwtExpiresIn: '15m' };
+  const jwtConfig = { jwtRefreshExpiresIn: '7d', sessionAbsoluteLifetime: '30d', jwtExpiresIn: '15m', refreshReuseGraceMs: 60_000 };
   const service = new AuthService(usersService as any, jwtService as any, prisma as any, sockets as any, jwtConfig as any);
-  return { service, usersService, jwtService, prisma, tx, sockets };
+  return { service, usersService, jwtService, prisma, tx, sockets, jwtConfig };
 }
 
 const liveSession = (overrides: Record<string, unknown> = {}) => ({
@@ -81,19 +81,92 @@ describe('AuthService sessions', () => {
     expect(jwtService.sign).toHaveBeenCalledWith(expect.objectContaining({ sid: 'family-1' }));
   });
 
-  it('a token already consumed by rotation is reuse: the family is revoked, tokenVersion bumped, sockets dropped', async () => {
-    const { service, prisma, sockets } = build();
-    prisma.refreshToken.findUnique.mockResolvedValue(liveSession({ isRevoked: true, rotatedAt: new Date() }));
+  it('a token consumed by rotation longer ago than the grace window is reuse: the family is revoked, tokenVersion bumped, sockets dropped', async () => {
+    const { service, prisma, sockets, tx } = build();
+    prisma.refreshToken.findUnique.mockResolvedValue(liveSession({ isRevoked: true, rotatedAt: new Date(Date.now() - 61_000) }));
 
     await expect(service.refresh('a'.repeat(80))).rejects.toThrow(/reuse detected/);
     expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({ where: { userId: user.id, isRevoked: false }, data: { isRevoked: true } });
     expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: user.id }, data: { tokenVersion: { increment: 1 } } });
     expect(sockets.disconnectUser).toHaveBeenCalledWith(user.id, expect.stringContaining('reuse'));
+    expect(tx.refreshToken.create).not.toHaveBeenCalled();
   });
 
-  it('losing the consume race (count 0) is treated as reuse too', async () => {
-    const { service, prisma, tx, usersService } = build();
-    prisma.refreshToken.findUnique.mockResolvedValue(liveSession());
+  describe('a rotated token presented again within the grace window (a second web instance with the old cookie)', () => {
+    it('gets a successor of its own in the same family, capped by the absolute expiry, and nothing is revoked', async () => {
+      const { service, prisma, tx, usersService, sockets, jwtService } = build();
+      const session = liveSession({ isRevoked: true, rotatedAt: new Date(Date.now() - 5_000), absoluteExpiresAt: new Date(Date.now() + DAY / 2) });
+      prisma.refreshToken.findUnique.mockResolvedValue(session);
+      prisma.refreshToken.findFirst.mockResolvedValue({ id: 'refresh-2' }); // the family's live successor
+      usersService.findSafeById.mockResolvedValue(user);
+
+      const result = await service.refresh('a'.repeat(80), '127.0.0.1', 'jest');
+
+      expect(result.refresh_token).toHaveLength(80);
+      const created = tx.refreshToken.create.mock.calls[0][0].data;
+      expect(created.familyId).toBe('family-1');
+      expect(created.expiresAt.getTime()).toBe(session.absoluteExpiresAt.getTime());
+      expect(jwtService.sign).toHaveBeenCalledWith(expect.objectContaining({ sid: 'family-1' }));
+      expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(sockets.disconnectUser).not.toHaveBeenCalled();
+    });
+
+    it('answers 401 without revoking anything when its family has ended (logout, revocation, password change)', async () => {
+      const { service, prisma, tx, usersService, sockets } = build();
+      prisma.refreshToken.findUnique.mockResolvedValue(liveSession({ isRevoked: true, rotatedAt: new Date(Date.now() - 5_000) }));
+      prisma.refreshToken.findFirst.mockResolvedValue(null);
+      usersService.findSafeById.mockResolvedValue(user);
+
+      await expect(service.refresh('a'.repeat(80))).rejects.toThrow(/Invalid or expired refresh token/);
+      expect(tx.refreshToken.create).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(sockets.disconnectUser).not.toHaveBeenCalled();
+    });
+
+    it('answers 401 for a suspended user', async () => {
+      const { service, prisma, tx, usersService } = build();
+      prisma.refreshToken.findUnique.mockResolvedValue(liveSession({ isRevoked: true, rotatedAt: new Date(Date.now() - 5_000) }));
+      prisma.refreshToken.findFirst.mockResolvedValue({ id: 'refresh-2' });
+      usersService.findSafeById.mockResolvedValue({ ...user, isActive: false });
+
+      await expect(service.refresh('a'.repeat(80))).rejects.toThrow(UnauthorizedException);
+      expect(tx.refreshToken.create).not.toHaveBeenCalled();
+    });
+
+    it('is reuse when the window is 0 (switched off)', async () => {
+      const { service, prisma, jwtConfig } = build();
+      jwtConfig.refreshReuseGraceMs = 0;
+      prisma.refreshToken.findUnique.mockResolvedValue(liveSession({ isRevoked: true, rotatedAt: new Date() }));
+
+      await expect(service.refresh('a'.repeat(80))).rejects.toThrow(/reuse detected/);
+      expect(prisma.user.update).toHaveBeenCalled();
+    });
+  });
+
+  it('the loser of a concurrent exchange (consume count 0) is judged by the rotation the winner just made: a successor, not reuse', async () => {
+    const { service, prisma, tx, usersService, sockets } = build();
+    prisma.refreshToken.findUnique
+      .mockResolvedValueOnce(liveSession())
+      .mockResolvedValueOnce(liveSession({ isRevoked: true, rotatedAt: new Date() }));
+    prisma.refreshToken.findFirst.mockResolvedValue({ id: 'refresh-2' });
+    usersService.findSafeById.mockResolvedValue(user);
+    tx.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await service.refresh('a'.repeat(80));
+
+    expect(result.refresh_token).toHaveLength(80);
+    expect(tx.refreshToken.create).toHaveBeenCalledTimes(1);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(sockets.disconnectUser).not.toHaveBeenCalled();
+  });
+
+  it('with the window off, losing the consume race is reuse', async () => {
+    const { service, prisma, tx, usersService, jwtConfig } = build();
+    jwtConfig.refreshReuseGraceMs = 0;
+    prisma.refreshToken.findUnique
+      .mockResolvedValueOnce(liveSession())
+      .mockResolvedValueOnce(liveSession({ isRevoked: true, rotatedAt: new Date() }));
     usersService.findSafeById.mockResolvedValue(user);
     tx.refreshToken.updateMany.mockResolvedValue({ count: 0 });
 

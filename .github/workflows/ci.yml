@@ -348,6 +348,13 @@ jobs:
           job="$(grep -m1 -o 'dukaanai-api:[^"[:space:]]*' <<<"$job_yaml")"
           if [ -z "$app" ] || [ "$app" != "$job" ]; then echo "::error::the migration Job runs $job, the API $app"; exit 1; fi
           rm deploy/k8s/common/dukaanai-secrets.env
+      # The Azure target's template (deploy/azure/main.bicep, incl. its alert
+      # rules) compiles: the runner image ships the Azure CLI, which installs
+      # the pinned Bicep CLI. No Azure account is involved.
+      - name: Azure template compiles (bicep build)
+        run: |
+          az bicep install --version v0.45.6
+          az bicep build --file deploy/azure/main.bicep --stdout >/dev/null
       - name: Fresh clone -> compose up -> migrate -> login -> sale
         run: bash scripts/compose-smoke.sh
       - name: Container logs

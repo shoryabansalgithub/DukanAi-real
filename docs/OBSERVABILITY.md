@@ -316,6 +316,33 @@ Two layers:
   api`) and confirm the checker reports the outage within two minutes and
   the recovery after `start`; record it in `docs/STAGING.md`.
 
+## Azure target
+
+The Azure VM (`deploy/azure`, 1 GiB) runs no Prometheus, Alertmanager or
+blackbox exporter (`stack.sh` refuses the `ops` profile), so none of the
+alerts above fire there. Three pieces replace them, all free:
+
+| What can go wrong | Who notices | Set up |
+|---|---|---|
+| A backup job fails (dump, documents archive, off-site copy), or the VM disk falls under 10 % free | the backup heartbeat: the backup agent pings `<url>/fail` with what failed | healthchecks.io (free, no card): a check with **period 1 hour, grace 30 minutes**, email integration on; put its ping URL in `/etc/dukaanai/dukaanai.env` as `BACKUP_HEARTBEAT_URL` and run `deploy/azure/stack.sh up` |
+| The VM is down, the backup agent is stuck, or the off-site copy never runs | the same check: no ping for more than 90 minutes | as above |
+| The API or the web is unreachable from the internet | an outside checker | UptimeRobot (free, commercial use allowed): HTTP(S) monitor on `https://<API_HOST>/api/health/ready` (keyword `"status":"ok"`) and one on the web's `/login` (keyword `DukaanAI`), every 5 minutes, email (and the mobile app's push) on |
+| MySQL storage above 80 % (auto-grow is off: a full server turns read-only and billing stops); MySQL or VM CPU credits nearly spent (slow checkouts); VM memory under 100 MB | Azure Monitor metric alerts | redeploy `deploy/azure/main.bicep` with `alertEmail=<you>` (four rules, about 0.40 a month from the credit) |
+| Spending runs ahead of the student credit | a Cost Management budget | the same deployment with `monthlyBudget=<amount>` (mails at 80 % spent and 100 % forecast); if the subscription refuses budgets, set an alert on the credit in the Azure Sponsorships portal instead |
+
+    az deployment group create -g <rg> -f deploy/azure/main.bicep \
+      -p deploy/azure/main.parameters.json \
+      -p mysqlAdminPassword=<the same secret> sshPublicKey="$(cat ~/.ssh/id_ed25519.pub)" \
+      -p alertEmail=<you@example.com> monthlyBudget=12
+
+A redeploy with the parameters the stack was created with adds the alert
+resources and leaves the VM and the database as they are (check the what-if
+first: `az deployment group what-if` with the same arguments). Test each once:
+healthchecks.io's "Send a test notification", `sudo docker stop
+dukaanai-prod-backup-agent-1` until the check turns late (then `sudo docker
+start dukaanai-prod-backup-agent-1`), UptimeRobot's test alert, and the Azure
+action group's "Test" button.
+
 ## Verification
 
 `deploy/prometheus/alerts.test.yml` is a promtool unit test (on the

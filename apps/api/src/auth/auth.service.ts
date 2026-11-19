@@ -124,7 +124,9 @@ export class AuthService {
    * Rotates a refresh token: consumes it and issues a successor in the same
    * family. The consume step is a conditional update on `isRevoked = false`;
    * when it matches no row the token was already consumed or revoked, and a
-   * token that was consumed by rotation is treated as reuse.
+   * token that was consumed by rotation is treated as reuse, unless it comes
+   * back within `JWT_REFRESH_REUSE_GRACE_MS` of its rotation while its family
+   * is still live (`reuseWithinGrace`).
    */
   async refresh(refreshToken: string, ipAddress?: string, userAgent?: string): Promise<LoginResponseDto> {
     const now = new Date();
@@ -133,18 +135,13 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
     if (session.rotatedAt) {
-      await this.onTokenReuse(session.userId, session.familyId);
-      throw new UnauthorizedException('Refresh token reuse detected; all sessions have been revoked');
+      return this.presentedAgain(session, now, ipAddress, userAgent);
     }
     if (session.isRevoked || session.expiresAt <= now || session.absoluteExpiresAt <= now) {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    const user = await this.usersService.findSafeById(session.userId);
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException('User inactive or deleted');
-    }
-
+    const user = await this.activeUser(session.userId);
     const successor = await this.prisma.$transaction(async (tx) => {
       const consumed = await tx.refreshToken.updateMany({
         where: { id: session.id, isRevoked: false, rotatedAt: null },
@@ -161,11 +158,62 @@ export class AuthService {
       });
     });
     if (successor === null) {
-      await this.onTokenReuse(session.userId, session.familyId);
-      throw new UnauthorizedException('Refresh token reuse detected; all sessions have been revoked');
+      // The winner of the race rotated it a moment ago: judge it like any token presented again.
+      const rotated = await this.prisma.refreshToken.findUnique({ where: { id: session.id } });
+      return this.presentedAgain(rotated ?? session, now, ipAddress, userAgent);
     }
 
     return { access_token: this.signAccessToken(user, session.familyId), refresh_token: successor, user };
+  }
+
+  /**
+   * A token that was already rotated came back. Within the grace window, while
+   * its family is still live, it is the same browser through another web
+   * instance (or the loser of a concurrent exchange): it gets a successor of
+   * its own in the family. A family that has ended (logout, revocation, a
+   * password change, an earlier reuse) answers 401 and changes nothing: the
+   * session is over for a reason already recorded. Anything else is reuse of
+   * a leaked token and ends every session of the account.
+   */
+  private async presentedAgain(
+    session: { id: string; userId: string; familyId: string; rotatedAt: Date | null; absoluteExpiresAt: Date },
+    now: Date,
+    ipAddress?: string,
+    userAgent?: string,
+  ): Promise<LoginResponseDto> {
+    if (this.reuseWithinGrace(session.rotatedAt, now)) {
+      if (session.absoluteExpiresAt <= now || !(await this.isSessionActive(session.userId, session.familyId, now))) {
+        throw new UnauthorizedException('Invalid or expired refresh token');
+      }
+      const user = await this.activeUser(session.userId);
+      const successor = await this.prisma.$transaction((tx) =>
+        this.issueRefreshToken(tx, {
+          userId: user.id,
+          familyId: session.familyId,
+          absoluteExpiresAt: session.absoluteExpiresAt,
+          ipAddress,
+          userAgent,
+          now,
+        }),
+      );
+      this.logger.log(`Refresh token of family ${session.familyId} presented again within the grace window; successor issued`);
+      return { access_token: this.signAccessToken(user, session.familyId), refresh_token: successor, user };
+    }
+    await this.onTokenReuse(session.userId, session.familyId);
+    throw new UnauthorizedException('Refresh token reuse detected; all sessions have been revoked');
+  }
+
+  private reuseWithinGrace(rotatedAt: Date | null, now: Date): boolean {
+    const grace = this.jwtConfig.refreshReuseGraceMs;
+    return grace > 0 && rotatedAt !== null && now.getTime() - rotatedAt.getTime() <= grace;
+  }
+
+  private async activeUser(userId: string): Promise<SafeUserDto> {
+    const user = await this.usersService.findSafeById(userId);
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('User inactive or deleted');
+    }
+    return user;
   }
 
   /** Ends the session family the access token belongs to; its refresh token and access tokens stop working at once. */

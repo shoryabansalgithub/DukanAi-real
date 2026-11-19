@@ -41,5 +41,22 @@ check "a MariaDB client verifies with its own flags" "$(DB_SSL_MODE=verify DB_SS
 rm -f "$fake_mariadb"
 check "files are written owner-only" "$(umask)" 0077
 
+# The backup heartbeat (Azure VM's alert): a fake curl records its arguments.
+calls="$(mktemp)"; fake_curl="$(mktemp)"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexit "${FAKE_CURL_EXIT:-0}"\n' "$calls" > "$fake_curl"; chmod 700 "$fake_curl"
+: > "$calls"; BACKUP_HEARTBEAT_URL= CURL_BIN="$fake_curl" backup_heartbeat ""
+check "no heartbeat URL, no ping" "$(cat "$calls")" ""
+: > "$calls"; BACKUP_HEARTBEAT_URL=https://hc.example/abc CURL_BIN="$fake_curl" backup_heartbeat ""
+check "a clean run pings the URL" "$(cat "$calls")" "-fsS -m 10 --retry 3 -o /dev/null https://hc.example/abc"
+: > "$calls"; BACKUP_HEARTBEAT_URL=https://hc.example/abc/ CURL_BIN="$fake_curl" backup_heartbeat "dump failed (exit 1)"
+check "a failed run pings /fail with the failures" "$(cat "$calls")" "-fsS -m 10 --retry 3 -o /dev/null --data-raw dump failed (exit 1) https://hc.example/abc/fail"
+warning="$(BACKUP_HEARTBEAT_URL=https://hc.example/secret-token FAKE_CURL_EXIT=6 CURL_BIN="$fake_curl" backup_heartbeat "" 2>&1; echo "exit=$?")"
+check "an undeliverable ping is a warning that never prints the URL" "$warning" $'WARNING: the backup heartbeat could not be delivered\nexit=0'
+rm -f "$calls" "$fake_curl"
+
+# Low disk: 101% asked is never met, 0% always is; a missing directory is skipped.
+check "a disk below the threshold is named" "$(BACKUP_MIN_FREE_PERCENT=101 low_disk / | sed 's/ has .*//')" "/"
+check "a disk with room says nothing" "$(BACKUP_MIN_FREE_PERCENT=0 low_disk / /no/such/dir "")" ""
+
 [ "$failures" -eq 0 ] || { printf '%s check(s) failed\n' "$failures"; exit 1; }
 printf 'lib.sh: every check passed\n'

@@ -51,11 +51,16 @@ case "$cmd" in
     # directory or the off-site list at once. A failed job is logged and the
     # next one still runs; each success stamps BACKUP_STATUS_DIR for the
     # backup metric, so a job that keeps failing raises DukaanAiBackupStale.
+    # Where no Prometheus runs (the Azure VM), BACKUP_HEARTBEAT_URL is the
+    # alert instead: every run ends with a ping, or a /fail ping naming what
+    # failed (a job, or a disk under BACKUP_MIN_FREE_PERCENT free).
+    . /scripts/db/lib.sh
     interval="${BACKUP_LOOP_INTERVAL_SECONDS:-86400}"
     hourly="${BACKUP_LOOP_HOURLY_SECONDS:-0}"
     delay="${BACKUP_LOOP_INITIAL_DELAY_SECONDS:-60}"
     hourly_dir="${BACKUP_HOURLY_DIR:-$BACKUPS/hourly}"
     case "$interval$hourly$delay" in *[!0-9]*) echo "backup-agent: the BACKUP_LOOP_* intervals must be whole seconds" >&2; exit 2 ;; esac
+    case "${BACKUP_MIN_FREE_PERCENT:-10}" in *[!0-9]*|"") echo "backup-agent: BACKUP_MIN_FREE_PERCENT must be a whole number" >&2; exit 2 ;; esac
     tick="$interval"
     plan="dump + documents${OFFSITE_REMOTE:++ off-site} into $BACKUPS every ${interval}s"
     if [ "$hourly" -gt 0 ]; then
@@ -66,20 +71,37 @@ case "$cmd" in
     # PID 1 too: stop at once between runs, after the current job during one (archive-loop above).
     trap 'echo "backup-agent: stopping"; exit 0' TERM INT
     sleep "$delay" & wait $!
+    # A failed job is logged and named in the run's heartbeat; the loop goes on.
+    run_job() {
+      local label="$1" rc
+      shift
+      "$@" && return 0
+      rc=$?
+      echo "backup-agent: $label failed (exit $rc)" >&2
+      failed="${failed:+$failed; }$label failed (exit $rc)"
+    }
     nightly_due=0
     while true; do
+      failed=""
       if [ "$(date +%s)" -ge "$nightly_due" ]; then
         nightly_due=$(( $(date +%s) + interval ))
-        bash /scripts/db/backup.sh || echo "backup-agent: dump failed (exit $?)" >&2
-        bash /scripts/storage/backup.sh || echo "backup-agent: documents archive failed (exit $?)" >&2
+        run_job "dump" bash /scripts/db/backup.sh
+        run_job "documents archive" bash /scripts/storage/backup.sh
       else
-        bash /scripts/db/backup.sh --out "$hourly_dir" --keep "${BACKUP_HOURLY_KEEP:-48}" || echo "backup-agent: hourly dump failed (exit $?)" >&2
+        run_job "hourly dump" bash /scripts/db/backup.sh --out "$hourly_dir" --keep "${BACKUP_HOURLY_KEEP:-48}"
       fi
       if [ -n "${OFFSITE_REMOTE:-}" ]; then
-        bash /scripts/backup/offsite.sh push || echo "backup-agent: off-site copy failed (exit $?)" >&2
+        run_job "off-site copy" bash /scripts/backup/offsite.sh push
       else
         echo "backup-agent: OFFSITE_REMOTE is not set: no off-site copy (docs/BACKUP_RESTORE.md)" >&2
+        failed="${failed:+$failed; }no off-site copy (OFFSITE_REMOTE is not set)"
       fi
+      low="$(low_disk "$BACKUPS" "${STORAGE_ROOT:-}" | paste -sd ';' - || true)"
+      if [ -n "$low" ]; then
+        echo "backup-agent: low disk: $low" >&2
+        failed="${failed:+$failed; }low disk: $low"
+      fi
+      backup_heartbeat "$failed"
       sleep "$tick" & wait $!
     done
     ;;
