@@ -4,6 +4,7 @@ import React, { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn, useSession } from 'next-auth/react';
+import { CSRF_REJECTED, retryCsrfRejection } from '@/lib/credentials-sign-in';
 import { motion } from 'framer-motion';
 import { ShoppingBag, Lock, Mail, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
@@ -64,17 +65,21 @@ function LoginPageContent() {
     setLoading(true);
 
     try {
-      const result = await signIn('credentials', {
-        email,
-        password,
-        redirect: false,
-      });
+      const result = await retryCsrfRejection(() =>
+        signIn('credentials', {
+          email,
+          password,
+          redirect: false,
+        })
+      );
 
       if (result?.error) {
         // authorize() throws a descriptive message when the API is down;
         // NextAuth surfaces it via result.error. Anything else is bad credentials.
         if (result.error.includes('unreachable')) {
           setError(result.error);
+        } else if (result.error === CSRF_REJECTED) {
+          setError('Could not complete sign-in. Please reload the page and try again.');
         } else {
           setError('Invalid email or password. Please try again.');
         }

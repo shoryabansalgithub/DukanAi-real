@@ -160,6 +160,9 @@ release notes of the tag.
 - Every page rendered in a serif font (Times New Roman): Tailwind's sans-serif stack started with a variable nothing
   defined. On a phone the navbar search now has the width the icons leave instead of showing only "Sea".
 - The API was type-checked against Node 24's types (a stale lockfile entry) while it runs on Node 22.
+- Creating a store or signing in on a first visit could land back on the sign-in page: concurrent requests replaced
+  the sign-in's security cookie, the server refused the attempt without saying so, and the page took it for success.
+  The refused attempt is now tried again, and one that keeps failing says so instead of leaving the form.
 - Shop owners on the Vercel-hosted web were signed out of every device now and then: two web instances refreshed the
   same session at once and the API took the second exchange for a stolen token. A refresh token presented again
   within `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation, while its session is live, now gets a successor; later

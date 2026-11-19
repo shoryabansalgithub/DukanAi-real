@@ -4,6 +4,7 @@ import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn, useSession } from 'next-auth/react';
+import { retryCsrfRejection } from '@/lib/credentials-sign-in';
 import { motion } from 'framer-motion';
 import { Lock, Mail, User, Store, ArrowRight, AlertCircle, KeyRound } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
@@ -95,11 +96,13 @@ function RegisterForm() {
 
       // An accepted invitation answers the created account, whose email is the invited address.
       const signInEmail = joining ? String(data?.email ?? '') : email;
-      const result = await signIn('credentials', {
-        email: signInEmail,
-        password,
-        redirect: false,
-      });
+      const result = await retryCsrfRejection(() =>
+        signIn('credentials', {
+          email: signInEmail,
+          password,
+          redirect: false,
+        })
+      );
 
       if (result?.error) {
         toast('Account created! Please sign in.', 'success');
