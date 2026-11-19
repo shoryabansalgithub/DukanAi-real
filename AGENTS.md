@@ -810,16 +810,28 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere removed the jest chain and the critical handlebars) and CI's lint job fails on any high or critical
   production advisory (`npm audit --omit=dev --audit-level=high`); re-check
   after any dependency change and keep it that way. The root `overrides`
-  carry the fixes that upstream pins block, each with its reason in
-  `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
+  carry the fixes that upstream pins block, each with its reason here
+  (JSON has no comments): next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
   same `deepmerge` export; `prisma generate` / `migrate` run on it),
-  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 (next 16
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, `@nestjs/platform-express`'s
+  exact `multer` pin (2.4.0) to 2.5.x, `archiver-utils`' `glob` to 14.x
+  (archiver 7 stays on 7.x, and its `glob ^10` line has no fixed release;
+  `archiver-utils` only calls `glob.sync`, which 14 keeps, and the backup
+  uses `archive.directory`, which does not reach it), and `postcss` to 8.5.28 (next 16
   pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
-  versions instead. `prisma` and `@prisma/client` are pinned to the same
+  versions instead. Change the lock with npm 10 (`npx npm@10.9.7`, the
+  `packageManager`), one targeted `install <pkg>@<range> -w <workspace>` or
+  `update <pkg>` at a time, and diff the resolved versions afterwards; never
+  `npm dedupe` (it rewrites unrelated packages). A transitive subtree that
+  must pick up a new override is re-resolved by deleting its lock entries all
+  the way up to the package a workspace declares (`archiver` for
+  `archiver-utils`) and running `install --package-lock-only`: npm re-adds a
+  deleted declared dependency with its whole subtree, but never a deleted
+  transitive entry on its own. `prisma` and `@prisma/client` are pinned to the same
   exact version (6.19.3): bump both together, then `npx prisma generate`.
   The gate audits production dependencies only, so build-time tooling must
   live in `devDependencies`: `tailwindcss-animate` (a Tailwind plugin used
@@ -841,7 +853,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere (`engines`, `.nvmrc`).
 
 - 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
-  19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
+  19, framer-motion 14, lucide-react 1.x, recharts 2.15, zod 4: write
+  `z.url()`, not `z.string().url()`, and `code: 'custom'`, not
+  `z.ZodIssueCode`, as `src/config/env.ts` does). What the major
   changed here: `next lint` is gone, so `npm run lint` in apps/web is
   `eslint .` over `eslint.config.mjs` (ESLint 9 flat config: `eslint-config-next`
   core-web-vitals + typescript; the React Compiler rules of

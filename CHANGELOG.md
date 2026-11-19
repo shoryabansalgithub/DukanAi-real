@@ -42,6 +42,12 @@ release notes of the tag.
 
 ### Security
 
+- The production dependency audit is clean again (`npm audit --omit=dev`: 0 advisories, it had 1 critical, 5 high
+  and 11 moderate). Next.js 16.4.6 (three advisories in the image optimizer, `use cache` and Server Actions, which this
+  app does not use), multer 2.5 and body-parser 2.4 (denial of service on uploads and compressed request bodies), zod
+  4 (memory exhaustion on oversized collections), follow-redirects 1.16.3 (credentials kept across a redirect), qs,
+  fast-uri, nodemailer 10.1, Sentry 11.14 and, through a `glob` 14 override for `archiver-utils`, glob and
+  minimatch. No behaviour changes: archiver stays on 7.x and every backup is still a real zip.
 - Cashiers and stock clerks no longer see the shop's money behind the counter. Cost prices, profit and margin, stock
   value at cost, supplier balances and purchasing, expenses and Reports & Analytics are for owners, admins and managers
   (`FINANCE_ROLES`): those reads answer 403 to anyone else, and every other answer leaves the cost, profit, valuation
