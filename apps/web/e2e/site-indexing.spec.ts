@@ -16,7 +16,7 @@ import { MARKETING_PAGES } from '../src/marketing/registry';
  * SITE_INDEXABLE=false and on any Vercel preview. Pure logic over the real
  * route modules: the spec runs in the ordinary e2e project.
  */
-const KEYS = ['SITE_INDEXABLE', 'VERCEL_ENV', 'SITE_URL'] as const;
+const KEYS = ['SITE_INDEXABLE', 'VERCEL_ENV', 'SITE_URL', 'VERCEL_PROJECT_PRODUCTION_URL'] as const;
 
 function withEnv(
   env: Partial<Record<(typeof KEYS)[number], string>>,
@@ -108,8 +108,25 @@ test.describe('site indexing switch', () => {
  */
 test.describe('SITE_URL', () => {
   test(
-    'blank is the production address',
+    'blank off Vercel is the fallback address',
     withEnv({}, () => expect(siteUrl()).toBe('https://dukan-ai-chi.vercel.app'))
+  );
+  test(
+    "blank on Vercel is the project's production domain, previews included",
+    withEnv({ VERCEL_PROJECT_PRODUCTION_URL: 'dukaanai.in', VERCEL_ENV: 'preview' }, () => {
+      expect(siteUrl()).toBe('https://dukaanai.in');
+      expect(robots().sitemap).toBeUndefined();
+    })
+  );
+  test(
+    "SITE_URL wins over Vercel's production domain",
+    withEnv(
+      {
+        SITE_URL: 'https://shop.example.in',
+        VERCEL_PROJECT_PRODUCTION_URL: 'dukaan-ai.vercel.app',
+      },
+      () => expect(absoluteUrl('/faq')).toBe('https://shop.example.in/faq')
+    )
   );
   test(
     'a bare host means https, and a trailing slash is dropped',

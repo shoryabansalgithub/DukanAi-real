@@ -22,7 +22,7 @@ if (process.env.NODE_ENV === 'production' && BYPASS_ON) {
  */
 const { parseSiteUrl, parseSiteIndexable } = require('./src/config/site-rules');
 try {
-  parseSiteUrl(process.env.SITE_URL);
+  parseSiteUrl(process.env.SITE_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL);
   parseSiteIndexable(process.env.SITE_INDEXABLE, process.env.VERCEL_ENV);
 } catch (err) {
   throw new Error(`Refusing to build or start the web: ${err instanceof Error ? err.message : String(err)}`);

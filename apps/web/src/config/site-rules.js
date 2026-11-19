@@ -9,20 +9,32 @@
  * loads next.config.js; src/instrumentation.ts checks it there at start.
  */
 
-/** The production address until a custom domain is set in SITE_URL. */
-const DEFAULT_SITE_URL = 'https://dukan-ai-chi.vercel.app';
+/**
+ * The last fallback, for a server that is neither on Vercel nor given
+ * SITE_URL (a local `next start`); every deployed form sets one or the other.
+ */
+const FALLBACK_SITE_URL = 'https://dukan-ai-chi.vercel.app';
 
 /**
- * SITE_URL as an origin (`https://dukaanai.in`). Blank is the default; a bare
- * host (`dukaanai.in`, what people type into a dashboard) means https. A
- * value with a path, query, credentials or another scheme is refused: every
- * canonical URL, the sitemap and Open Graph tags are built on it.
- * @param {string | undefined} value
+ * The site's origin (`https://dukaanai.in`), in this order:
+ * - SITE_URL, when set;
+ * - on Vercel, VERCEL_PROJECT_PRODUCTION_URL: the project's production domain
+ *   (its shortest custom domain, else its vercel.app address), which Vercel
+ *   sets at build and run time on every deployment, previews included. So the
+ *   canonical follows whichever Vercel project serves the site, with nothing
+ *   to configure, and moves to a custom domain the moment one is added;
+ * - FALLBACK_SITE_URL.
+ * A bare host (`dukaanai.in`, what people type into a dashboard, and the form
+ * Vercel's variable takes) means https. A value with a path, query,
+ * credentials or another scheme is refused: every canonical URL, the sitemap
+ * and Open Graph tags are built on it.
+ * @param {string | undefined} value SITE_URL
+ * @param {string | undefined} [vercelProductionUrl] VERCEL_PROJECT_PRODUCTION_URL
  * @returns {string}
  */
-function parseSiteUrl(value) {
-  const raw = (value ?? '').trim();
-  if (!raw) return DEFAULT_SITE_URL;
+function parseSiteUrl(value, vercelProductionUrl) {
+  const raw = (value ?? '').trim() || (vercelProductionUrl ?? '').trim();
+  if (!raw) return FALLBACK_SITE_URL;
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
   let parsed;
   try {

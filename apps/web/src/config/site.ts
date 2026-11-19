@@ -3,9 +3,9 @@
  * robots.txt, Open Graph tags and llms.txt are all built from it.
  *
  * `SITE_URL` is read on the server at run time (one image serves every
- * environment, roadmap 9.9). Unset, it is the production Vercel address;
- * when the custom domain arrives, set SITE_URL to it and every canonical
- * moves with it. The rules live in `site-rules.js`, which next.config.js
+ * environment, roadmap 9.9). Unset, it is the Vercel project's production
+ * domain (VERCEL_PROJECT_PRODUCTION_URL, so a custom domain added on Vercel
+ * is picked up by itself); set SITE_URL to pin another. The rules live in `site-rules.js`, which next.config.js
  * also checks so a bad value fails the build instead of the running site.
  */
 import { parseSiteIndexable, parseSiteUrl } from './site-rules';
@@ -13,7 +13,7 @@ import { parseSiteIndexable, parseSiteUrl } from './site-rules';
 export const SITE_NAME = 'DukaanAI';
 
 export function siteUrl(): string {
-  return parseSiteUrl(process.env.SITE_URL);
+  return parseSiteUrl(process.env.SITE_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL);
 }
 
 /**

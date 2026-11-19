@@ -817,8 +817,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `MARKETING_SECTIONS` (`src/marketing/paths.ts`, read by the proxy), the
   registry, and mounts `MarketingMissingPage` as its `[...missing]`, or
   logged-out visitors are sent to /login / get the app shell's 404.
-  `robots.ts` disallows the app paths. `SITE_URL` (canonical origin, default
-  `https://dukan-ai-chi.vercel.app`) and `SITE_INDEXABLE` (`false` on
+  `robots.ts` disallows the app paths. `SITE_URL` (canonical origin; unset,
+  Vercel's `VERCEL_PROJECT_PRODUCTION_URL`, the project's production domain
+  on every deployment, else `https://dukan-ai-chi.vercel.app`) and `SITE_INDEXABLE` (`false` on
   staging; a Vercel preview is never indexed; closed = noindex, `Disallow:
   /`, empty sitemap, 404 llms.txt and twins) are read at run time
   (`src/config/site.ts`) under the rules in `src/config/site-rules.js`
