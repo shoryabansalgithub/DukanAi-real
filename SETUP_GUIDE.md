@@ -224,13 +224,13 @@ primary: "262.1 80% 50.4%"
 ```
 
 ### Add a New Page
-1. Create folder: `src/app/your-page-name/`
-2. Create file: `src/app/your-page-name/page.tsx`
+1. Create folder: `src/app/(app)/your-page-name/`
+2. Create file: `src/app/(app)/your-page-name/page.tsx`
 3. Add route to sidebar: `src/components/navigation/Sidebar.tsx`
 
 Example:
 ```typescript
-// src/app/your-page-name/page.tsx
+// src/app/(app)/your-page-name/page.tsx
 export default function YourPageName() {
   return (
     <div>
@@ -391,7 +391,7 @@ Recommended extensions for development:
 1. **Explore the Codebase**
    - Check out `/src/components/` for component examples
    - Look at `/src/data/mockData.ts` for data structure
-   - Review `/src/app/dashboard/page.tsx` for page structure
+   - Review `/src/app/(app)/dashboard/page.tsx` for page structure
 
 2. **Customize the UI**
    - Change colors in `tailwind.config.ts`

@@ -80,8 +80,11 @@
 
   /* The sidebar is dark navy in both themes, so it keeps the light theme's
      palette: inverted, its white brand name and card titles turned near
-     black on navy. */
-  .dark .sidebar-bg {
+     black on navy. The public marketing pages are light only: the app's
+     theme class stays on <html> across a client navigation, and inverted,
+     their white page turned near black under slate (not inverted) text. */
+  .dark .sidebar-bg,
+  .dark .marketing-root {
     --color-white: #ffffff;
     --color-gray-50: #f9fafb;
     --color-gray-100: #f3f4f6;
@@ -195,4 +198,11 @@
   .print-document [class*='shadow'] {
     box-shadow: none !important;
   }
+}
+
+/* The marketing pages (src/app/(marketing)) are light only (their palette is
+   restored under .dark above), native controls included. Their font is the
+   app's: --font-sans in :root. */
+.marketing-root {
+  color-scheme: light;
 }

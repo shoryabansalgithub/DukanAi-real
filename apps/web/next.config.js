@@ -15,6 +15,20 @@ if (process.env.NODE_ENV === 'production' && BYPASS_ON) {
 }
 
 /**
+ * The marketing site's address and indexing switch (src/config/site-rules.js).
+ * Every page renders per request, so a bad SITE_URL would otherwise pass the
+ * build and stop every server at start: checked here, it fails the build (on
+ * Vercel the previous deployment keeps serving) and `next start`.
+ */
+const { parseSiteUrl, parseSiteIndexable } = require('./src/config/site-rules');
+try {
+  parseSiteUrl(process.env.SITE_URL);
+  parseSiteIndexable(process.env.SITE_INDEXABLE, process.env.VERCEL_ENV);
+} catch (err) {
+  throw new Error(`Refusing to build or start the web: ${err instanceof Error ? err.message : String(err)}`);
+}
+
+/**
  * Static security headers on every response (roadmap 6.4). The Content
  * Security Policy is per request (it carries a script nonce) and lives in
  * src/proxy.ts; everything that does not depend on the request is here.
@@ -51,6 +65,14 @@ const nextConfig = {
   },
   async headers() {
     return [{ source: '/(.*)', headers: SECURITY_HEADERS }];
+  },
+  /**
+   * Every public page has a Markdown twin for AI agents at the same path
+   * plus `.md` (`/index.md` for the home page), listed in /llms.txt and
+   * served by src/app/markdown/[...slug]/route.ts.
+   */
+  async rewrites() {
+    return { beforeFiles: [{ source: '/:path*.md', destination: '/markdown/:path*' }] };
   },
 };
 

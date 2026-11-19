@@ -41,7 +41,11 @@ identifiers, who holds the secrets, the DNS record owner, the date.
 - **Configuration**: the same `docker-compose.prod.yml`; the differences
   are `.env` values only (hosts, URLs, credentials, sizes). Compare the two
   files with `diff <(sed 's/=.*//' staging/.env | sort) <(sed 's/=.*//' production/.env | sort)`:
-  the key sets must be equal.
+  the key sets must be equal. One value differs on purpose: staging sets
+  `SITE_INDEXABLE=false` (production `true`), so its public pages answer
+  noindex, robots.txt is `Disallow: /` and no sitemap or llms.txt is
+  published; otherwise staging, whose `SITE_URL` is its own origin, would
+  compete with production in search results as duplicate content.
 - **Services**: managed MySQL 8 with `require_secure_transport=ON` and
   `log_bin_trust_function_creators=1`, managed Redis, the edge, the
   monitoring stack (`--profile ops`), the backup agent.

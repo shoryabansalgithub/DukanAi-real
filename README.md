@@ -33,6 +33,10 @@ receipts), invoices, customers, products, inventory (batches and expiry, low
 stock), suppliers, expenses, shifts, employees, notifications, analytics,
 the AI bill scanner, Smart Capture and settings. Every action calls the
 API; there is no mock data.
+The same server answers the public marketing site (landing page, features,
+guides, FAQ, alternatives, glossary) with a sitemap, robots.txt, Open Graph
+cards, JSON-LD and `llms.txt` / Markdown twins for AI agents; `SITE_URL` and
+`SITE_INDEXABLE` configure it (`docs/DEPLOYMENT.md`).
 
 **Not built:** voice billing, WhatsApp messaging, an AI chat assistant,
 variant-level POS pricing, tax-inclusive pricing, coupons, FIFO or

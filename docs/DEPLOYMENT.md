@@ -321,6 +321,8 @@ Web:
 | Variable | When | Notes |
 |---|---|---|
 | `API_PUBLIC_URL` | runtime; required behind an edge | the API as the browser reaches it (`https://<API_HOST>/api`), read by the web server at run time: the page gets it in `<meta name="dukaanai-api-url">`, the CSP `connect-src` names its origin. One image serves every environment |
+| `SITE_URL` | runtime | the public site's canonical origin (canonical links, `sitemap.xml`, robots.txt, Open Graph, `llms.txt`); the compose files default it to `WEB_ORIGIN`, the image alone to the Vercel address. A malformed value refuses to start |
+| `SITE_INDEXABLE` | runtime | `false` on staging: every public page answers noindex, robots.txt is `Disallow: /`, no sitemap or `llms.txt`. Blank is `true` (production); a Vercel preview (`VERCEL_ENV` other than `production`) is never indexed. Any other value refuses to start |
 | `NEXT_PUBLIC_API_URL` | build argument only | inlined into the server and browser bundles at build time, so setting it on a running container changes nothing; the fallback of a container started without `API_PUBLIC_URL` (release images are built without it) and the local default of `next dev` |
 | `API_INTERNAL_URL` | runtime, optional | the API as the web server reaches it (sign-in, refresh); defaults to the public URL |
 | `KEEP_ALIVE_TIMEOUT` | runtime, recommended | idle keep-alive of the Next server in ms; every compose file and the Kubernetes Deployment set `65000`, above the edge's 55 s and ingress-nginx's 60 s (Node's 5 s default made the proxy reuse closed connections: 502s) |

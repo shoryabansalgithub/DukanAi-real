@@ -56,7 +56,7 @@
 **Key Files:**
 - `apps/web/package.json` - Dependencies
 - `apps/web/src/app/layout.tsx` - Root layout
-- `apps/web/src/app/dashboard/page.tsx` - Main dashboard
+- `apps/web/src/app/(app)/dashboard/page.tsx` - Main dashboard
 - `apps/web/src/components/` - Component library
 - `apps/web/src/data/mockData.ts` - Mock data
 
