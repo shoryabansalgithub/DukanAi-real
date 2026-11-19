@@ -2,8 +2,11 @@
  * Roadmap 2.6 (audit P2-13, P2-14): sessions are refresh-token families.
  * Rotation consumes the presented token and issues a successor in the same
  * family; a consumed token presented again is reuse and ends every session of
- * the user; logout and the absolute lifetime end a family, and the access
- * tokens minted for it stop working at once because they carry its id.
+ * the user, unless it comes back within JWT_REFRESH_REUSE_GRACE_MS of its
+ * rotation while the family is live (a second web instance holding the old
+ * cookie), when it gets a successor of its own; logout and the absolute
+ * lifetime end a family, and the access tokens minted for it stop working at
+ * once because they carry its id.
  */
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -36,6 +39,9 @@ describe('sessions: refresh-token families (roadmap 2.6)', () => {
   const refresh = (refresh_token: string) => request(server()).post('/api/auth/refresh').send({ refresh_token });
   const profile = (accessToken: string) => request(server()).get('/api/auth/profile').set('Authorization', `Bearer ${accessToken}`);
   const familiesOf = (userId: string) => prisma.refreshToken.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } });
+  /** Moves every rotation of the user's tokens past the grace window (60 s by default). */
+  const ageRotations = (userId: string) =>
+    prisma.$executeRaw`UPDATE RefreshToken SET rotatedAt = ${new Date(Date.now() - 5 * 60_000)} WHERE userId = ${userId} AND rotatedAt IS NOT NULL`;
 
   it('a login opens one family whose access token names it, and a refresh rotates within that family', async () => {
     const user = await createUser(app, shop, Role.CASHIER, PASSWORD);
@@ -60,12 +66,13 @@ describe('sessions: refresh-token families (roadmap 2.6)', () => {
     expect((await profile(rotated.body.access_token)).status).toBe(200);
   });
 
-  it('presenting a consumed refresh token again ends every session of the user', async () => {
+  it('presenting a consumed refresh token again after the grace window ends every session of the user', async () => {
     const user = await createUser(app, shop, Role.CASHIER, PASSWORD);
     const phone = await login(user.email);
     const laptop = await login(user.email);
     const rotated = await refresh(phone.body.refresh_token);
     expect(rotated.status).toBe(201);
+    await ageRotations(user.id);
 
     const reuse = await refresh(phone.body.refresh_token);
     expect(reuse.status).toBe(401);
@@ -78,6 +85,52 @@ describe('sessions: refresh-token families (roadmap 2.6)', () => {
     expect((await profile(laptop.body.access_token)).status).toBe(401);
     expect((await refresh(rotated.body.refresh_token)).status).toBe(401);
     expect((await refresh(laptop.body.refresh_token)).status).toBe(401);
+  });
+
+  it('within the grace window a consumed token gets a successor of its own: nobody is signed out, and both successors work', async () => {
+    const user = await createUser(app, shop, Role.OWNER, PASSWORD);
+    const browser = await login(user.email);
+    const laptop = await login(user.email);
+    const first = await refresh(browser.body.refresh_token); // one web instance rotates the cookie's token
+
+    const second = await refresh(browser.body.refresh_token); // another instance still holds the old cookie
+    expect(second.status).toBe(201);
+    expect(second.body.refresh_token).not.toBe(first.body.refresh_token);
+
+    const rows = await familiesOf(user.id);
+    const family = rows.filter((r) => r.familyId === rows.find((x) => x.isRevoked)!.familyId);
+    expect(family.filter((r) => !r.isRevoked)).toHaveLength(2); // both successors live in the same family
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { tokenVersion: true } })).tokenVersion).toBe(0);
+    for (const tokens of [first.body, second.body, laptop.body]) expect((await profile(tokens.access_token)).status).toBe(200);
+    expect((await refresh(first.body.refresh_token)).status).toBe(201);
+    expect((await refresh(second.body.refresh_token)).status).toBe(201);
+  });
+
+  it('concurrent refreshes of one token (several requests of one browser at once) all succeed in the same family', async () => {
+    const user = await createUser(app, shop, Role.CASHIER, PASSWORD);
+    const session = await login(user.email);
+
+    const answers = await Promise.all(Array.from({ length: 6 }, () => refresh(session.body.refresh_token)));
+
+    expect(answers.map((a) => a.status)).toEqual(Array(6).fill(201));
+    const families = new Set((await familiesOf(user.id)).map((r) => r.familyId));
+    expect(families.size).toBe(1);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { tokenVersion: true } })).tokenVersion).toBe(0);
+    for (const a of answers) expect((await profile(a.body.access_token)).status).toBe(200);
+  });
+
+  it('a consumed token of a family that has signed out answers 401 within the window and signs nobody else out', async () => {
+    const user = await createUser(app, shop, Role.MANAGER, PASSWORD);
+    const phone = await login(user.email);
+    const laptop = await login(user.email);
+    const rotated = await refresh(phone.body.refresh_token);
+    expect((await request(server()).post('/api/auth/logout').set('Authorization', `Bearer ${rotated.body.access_token}`)).status).toBe(200);
+
+    const late = await refresh(phone.body.refresh_token);
+    expect(late.status).toBe(401);
+    expect(late.body.message).not.toMatch(/reuse/i);
+    expect((await profile(laptop.body.access_token)).status).toBe(200);
+    expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: { tokenVersion: true } })).tokenVersion).toBe(0);
   });
 
   it('logout ends the current family only: its access and refresh tokens stop at once, other sessions continue', async () => {

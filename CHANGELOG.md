@@ -137,6 +137,11 @@ release notes of the tag.
 
 ### Fixed
 
+- Shop owners on the Vercel-hosted web were signed out of every device now and then: two web instances refreshed the
+  same session at once and the API took the second exchange for a stolen token. A refresh token presented again
+  within `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation, while its session is live, now gets a successor; later
+  reuse still ends every session. `POST /auth/refresh` takes the general rate limits instead of the brute-force ones
+  (a refresh token cannot be guessed, and through Vercel every user's refresh shared a few addresses).
 - Dark mode: dialogs (add / edit product, expense, supplier, customer, confirmations), slide-out panels and toasts
   painted white with white labels and typed text; the theme already inverts white and the grays, and the components'
   own dark-mode classes flipped them back. Form fields now take the themed surface, the sidebar keeps its light text

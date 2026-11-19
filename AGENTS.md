@@ -769,7 +769,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (failures are not kept; the table is bounded). Without it, an owner with
   the dashboard open was signed out of everything after one access-token
   lifetime (the business day found it). `e2e/refresh-handoff.spec.ts`
-  covers the logic (pure, runs in the ordinary e2e project).
+  covers the logic (pure, runs in the ordinary e2e project). The table lives
+  in one process: on Vercel the instances do not share it, and the API's
+  `JWT_REFRESH_REUSE_GRACE_MS` window answers the other instances instead.
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser
@@ -2089,9 +2091,12 @@ the fixes made true, and must stay true:
   1000 fails boot); the old second-based `RATE_LIMIT_*_TTL` keys are not read.
   Counters live in Redis (`RedisThrottlerStorage`, keys `throttle:{...}`) and
   degrade to the per-process storage when Redis is down. Routes that take
-  credentials carry `@AuthThrottle()` (login, register, refresh, google,
-  invitation accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the
-  general ones (`src/common/throttling`). `.env.test` opens every window wide;
+  credentials carry `@AuthThrottle()` (login, register, google, invitation
+  accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the general ones
+  (`src/common/throttling`). `POST /auth/refresh` takes the general limits: an
+  80-hex-character token has nothing to guess, and behind a web server with
+  several instances (Vercel) every user's refresh comes from its few
+  addresses, where the auth limits signed people out. `.env.test` opens every window wide;
   `test/integration/rate-limit.integration-spec.ts` proves the limiter with its
   own overrides and clears `throttle:*` before and after.
 - The tracker is `req.ip`, so `TRUST_PROXY` (Express `trust proxy`, applied in
@@ -2185,7 +2190,11 @@ the fixes made true, and must stay true:
   opens a family (`RefreshToken.familyId`), every refresh consumes the token
   (`rotatedAt`, conditional `updateMany`) and writes a successor in one
   transaction; a consumed token presented again is reuse and revokes the
-  family AND bumps `tokenVersion` (all sessions end); `absoluteExpiresAt`
+  family AND bumps `tokenVersion` (all sessions end), except within
+  `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation while its family is
+  live, when it gets a successor of its own (a second web instance with the
+  old cookie, or the loser of a concurrent exchange; a family that has ended
+  answers a plain 401 there); `absoluteExpiresAt`
   (`SESSION_ABSOLUTE_LIFETIME`, 12h) caps a family, `JWT_REFRESH_EXPIRES_IN`
   (7d) is one token's idle life. Access tokens live 15 min (`JWT_EXPIRES_IN`)
   and carry `sid` = familyId; `JwtStrategy`/the socket adapter reject a token

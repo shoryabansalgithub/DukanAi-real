@@ -15,8 +15,11 @@ production limits.
 - Counters are per client address (`req.ip`), in Redis, over three general
   windows (`RATE_LIMIT_SHORT|MEDIUM|LONG_*`: 10 s, 60 s, 1 h) on every route,
   and the `AUTH_RATE_LIMIT_*` limits instead on the credential routes
-  (login, register, refresh, Google sign-in, invitation accept) plus a
+  (login, register, Google sign-in, invitation accept) plus a
   per-account limit keyed by the submitted email (`src/common/throttling`).
+  Token refresh takes the general limits: an 80-hex-character refresh token
+  cannot be guessed, and through a web server with several instances
+  (Vercel) every user's refresh arrives from that server's few addresses.
 - A shop's terminals share one address: the shop's NAT, which the edge
   passes on (`TRUST_PROXY=1`; the web server forwards the browser's address
   on sign-in and refresh, so those count against the same address). The
@@ -39,7 +42,7 @@ shift banner.
 | Dashboard poll | 4 | every 30 s |
 | Notifications poll | 1 | every 60 s |
 | Sale (search, customer search, checkout, grid, shift) | 5 | every 20 s at peak |
-| Sign-in / token refresh (credential routes) | 1 | once, then every 15 min |
+| Sign-in (credential route), then token refresh (general limits) | 1 | once, then every 15 min |
 
 Three terminals at peak: a burst of 36 general requests in the first second
 (every terminal loading and billing at once), 72 a minute and about 4,300

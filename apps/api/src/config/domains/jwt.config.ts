@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { IsNotEmpty, IsString, Matches } from 'class-validator';
+import { IsInt, IsNotEmpty, IsString, Matches, Max, Min } from 'class-validator';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { StringFromEnv } from '../hydrate-from-env';
+import { IntegerFromEnv, StringFromEnv } from '../hydrate-from-env';
 import { IsProductionSecret } from '../validation/env-rules';
 import { DURATION_PATTERN } from '../../common/time/duration';
 
@@ -21,6 +21,14 @@ export const JWT_ALGORITHM = 'HS256';
  * detected token reuse takes effect at once. `JWT_REFRESH_EXPIRES_IN` is the
  * idle lifetime of one refresh token; `SESSION_ABSOLUTE_LIFETIME` caps the
  * whole family from the login, however often it is rotated.
+ *
+ * `JWT_REFRESH_REUSE_GRACE_MS` is how long a refresh token that was just
+ * rotated may be presented again and still get a successor in its family,
+ * instead of being treated as stolen. A web server that runs as several
+ * instances (Vercel functions) cannot share the exchange of one browser's
+ * token across them, so a second instance holding the old cookie presents it
+ * a moment after the first rotated it. Past the window, reuse still ends every
+ * session of the account. 0 turns the window off.
  */
 @Injectable()
 @ConfigDomain({ owner: 'Jwt', feature: 'Configuration', version: '2.0.0', description: 'JwtConfig Domain' })
@@ -49,4 +57,11 @@ export class JwtConfig {
   @StringFromEnv()
   @EnvVariable('SESSION_ABSOLUTE_LIFETIME')
   readonly sessionAbsoluteLifetime: string = '12h';
+
+  @IsInt()
+  @Min(0)
+  @Max(300_000)
+  @IntegerFromEnv()
+  @EnvVariable('JWT_REFRESH_REUSE_GRACE_MS')
+  readonly refreshReuseGraceMs: number = 60_000;
 }
