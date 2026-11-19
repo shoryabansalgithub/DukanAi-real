@@ -9,6 +9,9 @@ export const API_URL_META_NAME = 'dukaanai-api-url';
 /** The `<meta>` the root layout renders so the browser learns whether this server offers Google sign-in. */
 export const GOOGLE_SIGNIN_META_NAME = 'dukaanai-google-signin';
 
+/** The `<meta>` the root layout renders so the browser learns whether /privacy and /terms are published. */
+export const LEGAL_PAGES_META_NAME = 'dukaanai-legal-pages';
+
 let resolvedApiUrl: string | undefined;
 
 /**
@@ -68,6 +71,19 @@ export function googleSignInEnabled(): boolean {
     return hasGoogleCredentials({ GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET });
   }
   return document.querySelector<HTMLMetaElement>(`meta[name="${GOOGLE_SIGNIN_META_NAME}"]`)?.content === 'on';
+}
+
+/**
+ * Whether the privacy notice and the terms are published (the deployment
+ * names its operator and contact, `src/marketing/legal.ts`), so the sign-up
+ * form can link them. Decided at run time like Google sign-in: the server
+ * reads the environment, the browser the `<meta>` the root layout renders.
+ */
+export function legalPagesPublished(): boolean {
+  if (typeof window === 'undefined') {
+    return Boolean(process.env.LEGAL_OPERATOR_NAME?.trim() && process.env.LEGAL_CONTACT_EMAIL?.trim());
+  }
+  return document.querySelector<HTMLMetaElement>(`meta[name="${LEGAL_PAGES_META_NAME}"]`)?.content === 'on';
 }
 
 /**

@@ -6,6 +6,9 @@ import { GET as llmsTxt } from '../src/app/llms.txt/route';
 import { GET as llmsFullTxt } from '../src/app/llms-full.txt/route';
 import { GET as markdownTwin } from '../src/app/markdown/[...slug]/route';
 import { absoluteUrl, siteIndexable, siteUrl } from '../src/config/site';
+import { parseLegalDetails } from '../src/config/site-rules';
+import { privacyMarkdown, termsMarkdown } from '../src/marketing/legal';
+import { parseMarkdown } from '../src/marketing/markdown';
 import { pageMetadata } from '../src/marketing/metadata';
 import { MARKETING_PAGES } from '../src/marketing/registry';
 
@@ -178,6 +181,82 @@ test.describe('SITE_URL', () => {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;
       }
+      delete require.cache[require.resolve(configPath)];
+    }
+  });
+});
+
+/**
+ * The privacy notice and terms (/privacy, /terms) are published only when the
+ * deployment names who runs the service and how to reach them; the values are
+ * written into Markdown, so they are cleaned, and a half-filled pair or a bad
+ * email fails next.config.js like a bad SITE_URL.
+ */
+test.describe('legal pages', () => {
+  const full = {
+    LEGAL_OPERATOR_NAME: 'Example Retail Tech Pvt Ltd',
+    LEGAL_CONTACT_EMAIL: 'privacy@example.com',
+    LEGAL_ADDRESS: '12 MG Road, Jaipur',
+    LEGAL_GRIEVANCE_OFFICER: 'A. Sharma',
+    LEGAL_CONTACT_PHONE: '+91 98765 43210',
+    LEGAL_JURISDICTION: 'Jaipur',
+    LEGAL_DATA_LOCATION: 'Azure Central India',
+  };
+
+  test('nothing set: no pages', () => expect(parseLegalDetails({})).toBeNull());
+
+  test('half a pair or a bad email is refused', () => {
+    expect(() => parseLegalDetails({ LEGAL_OPERATOR_NAME: 'X' })).toThrow(/set together/);
+    expect(() => parseLegalDetails({ LEGAL_CONTACT_EMAIL: 'a@b.in' })).toThrow(/set together/);
+    expect(() =>
+      parseLegalDetails({ LEGAL_OPERATOR_NAME: 'X', LEGAL_CONTACT_EMAIL: 'not-an-email' })
+    ).toThrow(/not an email address/);
+  });
+
+  test('Markdown and HTML characters in a value are dropped', () => {
+    const d = parseLegalDetails({
+      LEGAL_OPERATOR_NAME: ' **Shop** [x](/y) <b>Co</b> ',
+      LEGAL_CONTACT_EMAIL: 'a@b.in',
+    });
+    expect(d?.operator).toBe('Shop x (/y) b Co /b');
+  });
+
+  for (const [name, details] of [
+    ['every optional value set', full],
+    [
+      'only the two required values',
+      {
+        LEGAL_OPERATOR_NAME: full.LEGAL_OPERATOR_NAME,
+        LEGAL_CONTACT_EMAIL: full.LEGAL_CONTACT_EMAIL,
+      },
+    ],
+  ] as const) {
+    test(`both documents render in the Markdown subset: ${name}`, () => {
+      const d = parseLegalDetails(details)!;
+      for (const source of [privacyMarkdown(d), termsMarkdown(d)]) {
+        expect(() => parseMarkdown(source)).not.toThrow();
+        expect(source).toContain('Example Retail Tech Pvt Ltd');
+        expect(source).toContain('[privacy@example.com](mailto:privacy@example.com)');
+        // `> ` opens a callout; anywhere else an angle bracket would be a draft placeholder.
+        expect(source.replace(/^> /gm, '')).not.toMatch(/[<>]|undefined|null/);
+      }
+      expect(termsMarkdown(d)).toContain(
+        'LEGAL_JURISDICTION' in details ? 'the courts of Jaipur' : 'the courts of India'
+      );
+    });
+  }
+
+  test('next.config.js refuses a half-filled pair', () => {
+    const configPath = path.resolve(__dirname, '../next.config.js');
+    const saved = process.env.LEGAL_OPERATOR_NAME;
+    try {
+      process.env.LEGAL_OPERATOR_NAME = 'Example Retail Tech Pvt Ltd';
+      delete require.cache[require.resolve(configPath)];
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- a fresh CommonJS load of next.config.js
+      expect(() => require(configPath)).toThrow(/LEGAL_OPERATOR_NAME and LEGAL_CONTACT_EMAIL/);
+    } finally {
+      if (saved === undefined) delete process.env.LEGAL_OPERATOR_NAME;
+      else process.env.LEGAL_OPERATOR_NAME = saved;
       delete require.cache[require.resolve(configPath)];
     }
   });

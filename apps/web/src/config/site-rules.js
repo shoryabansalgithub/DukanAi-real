@@ -77,4 +77,50 @@ function parseSiteIndexable(value, vercelEnv) {
   return env === '' || env === 'production';
 }
 
-module.exports = { parseSiteUrl, parseSiteIndexable };
+/**
+ * Who runs the service, for the privacy notice and the terms (`/privacy`,
+ * `/terms`). Read from the environment so the operator's details live in the
+ * deployment, not in git: LEGAL_OPERATOR_NAME and LEGAL_CONTACT_EMAIL (the
+ * grievance and privacy contact Indian data protection law requires) are
+ * required together; LEGAL_ADDRESS, LEGAL_GRIEVANCE_OFFICER, LEGAL_CONTACT_PHONE,
+ * LEGAL_JURISDICTION (a city) and LEGAL_DATA_LOCATION are optional. Neither
+ * required value set: null, and the two pages are not published. One without
+ * the other, or an address that is not an email, is refused like a bad
+ * SITE_URL. Markdown and HTML characters are dropped: the values are written
+ * into the pages' Markdown.
+ * @param {Record<string, string | undefined>} env
+ * @returns {null | { operator: string, contactEmail: string, address: string | null,
+ *   grievanceOfficer: string | null, phone: string | null, jurisdiction: string | null,
+ *   dataLocation: string | null }}
+ */
+function parseLegalDetails(env) {
+  const clean = (value) => {
+    const text = (value ?? '')
+      .replace(/[\u0000-\u001f\u007f*`|<>[\]\\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return text || null;
+  };
+  const operator = clean(env.LEGAL_OPERATOR_NAME);
+  const contactEmail = clean(env.LEGAL_CONTACT_EMAIL);
+  if (!operator && !contactEmail) return null;
+  if (!operator || !contactEmail) {
+    throw new Error(
+      'LEGAL_OPERATOR_NAME and LEGAL_CONTACT_EMAIL are set together (the privacy notice and terms need both)'
+    );
+  }
+  if (!/^[^\s@()]+@[^\s@()]+\.[a-z]{2,}$/i.test(contactEmail)) {
+    throw new Error(`LEGAL_CONTACT_EMAIL is not an email address: "${contactEmail}"`);
+  }
+  return {
+    operator,
+    contactEmail,
+    address: clean(env.LEGAL_ADDRESS),
+    grievanceOfficer: clean(env.LEGAL_GRIEVANCE_OFFICER),
+    phone: clean(env.LEGAL_CONTACT_PHONE),
+    jurisdiction: clean(env.LEGAL_JURISDICTION),
+    dataLocation: clean(env.LEGAL_DATA_LOCATION),
+  };
+}
+
+module.exports = { parseSiteUrl, parseSiteIndexable, parseLegalDetails };

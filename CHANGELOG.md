@@ -75,6 +75,17 @@ release notes of the tag.
 
 ### Added
 
+- A public website for shop owners, search engines and AI assistants: the landing page, feature pages, GST and udhar
+  guides, a comparison with other billing apps, FAQ and glossary, with a sitemap, `robots.txt`, `/llms.txt`, a
+  Markdown copy of every page and social cards. `/` shows it to visitors and still opens the dashboard for a signed-in
+  user. The canonical address is `SITE_URL`, else the Vercel project's production domain; a bad value fails the build
+  instead of the live site. The copy states the GST invoice gaps and what the dashboard insights compute.
+- The privacy notice (`/privacy`) and terms for shops (`/terms`), linked from the footer and the sign-up form. They are
+  published once the web has `LEGAL_OPERATOR_NAME` and `LEGAL_CONTACT_EMAIL` (the grievance contact); the address,
+  grievance officer, phone, jurisdiction and data location are optional `LEGAL_*` settings. Have your advisor review
+  the wording, the liability section in particular.
+- The top bar's name and avatar open a profile popup (name, email, role, shop) with **Sign out** as its last item;
+  clicking the name no longer signs you out.
 - Alerts for the Azure target, which runs no Prometheus: the backup agent pings a dead man's switch
   (`BACKUP_HEARTBEAT_URL`, e.g. a free healthchecks.io check) after every run, and `<url>/fail` naming a failed dump,
   documents archive or off-site copy, or a disk under `BACKUP_MIN_FREE_PERCENT` (10) free; silence means the VM or
@@ -146,6 +157,9 @@ release notes of the tag.
 
 ### Fixed
 
+- Every page rendered in a serif font (Times New Roman): Tailwind's sans-serif stack started with a variable nothing
+  defined. On a phone the navbar search now has the width the icons leave instead of showing only "Sea".
+- The API was type-checked against Node 24's types (a stale lockfile entry) while it runs on Node 22.
 - Shop owners on the Vercel-hosted web were signed out of every device now and then: two web instances refreshed the
   same session at once and the API took the second exchange for a stolen token. A refresh token presented again
   within `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation, while its session is live, now gets a successor; later

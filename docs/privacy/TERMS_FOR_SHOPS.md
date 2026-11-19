@@ -1,9 +1,13 @@
 # DukaanAI terms for shops
 
-> **Draft for the owner's legal advisor (roadmap 9.24). Not yet in force.**
-> Text in `<angle brackets>` is for the owner to fill in. Service levels
-> and procedures refer to the documents that define them, so that the
-> terms promise only what the service does.
+> **Draft for the owner's legal advisor (roadmap 9.24).** The published
+> terms are `/terms`, rendered from `apps/web/src/marketing/legal.ts`: the
+> operator and jurisdiction come from the web's `LEGAL_*` settings, fees say
+> the service is not charged for today (with 30 days' notice before any
+> charge), and the liability section is a standard limitation for the advisor to
+> confirm. Service levels and procedures refer to the documents that define
+> them, so that the terms promise only what the service does; a change here
+> goes into `legal.ts` too.
 
 Between `<legal entity name>` ("DukaanAI", "we") and the shop that signs
 up ("the shop", "you").

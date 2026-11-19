@@ -1,9 +1,13 @@
 # DukaanAI privacy notice
 
-> **Draft for the owner's legal advisor (roadmap 9.24). Not yet in force.**
-> Text in `<angle brackets>` is for the owner to fill in. The facts below
-> come from `DATA_INVENTORY.md` and `RETENTION_POLICY.md`; any change to
-> those documents must be made here too.
+> **Draft for the owner's legal advisor (roadmap 9.24).** The published
+> notice is `/privacy`, rendered from `apps/web/src/marketing/legal.ts` with
+> the placeholders filled from the web's `LEGAL_*` settings (operator, contact,
+> address, jurisdiction, data location); it is published only once
+> `LEGAL_OPERATOR_NAME` and `LEGAL_CONTACT_EMAIL` are set. The facts below
+> come from `DATA_INVENTORY.md` and `RETENTION_POLICY.md`; a change to either
+> document, to this draft or to the advisor's wording goes into `legal.ts` too
+> (and moves its `LEGAL_UPDATED`).
 
 Last updated: `<date>`
 

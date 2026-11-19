@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { API_URL_META_NAME, GOOGLE_SIGNIN_META_NAME, googleSignInEnabled, publicApiUrl } from '@/config/env';
+import { API_URL_META_NAME, GOOGLE_SIGNIN_META_NAME, googleSignInEnabled, LEGAL_PAGES_META_NAME, legalPagesPublished, publicApiUrl } from '@/config/env';
 import { siteUrl } from '@/config/site';
 import './globals.css';
 
@@ -33,7 +33,11 @@ export function generateMetadata(): Metadata {
   return {
     metadataBase: new URL(siteUrl()),
     applicationName: 'DukaanAI',
-    other: { [API_URL_META_NAME]: publicApiUrl(), [GOOGLE_SIGNIN_META_NAME]: googleSignInEnabled() ? 'on' : 'off' },
+    other: {
+      [API_URL_META_NAME]: publicApiUrl(),
+      [GOOGLE_SIGNIN_META_NAME]: googleSignInEnabled() ? 'on' : 'off',
+      [LEGAL_PAGES_META_NAME]: legalPagesPublished() ? 'on' : 'off',
+    },
   };
 }
 

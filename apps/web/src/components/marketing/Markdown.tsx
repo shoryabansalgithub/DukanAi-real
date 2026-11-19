@@ -22,7 +22,7 @@ function InlineText({ parts }: { parts: Inline[] }) {
           );
         }
         if (part.kind === 'link') {
-          const external = /^https?:/.test(part.href);
+          const external = /^(https?|mailto):/.test(part.href);
           const className =
             'font-medium text-indigo-700 underline decoration-indigo-300 underline-offset-2 hover:decoration-indigo-700';
           return external ? (

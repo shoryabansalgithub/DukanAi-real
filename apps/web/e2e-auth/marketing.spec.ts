@@ -260,6 +260,45 @@ test.describe('marketing site', () => {
     expect((await request.get('/no-such-page.md')).status()).toBe(404);
   });
 
+  test('the privacy notice and the terms are published with the operator and contact, and linked from every footer', async ({
+    page,
+    request,
+  }) => {
+    // playwright.auth.config.ts sets LEGAL_OPERATOR_NAME / LEGAL_CONTACT_EMAIL / LEGAL_JURISDICTION.
+    for (const [path, heading] of [
+      ['/privacy', 'Privacy notice'],
+      ['/terms', 'Terms for shops'],
+    ] as const) {
+      const response = await page.goto(path);
+      expect(response?.status(), path).toBe(200);
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(heading);
+      await expect(
+        page.getByRole('main').getByText('Example Retail Tech Pvt Ltd').first()
+      ).toBeVisible();
+      await expect(
+        page.getByRole('main').getByRole('link', { name: 'privacy@example.com' }).first()
+      ).toHaveAttribute('href', 'mailto:privacy@example.com');
+      // No draft placeholder ever reaches the page.
+      expect(await page.getByRole('main').innerText(), path).not.toMatch(/[<>]|\bTODO\b/);
+      const footer = page.getByRole('contentinfo');
+      await expect(footer.getByRole('link', { name: 'Privacy notice' })).toHaveAttribute(
+        'href',
+        '/privacy'
+      );
+      await expect(footer.getByRole('link', { name: 'Terms for shops' })).toHaveAttribute(
+        'href',
+        '/terms'
+      );
+    }
+    await page.goto('/terms');
+    await expect(page.getByText('the courts of Jaipur have jurisdiction')).toBeVisible();
+    // An address under the pages is the marketing 404, and neither page is in the sitemap.
+    expect((await request.get('/privacy/anything')).status()).toBe(404);
+    const sitemap = await (await request.get('/sitemap.xml')).text();
+    expect(sitemap).not.toContain('/privacy');
+    expect(sitemap).not.toContain('/terms');
+  });
+
   test('a public page stays light and readable when the app left dark mode on <html>', async ({
     page,
   }) => {

@@ -52,6 +52,20 @@ spec:
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SITE_URL } }
             - name: SITE_INDEXABLE
               valueFrom: { configMapKeyRef: { name: dukaanai-config, key: SITE_INDEXABLE } }
+            - name: LEGAL_OPERATOR_NAME
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_OPERATOR_NAME } }
+            - name: LEGAL_CONTACT_EMAIL
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_CONTACT_EMAIL } }
+            - name: LEGAL_ADDRESS
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_ADDRESS } }
+            - name: LEGAL_GRIEVANCE_OFFICER
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_GRIEVANCE_OFFICER } }
+            - name: LEGAL_CONTACT_PHONE
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_CONTACT_PHONE } }
+            - name: LEGAL_JURISDICTION
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_JURISDICTION } }
+            - name: LEGAL_DATA_LOCATION
+              valueFrom: { configMapKeyRef: { name: dukaanai-config, key: LEGAL_DATA_LOCATION } }
             - name: API_INTERNAL_URL
               value: http://dukaanai-api:3002/api
             - name: NEXTAUTH_SECRET

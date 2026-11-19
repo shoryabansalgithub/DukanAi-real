@@ -832,7 +832,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   palette like `.sidebar-bg`: the app's theme class survives a client
   navigation onto them). Their copy states what the product does today: the
   GST gaps are `docs/compliance/GST_INVOICE_CHECK.md` §4, and a claim about a
-  feature is checked against the code before it ships. Specs: `e2e/site-indexing.spec.ts` (the switch)
+  feature is checked against the code before it ships. `/privacy` and
+  `/terms` (`src/marketing/legal.ts`, from `docs/privacy/PRIVACY_NOTICE.md`
+  and `TERMS_FOR_SHOPS.md`) are published only when the web has
+  `LEGAL_OPERATOR_NAME` and `LEGAL_CONTACT_EMAIL` (rules in `site-rules.js`:
+  both or neither, a real email, Markdown characters dropped; optional
+  address, grievance officer, phone, jurisdiction, data location), so no
+  placeholder ever reaches a visitor and the operator's details stay out of
+  git; then the footer and the sign-up form link them (`<meta
+  name="dukaanai-legal-pages">`) and `scripts/pilot/readiness.mjs` checks
+  them. They are not in the sitemap. Keep their wording in step with the
+  drafts and the retention settings. Specs: `e2e/site-indexing.spec.ts` (the switch)
   and `e2e-auth/marketing.spec.ts` (every sitemap page, without the bypass).
 
 ## Dependencies (roadmap phase 7)

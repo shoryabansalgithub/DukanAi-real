@@ -20,10 +20,11 @@ if (process.env.NODE_ENV === 'production' && BYPASS_ON) {
  * build and stop every server at start: checked here, it fails the build (on
  * Vercel the previous deployment keeps serving) and `next start`.
  */
-const { parseSiteUrl, parseSiteIndexable } = require('./src/config/site-rules');
+const { parseSiteUrl, parseSiteIndexable, parseLegalDetails } = require('./src/config/site-rules');
 try {
   parseSiteUrl(process.env.SITE_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL);
   parseSiteIndexable(process.env.SITE_INDEXABLE, process.env.VERCEL_ENV);
+  parseLegalDetails(process.env);
 } catch (err) {
   throw new Error(`Refusing to build or start the web: ${err instanceof Error ? err.message : String(err)}`);
 }

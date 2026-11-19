@@ -8,7 +8,7 @@ import { motion } from 'framer-motion';
 import { Lock, Mail, User, Store, ArrowRight, AlertCircle, KeyRound } from 'lucide-react';
 import { useToast } from '@/components/ui/Toast';
 
-import { clientConfig, googleSignInEnabled } from '@/config/env';
+import { clientConfig, googleSignInEnabled, legalPagesPublished } from '@/config/env';
 
 const API_URL = clientConfig.NEXT_PUBLIC_API_URL;
 
@@ -28,6 +28,7 @@ export default function RegisterPage() {
 function RegisterForm() {
   // Decided by the server at run time (roadmap 9.19): the provider exists only with real credentials.
   const googleOAuthEnabled = googleSignInEnabled();
+  const legalPages = legalPagesPublished();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -308,6 +309,19 @@ function RegisterForm() {
               <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform" />
             )}
           </button>
+          {legalPages && (
+            <p className="text-center text-xs text-gray-500">
+              By continuing you agree to the{' '}
+              <Link href="/terms" className="font-semibold text-[#8B5CF6] hover:underline">
+                Terms for shops
+              </Link>{' '}
+              and the{' '}
+              <Link href="/privacy" className="font-semibold text-[#8B5CF6] hover:underline">
+                Privacy notice
+              </Link>
+              .
+            </p>
+          )}
         </form>
 
         {/* --- Footer --- */}

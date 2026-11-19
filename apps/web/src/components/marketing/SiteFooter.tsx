@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { siteIndexable } from '@/config/site';
+import { legalDetails } from '@/marketing/legal';
 import { BLOG_POSTS } from '@/marketing/content/blog';
 import { FEATURE_PAGES } from '@/marketing/content/features';
 import { BrandMark } from './BrandMark';
@@ -44,12 +45,20 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
 ];
 
 export function SiteFooter() {
-  const columns = siteIndexable()
-    ? COLUMNS
-    : COLUMNS.map((column) => ({
-        ...column,
-        links: column.links.filter((link) => link.href !== '/llms.txt'),
-      }));
+  const legal = legalDetails();
+  const columns = COLUMNS.map((column) => ({
+    ...column,
+    links: [
+      ...column.links.filter((link) => link.href !== '/llms.txt' || siteIndexable()),
+      // The privacy notice and terms are published once the deployment names its operator.
+      ...(column.title === 'Account' && legal
+        ? [
+            { href: '/privacy', label: 'Privacy notice' },
+            { href: '/terms', label: 'Terms for shops' },
+          ]
+        : []),
+    ],
+  }));
   return (
     <footer className="border-t border-slate-200 bg-slate-50">
       <div className="mx-auto max-w-6xl px-4 py-14 sm:px-6">
@@ -90,7 +99,8 @@ export function SiteFooter() {
           ))}
         </div>
         <p className="mt-12 border-t border-slate-200 pt-6 text-sm text-slate-500">
-          © {new Date().getFullYear()} DukaanAI. Made for Indian shops.
+          © {new Date().getFullYear()} {legal ? `${legal.operator}. DukaanAI` : 'DukaanAI'}. Made
+          for Indian shops.
         </p>
       </div>
     </footer>

@@ -79,6 +79,10 @@ export default defineConfig({
             NEXT_PUBLIC_API_URL: API_URL,
             NEXTAUTH_URL: WEB_URL,
             NEXTAUTH_SECRET: 'e2e-real-auth-secret-0123456789abcdef0123456789',
+            // Publishes /privacy and /terms (src/marketing/legal.ts) for marketing.spec.ts.
+            LEGAL_OPERATOR_NAME: 'Example Retail Tech Pvt Ltd',
+            LEGAL_CONTACT_EMAIL: 'privacy@example.com',
+            LEGAL_JURISDICTION: 'Jaipur',
           },
         },
       ],

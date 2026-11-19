@@ -149,6 +149,14 @@ services:
       # false on staging: noindex pages, robots.txt Disallow: /, no sitemap
       # or llms.txt (docs/STAGING.md).
       SITE_INDEXABLE: ${SITE_INDEXABLE:-true}
+      # Who runs the service: publishes /privacy and /terms (apps/web/.env.example).
+      LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
+      LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
+      LEGAL_ADDRESS: ${LEGAL_ADDRESS:-}
+      LEGAL_GRIEVANCE_OFFICER: ${LEGAL_GRIEVANCE_OFFICER:-}
+      LEGAL_CONTACT_PHONE: ${LEGAL_CONTACT_PHONE:-}
+      LEGAL_JURISDICTION: ${LEGAL_JURISDICTION:-}
+      LEGAL_DATA_LOCATION: ${LEGAL_DATA_LOCATION:-}
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}

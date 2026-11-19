@@ -1,7 +1,7 @@
 /**
  * Runs once when the server starts (`next dev`, `next start` and the
  * standalone image alike; the standalone server never loads next.config.js).
- * A malformed SITE_URL or SITE_INDEXABLE stops the process here: thrown, Next only logs the
+ * A malformed SITE_URL, SITE_INDEXABLE or LEGAL_* pair stops the process here: thrown, Next only logs the
  * error and keeps listening, and every page then fails because the root
  * layout builds `metadataBase` from it. `fs.writeSync` because
  * `process.exit` can truncate a piped `console.error`.

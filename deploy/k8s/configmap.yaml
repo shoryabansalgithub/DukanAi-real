@@ -21,6 +21,15 @@ data:
   # "false" on staging: noindex pages, robots.txt Disallow: /, no sitemap or
   # llms.txt.
   SITE_INDEXABLE: "true"
+  # Who runs the service: both set publishes /privacy and /terms
+  # (apps/web/.env.example); the empty values leave them unpublished.
+  LEGAL_OPERATOR_NAME: ""
+  LEGAL_CONTACT_EMAIL: ""
+  LEGAL_ADDRESS: ""
+  LEGAL_GRIEVANCE_OFFICER: ""
+  LEGAL_CONTACT_PHONE: ""
+  LEGAL_JURISDICTION: ""
+  LEGAL_DATA_LOCATION: ""
   # Exactly one proxy hop in front of the API: the Ingress controller (the
   # web server forwards the X-Forwarded-For it received on sign-in). A cloud
   # load balancer that rewrites X-Forwarded-For before the Ingress is a
