@@ -42,6 +42,9 @@ release notes of the tag.
 
 ### Security
 
+- The db-ops image (backups, off-site copy) builds rclone v1.76.0 from source on Go 1.27.4 instead of installing
+  rclone's 1.75.2 release, whose Go runtime and `golang.org/x/net` carried three fixable HIGH advisories and stopped
+  the release's vulnerability gate. Same rclone commands and remotes; the off-site copies are unchanged.
 - The production dependency audit is clean again (`npm audit --omit=dev`: 0 advisories, it had 1 critical, 5 high
   and 11 moderate). Next.js 16.4.6 (three advisories in the image optimizer, `use cache` and Server Actions, which this
   app does not use), multer 2.5 and body-parser 2.4 (denial of service on uploads and compressed request bodies), zod

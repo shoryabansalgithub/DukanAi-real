@@ -1524,7 +1524,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   image takes its distribution's security updates at build time (the Node
   base images lag the archive: `apt-get upgrade`; db-ops `microdnf upgrade`
   with the MySQL repository left out, so its clients stay at the pinned
-  release), and the API and web runtime stages delete the npm / npx /
+  release; rclone is built from source in a pinned `golang` stage, because
+  its release binaries lag Go's security releases: bump the Go image with
+  Go's patch releases), and the API and web runtime stages delete the npm / npx /
   corepack the Node image bundles (npm's own tar, brace-expansion, sigstore
   ... are fixable HIGH / CRITICAL and an npm upgrade still carries some). So
   nothing in a container runs `npx`:
