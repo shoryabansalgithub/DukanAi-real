@@ -55,6 +55,19 @@ for (const viewport of [
     const trigger = page.getByRole('button', { name: `${owner.name}, account` });
     const popup = page.getByRole('dialog', { name: owner.name });
 
+    // With the real session's trigger (avatar and chevron) on the right, the navbar search still has
+    // room to read what is typed and stays clear of the sidebar's menu button on a phone
+    // (e2e/navbar-typography.spec.ts measures the bypass layout).
+    const search = page.getByRole('searchbox', { name: 'Search products' });
+    const searchBox = await search.boundingBox();
+    expect(searchBox && searchBox.width).toBeGreaterThanOrEqual(150);
+    if (viewport.width < 768) {
+      const menu = await page.getByRole('button', { name: 'Open menu' }).boundingBox();
+      expect(menu && searchBox && searchBox.x >= menu.x + menu.width).toBe(true);
+    }
+    const triggerBox = await trigger.boundingBox();
+    expect(triggerBox && searchBox && triggerBox.x >= searchBox.x + searchBox.width).toBe(true);
+
     // The bar carries no Sign Out text any more; clicking the name opens the popup and stays signed in.
     await expect(page.getByText('Sign Out', { exact: true })).toHaveCount(0);
     await expect(trigger).toHaveAttribute('aria-expanded', 'false');

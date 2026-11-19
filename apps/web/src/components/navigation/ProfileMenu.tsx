@@ -51,15 +51,21 @@ export function ProfileMenu({ user }: { user: ProfileUser }) {
     };
   }, []);
 
-  // The shop name is not on the session: read it once, the first time the popup opens.
+  // The shop name is not on the session: read it the first time the popup opens.
   // Closing the popup mid-request keeps the answer for the next open; only an unmount drops it.
+  // A failed read hides the row and is tried again on the next open (a dropped connection
+  // must not hide the shop until a reload).
   useEffect(() => {
     if (!open || shopRequested.current) return;
     shopRequested.current = true;
+    setShopName(undefined);
     shopApi
       .me()
       .then((shop) => mounted.current && setShopName(shop.name.trim() || null))
-      .catch(() => mounted.current && setShopName(null));
+      .catch(() => {
+        shopRequested.current = false;
+        if (mounted.current) setShopName(null);
+      });
   }, [open]);
 
   useEffect(() => {
