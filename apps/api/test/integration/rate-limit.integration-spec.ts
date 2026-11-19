@@ -91,7 +91,6 @@ describe('rate limiting on credential routes (roadmap 2.1)', () => {
     const credentialRoutes = [
       request(server).post('/api/auth/login').send({}),
       request(server).post('/api/auth/register').send({}),
-      request(server).post('/api/auth/refresh').send({ refresh_token: 'not-a-token' }),
       request(server).post('/api/auth/google').send({}),
       request(server).post('/api/invitations/accept').send({}),
     ];
@@ -99,6 +98,13 @@ describe('rate limiting on credential routes (roadmap 2.1)', () => {
       expect(res.headers['x-ratelimit-limit-auth-short']).toBe(String(AUTH_SHORT_LIMIT));
       expect(res.headers['x-ratelimit-limit-short']).toBeUndefined();
     }
+
+    // Refresh guesses nothing (an 80-hex-character token) and, behind a web
+    // server with several instances, every user's refresh comes from its few
+    // addresses: it takes the general limits.
+    const refreshed = await request(server).post('/api/auth/refresh').send({ refresh_token: 'not-a-token' });
+    expect(refreshed.headers['x-ratelimit-limit-short']).toBe(String(GENERAL_SHORT_LIMIT));
+    expect(refreshed.headers['x-ratelimit-limit-auth-short']).toBeUndefined();
 
     const general = await (await httpAs(app, shop, owner)).get('/api/products');
     expect(general.status).toBe(200);

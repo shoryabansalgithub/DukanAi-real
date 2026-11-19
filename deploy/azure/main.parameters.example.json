@@ -22,6 +22,12 @@
     },
     "bootstrapRef": {
       "value": ""
+    },
+    "alertEmail": {
+      "value": "owner@example.com"
+    },
+    "monthlyBudget": {
+      "value": 12
     }
   }
 }

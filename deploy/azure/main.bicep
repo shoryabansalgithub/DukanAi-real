@@ -19,7 +19,8 @@
 //   VNet (azure.microsoft.com/en-us/pricing/details/virtual-network), NSG
 //   (no meter), managed boot diagnostics (learn.microsoft.com/en-us/azure/
 //   virtual-machines/boot-diagnostics: "not currently billed")  0.00
-// About 9.50 a month while the free year lasts.
+// About 9.50 a month while the free year lasts. With alertEmail set, the
+// four metric alert rules below add 0.40 (0.10 per rule; emails are free).
 
 targetScope = 'resourceGroup'
 
@@ -58,6 +59,16 @@ param mysqlAdminPassword string
 
 @description('Git ref cloud-init checks out on first boot; blank lets bootstrap.sh choose (the newest release that carries deploy/azure).')
 param bootstrapRef string = ''
+
+@description('Where Azure alerts go (MySQL storage and CPU credits, VM memory and CPU credits); blank creates no alert. The backup heartbeat and the external uptime check are separate (docs/OBSERVABILITY.md, Azure target).')
+param alertEmail string = ''
+
+@description('Monthly cost budget for the resource group in the subscription currency, mailed to alertEmail at 80 % spent and 100 % forecast; 0 creates none (Cost Management budgets may be unavailable on some student subscriptions).')
+@minValue(0)
+param monthlyBudget int = 0
+
+@description('First day of the budget period (the current month by default).')
+param budgetStartDate string = utcNow('yyyy-MM-01')
 
 var tags = {
   app: 'dukaanai'
@@ -405,6 +416,144 @@ resource mysqlDatabase 'Microsoft.DBforMySQL/flexibleServers/databases@2024-12-3
   dependsOn: [
     mysqlConfig
   ]
+}
+
+// Alerts (roadmap 9.10 on a host too small for Prometheus): Azure watches
+// what the VM cannot watch itself. A VM that is down, a stuck backup agent or
+// an unreachable site are the backup heartbeat's and the uptime check's job.
+var alertsOn = !empty(alertEmail)
+
+resource alertGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (alertsOn) {
+  name: '${namePrefix}-alerts'
+  location: 'global'
+  tags: tags
+  properties: {
+    groupShortName: 'dukaanai'
+    enabled: true
+    emailReceivers: [
+      {
+        name: 'owner'
+        emailAddress: alertEmail
+        useCommonAlertSchema: true
+      }
+    ]
+  }
+}
+
+var metricAlerts = [
+  {
+    name: 'mysql-storage-80'
+    description: 'MySQL storage above 80 %: auto-grow is off, and a full server turns read-only (no sales).'
+    scope: mysql.id
+    metric: 'storage_percent'
+    operator: 'GreaterThan'
+    threshold: 80
+    severity: 1
+    frequency: 'PT15M'
+    window: 'PT30M'
+  }
+  {
+    name: 'mysql-cpu-credits-low'
+    description: 'MySQL B1ms CPU credits nearly spent: the server is about to be held to its 20 % baseline (slow checkouts).'
+    scope: mysql.id
+    metric: 'cpu_credits_remaining'
+    operator: 'LessThan'
+    threshold: 20
+    severity: 2
+    frequency: 'PT15M'
+    window: 'PT30M'
+  }
+  {
+    name: 'vm-memory-low'
+    description: 'The VM has under 100 MB of memory available: the 1 GiB host is swapping hard or about to kill a container.'
+    scope: vm.id
+    metric: 'Available Memory Bytes'
+    operator: 'LessThan'
+    threshold: 104857600
+    severity: 2
+    frequency: 'PT5M'
+    window: 'PT15M'
+  }
+  {
+    name: 'vm-cpu-credits-low'
+    description: 'The VM B2pts_v2 CPU credits are nearly spent: the API is about to be held to its baseline.'
+    scope: vm.id
+    metric: 'CPU Credits Remaining'
+    operator: 'LessThan'
+    threshold: 30
+    severity: 2
+    frequency: 'PT15M'
+    window: 'PT30M'
+  }
+]
+
+resource metricAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = [
+  for a in metricAlerts: if (alertsOn) {
+    name: '${namePrefix}-${a.name}'
+    location: 'global'
+    tags: tags
+    properties: {
+      description: a.description
+      severity: a.severity
+      enabled: true
+      scopes: [
+        a.scope
+      ]
+      evaluationFrequency: a.frequency
+      windowSize: a.window
+      criteria: {
+        'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+        allOf: [
+          {
+            name: 'condition'
+            criterionType: 'StaticThresholdCriterion'
+            metricName: a.metric
+            operator: a.operator
+            threshold: a.threshold
+            timeAggregation: 'Average'
+          }
+        ]
+      }
+      autoMitigate: true
+      actions: [
+        {
+          actionGroupId: alertGroup.id
+        }
+      ]
+    }
+  }
+]
+
+resource budget 'Microsoft.Consumption/budgets@2023-05-01' = if (alertsOn && monthlyBudget > 0) {
+  name: '${namePrefix}-monthly'
+  properties: {
+    category: 'Cost'
+    amount: monthlyBudget
+    timeGrain: 'Monthly'
+    timePeriod: {
+      startDate: budgetStartDate
+    }
+    notifications: {
+      actual80: {
+        enabled: true
+        operator: 'GreaterThan'
+        threshold: 80
+        thresholdType: 'Actual'
+        contactEmails: [
+          alertEmail
+        ]
+      }
+      forecast100: {
+        enabled: true
+        operator: 'GreaterThan'
+        threshold: 100
+        thresholdType: 'Forecasted'
+        contactEmails: [
+          alertEmail
+        ]
+      }
+    }
+  }
 }
 
 output vmPublicIp string = publicIp.properties.ipAddress

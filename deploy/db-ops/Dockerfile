@@ -18,9 +18,24 @@
 ARG MYSQL_VERSION=8.4.11
 FROM mysql:${MYSQL_VERSION} AS mysql-key
 
+# rclone (the encrypted off-site copy, roadmap 9.4) is built from source on a
+# patched Go: its release binaries lag Go's security releases (v1.76.0 ships
+# go1.27.3, and the release Trivy gate fails on its fixable stdlib CVEs), and
+# Oracle Linux's repositories do not carry it. `go install module@version`
+# verifies the module against the Go checksum database (sum.golang.org), so
+# the source is pinned as firmly as a release checksum; GOTOOLCHAIN=local
+# keeps the build on this image's Go. The ldflags are rclone's own release
+# flags. Bump RCLONE_RELEASE with rclone's releases, the Go image with Go's
+# security releases (tag and digest together).
+FROM golang:1.27.4-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d AS rclone
+ARG RCLONE_RELEASE=v1.76.0
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local GOBIN=/out \
+      go install -trimpath -ldflags "-s -w -X github.com/rclone/rclone/fs.Version=${RCLONE_RELEASE}" \
+      "github.com/rclone/rclone@${RCLONE_RELEASE}" \
+  && /out/rclone version | head -n 1
+
 FROM oraclelinux:9-slim@sha256:2feab5eb9e442ab342de183d12aa72a619e8080bee27ba1957a2005cf6a3879b
 ARG MYSQL_VERSION
-ARG TARGETARCH
 # The release the image belongs to (roadmap 9.21), passed by the release workflow.
 ARG APP_RELEASE=
 ARG APP_REVISION=
@@ -28,11 +43,7 @@ LABEL org.opencontainers.image.title="dukaanai-db-ops" \
       org.opencontainers.image.source="https://github.com/shoryabansalgithub/DukanAi-real" \
       org.opencontainers.image.version="${APP_RELEASE}" \
       org.opencontainers.image.revision="${APP_REVISION}"
-# rclone from its own release, pinned by checksum per architecture: Oracle
-# Linux's repositories do not carry it.
-ARG RCLONE_VERSION=1.75.2
-ARG RCLONE_SHA256_AMD64=d5174054cf94075c32faf25961687622b8d366b788972ea9fbcedba59013e320
-ARG RCLONE_SHA256_ARM64=a75caa786a24dc534104f955f592b6aae21c15d9b9abf9f1a6a6b2cbf707a98a
+COPY --from=rclone /out/rclone /usr/bin/rclone
 COPY --from=mysql-key /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql
 # Security updates are taken at build time (roadmap 9.14, the release Trivy
 # gate); the MySQL repository is left out of the upgrade so the clients stay
@@ -42,16 +53,6 @@ RUN printf '[mysql84-community]\nname=MySQL 8.4 Community\nbaseurl=https://repo.
   && microdnf -y --setopt=install_weak_deps=0 --disablerepo=mysql84-community upgrade \
   && microdnf -y --setopt=install_weak_deps=0 install \
        "mysql-community-client-${MYSQL_VERSION}" tar gzip findutils ca-certificates \
-  && arch="${TARGETARCH:-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')}" \
-  && case "$arch" in \
-       amd64) sum="$RCLONE_SHA256_AMD64" ;; \
-       arm64) sum="$RCLONE_SHA256_ARM64" ;; \
-       *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
-     esac \
-  && curl -fsSLo /tmp/rclone.rpm "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${arch}.rpm" \
-  && echo "$sum  /tmp/rclone.rpm" | sha256sum -c - \
-  && rpm -i /tmp/rclone.rpm \
-  && rm -f /tmp/rclone.rpm \
   && microdnf clean all \
   && mysqlbinlog --version && rclone version | head -n 1
 # The jobs run as uid 1000 (compose `user:`, Kubernetes runAsUser): a fresh

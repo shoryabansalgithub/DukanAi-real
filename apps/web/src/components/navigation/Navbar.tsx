@@ -148,10 +148,12 @@ export function Navbar() {
   };
 
   return (
-    <nav className="fixed top-0 right-0 left-0 md:left-64 h-[72px] bg-white border-b border-gray-100 shadow-[0_2px_10px_-3px_rgba(6,81,237,0.05)] z-30 flex items-center justify-between px-6">
+    <nav className="fixed top-0 right-0 left-0 md:left-64 h-[72px] bg-white border-b border-gray-100 shadow-[0_2px_10px_-3px_rgba(6,81,237,0.05)] z-30 flex items-center justify-between gap-3 pl-16 pr-4 md:gap-0 md:px-6">
 
-      {/* Search Bar — routes to the products page, which owns product search */}
-      <div className="flex-1 max-w-2xl flex items-center gap-4 relative" ref={searchRef}>
+      {/* Search Bar — routes to the products page, which owns product search.
+          On a phone it takes all the width the icons leave, and starts clear
+          of the sidebar's fixed menu button (left-4, 36px wide). */}
+      <div className="flex-1 min-w-0 max-w-2xl flex items-center gap-4 relative" ref={searchRef}>
         <div className="relative w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
           <input
@@ -165,7 +167,7 @@ export function Navbar() {
               if (e.key === 'Escape') setIsSearchOpen(false);
             }}
             placeholder="Search products by name, SKU or barcode…"
-            className="w-full bg-gray-50/50 border border-gray-200 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-700 placeholder:text-gray-400"
+            className="w-full bg-gray-50/50 border border-gray-200 rounded-xl pl-10 pr-4 py-2.5 text-sm text-ellipsis focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-gray-700 placeholder:text-gray-400"
           />
 
           <AnimatePresence>
@@ -189,10 +191,10 @@ export function Navbar() {
         </div>
       </div>
 
-      <div className="flex-1" />
+      <div className="hidden md:block flex-1" />
 
       {/* Right section */}
-      <div className="flex items-center gap-5">
+      <div className="flex shrink-0 items-center gap-3 md:gap-5">
         {mounted && (
           <button
             type="button"

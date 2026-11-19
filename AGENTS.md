@@ -769,7 +769,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (failures are not kept; the table is bounded). Without it, an owner with
   the dashboard open was signed out of everything after one access-token
   lifetime (the business day found it). `e2e/refresh-handoff.spec.ts`
-  covers the logic (pure, runs in the ordinary e2e project).
+  covers the logic (pure, runs in the ordinary e2e project). The table lives
+  in one process: on Vercel the instances do not share it, and the API's
+  `JWT_REFRESH_REUSE_GRACE_MS` window answers the other instances instead.
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser
@@ -810,23 +812,28 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere removed the jest chain and the critical handlebars) and CI's lint job fails on any high or critical
   production advisory (`npm audit --omit=dev --audit-level=high`); re-check
   after any dependency change and keep it that way. The root `overrides`
-  carry the fixes that upstream pins block, each with its reason in
-  `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
+  carry the fixes that upstream pins block, each with its reason here
+  (JSON has no comments): next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
   same `deepmerge` export; `prisma generate` / `migrate` run on it),
   `@nestjs/swagger`'s `js-yaml` to 5.4.x, `@nestjs/platform-express`'s
-  `multer` to 2.5.x (Nest 11 pins 2.4.0), and `postcss` to 8.5.28 (next 16
-  pins 8.5.23; the override keeps every copy on the patched line). Resolve
-  the lockfile with Node 22's npm 10 (`npx npm@10 install`): npm 11.12
-  ignores the overrides and un-patches the lock, and it once dropped
-  `body-parser`, `qs`, `raw-body` and `archiver` (the API died with
-  MODULE_NOT_FOUND). npm 10 never re-adds an entry a damaged lock lacks, so
-  repair one by deleting the lock and `node_modules` and resolving afresh;
-  check `npx npm@10 ci` and `grep -c '"extraneous"' package-lock.json` = 0. Keep an override scoped to its consumer: a blanket
+  exact `multer` pin (2.4.0) to 2.5.x, `archiver-utils`' `glob` to 14.x
+  (archiver 7 stays on 7.x, and its `glob ^10` line has no fixed release;
+  `archiver-utils` only calls `glob.sync`, which 14 keeps, and the backup
+  uses `archive.directory`, which does not reach it), and `postcss` to 8.5.28 (next 16
+  pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
-  versions instead. `prisma` and `@prisma/client` are pinned to the same
+  versions instead. Change the lock with npm 10 (`npx npm@10.9.7`, the
+  `packageManager`), one targeted `install <pkg>@<range> -w <workspace>` or
+  `update <pkg>` at a time, and diff the resolved versions afterwards; never
+  `npm dedupe` (it rewrites unrelated packages). A transitive subtree that
+  must pick up a new override is re-resolved by deleting its lock entries all
+  the way up to the package a workspace declares (`archiver` for
+  `archiver-utils`) and running `install --package-lock-only`: npm re-adds a
+  deleted declared dependency with its whole subtree, but never a deleted
+  transitive entry on its own. `prisma` and `@prisma/client` are pinned to the same
   exact version (6.19.3): bump both together, then `npx prisma generate`.
   The gate audits production dependencies only, so build-time tooling must
   live in `devDependencies`: `tailwindcss-animate` (a Tailwind plugin used
@@ -848,7 +855,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere (`engines`, `.nvmrc`).
 
 - 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
-  19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
+  19, framer-motion 14, lucide-react 1.x, recharts 2.15, zod 4: write
+  `z.url()`, not `z.string().url()`, and `code: 'custom'`, not
+  `z.ZodIssueCode`, as `src/config/env.ts` does). What the major
   changed here: `next lint` is gone, so `npm run lint` in apps/web is
   `eslint .` over `eslint.config.mjs` (ESLint 9 flat config: `eslint-config-next`
   core-web-vitals + typescript; the React Compiler rules of
@@ -1028,6 +1037,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   migration; a compound body ends at END on MySQL 8 and MariaDB alike) and
   `backup.sh` drops such a terminator so pre-fix backups restore too. Give
   every future trigger a compound body.
+- Azure target (`deploy/azure`): one 1 GiB Arm64 VM plus Azure Database
+  for MySQL 8.4 with `lower_case_table_names=1` (a dump from it restores only
+  into a server started with `--lower-case-table-names=1`). No Prometheus runs
+  there (`stack.sh` refuses the `ops` profile), so its alerts are the backup
+  heartbeat (`BACKUP_HEARTBEAT_URL`: the backup loop pings it after every run
+  and `<url>/fail` with the failed jobs or a disk under
+  `BACKUP_MIN_FREE_PERCENT`; `backup_heartbeat` / `low_disk` in
+  `scripts/db/lib.sh`, tested by `lib.test.sh`), the Azure Monitor metric
+  alerts and optional budget of `main.bicep` (`alertEmail`, `monthlyBudget`;
+  the CI deploy job compiles the template) and an outside uptime checker
+  (`docs/OBSERVABILITY.md` "Azure target").
 - 7.8 retention: `RetentionSweepService` (`src/common/retention`, cron
   `RetentionSweep` on `CRON_RETENTION_SWEEP`, default `30 3 * * *`, lock
   `cron:retention-sweep` 15 min, `runAsSuperAdmin`) deletes with
@@ -1504,7 +1524,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   image takes its distribution's security updates at build time (the Node
   base images lag the archive: `apt-get upgrade`; db-ops `microdnf upgrade`
   with the MySQL repository left out, so its clients stay at the pinned
-  release), and the API and web runtime stages delete the npm / npx /
+  release; rclone is built from source in a pinned `golang` stage, because
+  its release binaries lag Go's security releases: bump the Go image with
+  Go's patch releases), and the API and web runtime stages delete the npm / npx /
   corepack the Node image bundles (npm's own tar, brace-expansion, sigstore
   ... are fixable HIGH / CRITICAL and an npm upgrade still carries some). So
   nothing in a container runs `npx`:
@@ -1943,7 +1965,13 @@ the fixes made true, and must stay true:
   sidebar is navy in both themes. The sidebar pins Notifications and Settings
   under the scrolling list inside the same `nav` "Main" (`pinned` items) and
   the Upgrade card shrinks under `max-height` 820 / 640 px
-  (`e2e/sidebar.spec.ts`, five window sizes). Expense receipts:
+  (`e2e/sidebar.spec.ts`, five window sizes). Tailwind's `font-sans` stack
+  starts with `var(--font-sans)`, defined in `globals.css` `:root`: an
+  undefined `var()` voids the whole `font-family` and every page fell back
+  to serif (Times). On a phone the navbar search takes the width the icons
+  leave and starts clear of the sidebar's fixed menu button (`pl-16`);
+  `e2e/navbar-typography.spec.ts` checks the font at 1440 and 390 px and
+  the search at 390 px. Expense receipts:
   `POST /expenses/:id/receipt` (MANAGEMENT_ROLES, `documents` feature gate,
   multer memory storage with `expenseReceiptUploadPolicy`: JPEG / PNG / PDF,
   10 MB, bytes sniffed) writes `<shop>/Expenses/<id>/receipt-<stamp>.<ext>`
@@ -2082,9 +2110,12 @@ the fixes made true, and must stay true:
   1000 fails boot); the old second-based `RATE_LIMIT_*_TTL` keys are not read.
   Counters live in Redis (`RedisThrottlerStorage`, keys `throttle:{...}`) and
   degrade to the per-process storage when Redis is down. Routes that take
-  credentials carry `@AuthThrottle()` (login, register, refresh, google,
-  invitation accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the
-  general ones (`src/common/throttling`). `.env.test` opens every window wide;
+  credentials carry `@AuthThrottle()` (login, register, google, invitation
+  accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the general ones
+  (`src/common/throttling`). `POST /auth/refresh` takes the general limits: an
+  80-hex-character token has nothing to guess, and behind a web server with
+  several instances (Vercel) every user's refresh comes from its few
+  addresses, where the auth limits signed people out. `.env.test` opens every window wide;
   `test/integration/rate-limit.integration-spec.ts` proves the limiter with its
   own overrides and clears `throttle:*` before and after.
 - The tracker is `req.ip`, so `TRUST_PROXY` (Express `trust proxy`, applied in
@@ -2178,7 +2209,11 @@ the fixes made true, and must stay true:
   opens a family (`RefreshToken.familyId`), every refresh consumes the token
   (`rotatedAt`, conditional `updateMany`) and writes a successor in one
   transaction; a consumed token presented again is reuse and revokes the
-  family AND bumps `tokenVersion` (all sessions end); `absoluteExpiresAt`
+  family AND bumps `tokenVersion` (all sessions end), except within
+  `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation while its family is
+  live, when it gets a successor of its own (a second web instance with the
+  old cookie, or the loser of a concurrent exchange; a family that has ended
+  answers a plain 401 there); `absoluteExpiresAt`
   (`SESSION_ABSOLUTE_LIFETIME`, 12h) caps a family, `JWT_REFRESH_EXPIRES_IN`
   (7d) is one token's idle life. Access tokens live 15 min (`JWT_EXPIRES_IN`)
   and carry `sid` = familyId; `JwtStrategy`/the socket adapter reject a token
