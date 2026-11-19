@@ -83,7 +83,9 @@ test.describe('marketing site', () => {
     await expect(page.getByRole('complementary')).toBeVisible();
 
     await page.goto('/dashboard');
-    await page.getByTitle('Sign out').click();
+    // Sign out lives in the profile popup the top bar's name and avatar open.
+    await page.getByRole('button', { name: /, account$/ }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Sign out' }).click();
     await page.waitForURL('**/login**');
     await expect
       .poll(async () =>
