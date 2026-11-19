@@ -2,10 +2,12 @@ import type { MarketingPage } from './types';
 
 /**
  * Every statement about another product comes from that product's own
- * website, read on CHECKED below; where its site could not be read, the page
- * says so instead of guessing. Re-check before changing a claim.
+ * website or official app store listing, checked on CHECKED below; a feature
+ * no such source states is left out rather than guessed (the 2026-11-19
+ * check dropped myBillBook's Tally export, OkCredit's web app, QR collection
+ * and customer statements, and GSTR-2). Re-check before changing a claim.
  */
-const CHECKED = '28 October 2026';
+const CHECKED = '19 November 2026';
 
 export const alternativesPage: MarketingPage = {
   path: '/alternatives',
@@ -13,22 +15,22 @@ export const alternativesPage: MarketingPage = {
   label: 'Alternatives',
   title: 'Best Vyapar, Khatabook and OkCredit Alternatives for Kirana Stores (2026)',
   description:
-    'Comparing billing and udhar apps for Indian kirana stores: Vyapar, myBillBook, OkCredit, Khatabook and DukaanAI. What each one is for, from their own sites, and how to choose.',
+    'Comparing billing and udhar apps for Indian kirana stores: Vyapar, myBillBook, OkCredit, Khatabook and DukaanAI. What each one is for, from their own sites and store listings, and how to choose.',
   eyebrow: 'Compare',
   h1: 'Vyapar, Khatabook and OkCredit alternatives for kirana stores (2026)',
-  lede: 'If you are choosing an app for a kirana store, the first question is what you need most: a **digital khata** for udhar (OkCredit, Khatabook), a **full GST billing and accounting suite** (Vyapar, myBillBook), or **counter billing with udhar, stock and cash control in one place** for a shop with cashiers (DukaanAI). Below is what each one is for, taken from each product’s own website, and where DukaanAI is and is not the better choice.',
+  lede: 'If you are choosing an app for a kirana store, the first question is what you need most: a **digital khata** for udhar (OkCredit, Khatabook), a **full GST billing and accounting suite** (Vyapar, myBillBook), or **counter billing with udhar, stock and cash control in one place** for a shop with cashiers (DukaanAI). Below is what each one is for, taken from each product’s own website and app store listing, and where DukaanAI is and is not the better choice.',
   body: `
 ## At a glance
 
 | App | Best known for | Platforms (from its site) |
 |---|---|---|
 | Vyapar | GST billing, accounting and inventory for small businesses | Windows, Mac, Android, iOS |
-| myBillBook | GST billing, inventory and GST reports | PC, web, Android, iOS |
-| OkCredit | Free digital udhar ledger with reminders | Android, iOS, web |
-| Khatabook | Digital khata for customer credit | See its website |
+| myBillBook | GST billing, inventory and GST reports | Android; see its site for others |
+| OkCredit | Free digital udhar ledger with reminders | Android, iOS |
+| Khatabook | Digital khata for customer credit | Android; see its site for others |
 | DukaanAI | Counter billing with udhar, stock, shifts and staff roles | Web browser on any device |
 
-Facts about other products were taken from their own websites on ${CHECKED}. Products change: check their sites before deciding.
+Facts about other products were taken from their own websites and app store listings on ${CHECKED}. Products change: check their sites before deciding.
 
 ## Vyapar
 
@@ -38,19 +40,19 @@ Vyapar describes itself as GST billing, accounting and inventory software for sm
 
 ## myBillBook
 
-myBillBook describes itself as GST billing software for small businesses in India, with GST and non-GST invoices, POS billing, inventory with low-stock alerts, batch and expiry tracking, GSTR-1, GSTR-2 and GSTR-3B reports, Tally export, e-invoicing and e-way bills, on PC, web, Android and iOS. See [mybillbook.in](https://mybillbook.in/).
+myBillBook describes itself as GST billing software for small businesses in India, with GST and non-GST invoices, POS billing with barcode scanning, inventory, batch and expiry tracking, GSTR-1 and GSTR-3B reports, e-invoicing and e-way bills. See [mybillbook.in](https://mybillbook.in/).
 
 **Choose myBillBook over DukaanAI if** you sell to registered businesses and need e-invoicing, e-way bills or GSTR reports generated for you.
 
 ## OkCredit
 
-OkCredit describes itself as a free digital bahi khata and udhar ledger for shopkeepers, kirana stores and wholesalers. Its site lists automatic SMS and WhatsApp payment reminders, UPI collection by QR code, customer statements, offline entries that sync later, and 11 Indian languages, on Android, iOS and the web. GST billing is part of its paid plans. See [okcredit.in](https://okcredit.in/).
+OkCredit describes itself as a free digital bahi khata and udhar ledger for shops. It lists automatic SMS and WhatsApp payment reminders that let the customer pay through any UPI app, use without an internet connection, and 11 languages, as an app for Android and iOS. GST billing is part of its paid plans. See [okcredit.in](https://okcredit.in/).
 
 **Choose OkCredit over DukaanAI if** you only need a credit ledger with reminders, and do your billing some other way.
 
 ## Khatabook
 
-Khatabook is widely known as a digital khata app for recording what customers owe and pay. We have not reviewed its current features, so we do not list them here; check [khatabook.com](https://khatabook.com/) and its app store page directly.
+Khatabook is a digital khata app for recording what customers owe and pay. Its app store listing describes sending payment reminders by SMS and WhatsApp. Check [khatabook.com](https://khatabook.com/) for its current features and plans.
 
 ## DukaanAI
 
@@ -89,5 +91,5 @@ Whichever you pick, make sure you can export your data, that each staff member h
     '/blog/gst-bill-format-kirana-store',
     '/faq',
   ],
-  updated: '2026-10-28',
+  updated: '2026-11-19',
 };

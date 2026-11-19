@@ -200,7 +200,7 @@ export default function HomePage() {
                 <h3 className="text-lg font-bold text-slate-900">Comparing apps?</h3>
                 <p className="mt-2 text-[15px] leading-relaxed text-slate-600">
                   How DukaanAI differs from Vyapar, myBillBook, OkCredit and Khatabook, from their
-                  own websites.
+                  own websites and app store listings.
                 </p>
                 <Link
                   href="/alternatives"
