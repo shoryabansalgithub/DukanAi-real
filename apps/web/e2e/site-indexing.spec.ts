@@ -1,10 +1,11 @@
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import robots from '../src/app/robots';
 import sitemap from '../src/app/sitemap';
 import { GET as llmsTxt } from '../src/app/llms.txt/route';
 import { GET as llmsFullTxt } from '../src/app/llms-full.txt/route';
 import { GET as markdownTwin } from '../src/app/markdown/[...slug]/route';
-import { siteIndexable } from '../src/config/site';
+import { absoluteUrl, siteIndexable, siteUrl } from '../src/config/site';
 import { pageMetadata } from '../src/marketing/metadata';
 import { MARKETING_PAGES } from '../src/marketing/registry';
 
@@ -15,7 +16,7 @@ import { MARKETING_PAGES } from '../src/marketing/registry';
  * SITE_INDEXABLE=false and on any Vercel preview. Pure logic over the real
  * route modules: the spec runs in the ordinary e2e project.
  */
-const KEYS = ['SITE_INDEXABLE', 'VERCEL_ENV'] as const;
+const KEYS = ['SITE_INDEXABLE', 'VERCEL_ENV', 'SITE_URL'] as const;
 
 function withEnv(
   env: Partial<Record<(typeof KEYS)[number], string>>,
@@ -95,4 +96,72 @@ test.describe('site indexing switch', () => {
       expect(() => siteIndexable()).toThrow(/SITE_INDEXABLE must be "true" or "false"/);
     })
   );
+});
+
+/**
+ * Every page renders per request, so a SITE_URL the server cannot use passed
+ * `next build` and then stopped every server start: on Vercel the whole web
+ * app, POS included, went down over an SEO setting. A bare host is now read as
+ * https, and anything else unusable fails next.config.js, which `next build`
+ * loads (Vercel keeps the previous deployment) as do `next start` and
+ * `next dev`.
+ */
+test.describe('SITE_URL', () => {
+  test(
+    'blank is the production address',
+    withEnv({}, () => expect(siteUrl()).toBe('https://dukan-ai-chi.vercel.app'))
+  );
+  test(
+    'a bare host means https, and a trailing slash is dropped',
+    withEnv({ SITE_URL: ' dukaanai.in ' }, () => {
+      expect(siteUrl()).toBe('https://dukaanai.in');
+      expect(absoluteUrl('/features')).toBe('https://dukaanai.in/features');
+    })
+  );
+  test(
+    'an origin with a scheme and port is kept',
+    withEnv({ SITE_URL: 'http://localhost:3012/' }, () =>
+      expect(siteUrl()).toBe('http://localhost:3012')
+    )
+  );
+  for (const [value, reason] of [
+    ['https://dukaanai.in/shop', /origin only/],
+    ['https://dukaanai.in?ref=x', /origin only/],
+    ['https://user:pw@dukaanai.in', /origin only/],
+    ['ftp://dukaanai.in', /http\(s\) address/],
+    ['https://', /not a web address/],
+    ['dukaan ai.in', /not a web address/],
+  ] as const) {
+    test(
+      `${JSON.stringify(value)} is refused`,
+      withEnv({ SITE_URL: value }, () => expect(() => siteUrl()).toThrow(reason))
+    );
+  }
+
+  test('next.config.js refuses a SITE_URL or SITE_INDEXABLE the site cannot use', () => {
+    const configPath = path.resolve(__dirname, '../next.config.js');
+    const load = () => {
+      delete require.cache[require.resolve(configPath)];
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- a fresh CommonJS load of next.config.js per value
+      return require(configPath) as { poweredByHeader?: boolean };
+    };
+    const saved = { SITE_URL: process.env.SITE_URL, SITE_INDEXABLE: process.env.SITE_INDEXABLE };
+    try {
+      process.env.SITE_URL = 'https://dukaanai.in/app';
+      expect(load).toThrow(
+        /Refusing to build or start the web: SITE_URL must be the site's origin only/
+      );
+      process.env.SITE_URL = 'dukaanai.in';
+      process.env.SITE_INDEXABLE = 'maybe';
+      expect(load).toThrow(/SITE_INDEXABLE must be "true" or "false"/);
+      process.env.SITE_INDEXABLE = 'false';
+      expect(load().poweredByHeader).toBe(false);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      delete require.cache[require.resolve(configPath)];
+    }
+  });
 });

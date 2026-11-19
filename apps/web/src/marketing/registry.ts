@@ -93,12 +93,6 @@ export function pageByPath(path: string): MarketingPage | undefined {
   return MARKETING_PAGES.find((page) => page.path === path);
 }
 
-export function requirePage(path: string): MarketingPage {
-  const page = pageByPath(path);
-  if (!page) throw new Error(`No marketing page at ${path}`);
-  return page;
-}
-
 /** The URL of a page's Markdown twin (`/index.md` for the home page). */
 export function markdownPath(path: string): string {
   return path === '/' ? '/index.md' : `${path}.md`;

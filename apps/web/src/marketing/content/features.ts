@@ -2,7 +2,7 @@ import type { MarketingPage } from './types';
 
 const UPDATED = '2026-10-28';
 
-export const gstBilling: MarketingPage = {
+const gstBilling: MarketingPage = {
   path: '/features/gst-billing',
   section: 'features',
   label: 'GST billing',
@@ -47,7 +47,7 @@ Line and bill discounts are allowed up to a limit you control: by default a cash
 
 ## What DukaanAI does not do yet
 
-We would rather you know before you start. Bills are made for counter sales to consumers (B2C). The customer record has no GSTIN field yet, HSN codes are not printed on the invoice, there is no composition-scheme bill of supply, and there is no e-invoicing (IRN). If you sell mainly to registered businesses or you are a composition dealer, DukaanAI is not the right fit today.
+We would rather you know before you start. Bills are made for counter sales to consumers (B2C). The customer record has no GSTIN field yet; HSN codes, the place of supply, the reverse-charge line and a signatory line are not printed on the invoice; a return is titled “Sales Return” rather than “Credit Note”; a bill of ₹50,000 or more does not ask for the customer’s name and address; there is no composition-scheme bill of supply, and there is no e-invoicing (IRN). If you sell mainly to registered businesses or you are a composition dealer, DukaanAI is not the right fit today.
 `,
   faqs: [
     {
@@ -72,7 +72,7 @@ We would rather you know before you start. Bills are made for counter sales to c
   updated: UPDATED,
 };
 
-export const udharKhata: MarketingPage = {
+const udharKhata: MarketingPage = {
   path: '/features/udhar-khata',
   section: 'features',
   label: 'Udhar tracking',
@@ -134,7 +134,7 @@ For practical advice on running credit without losing money, read [how to manage
   updated: UPDATED,
 };
 
-export const inventoryManagement: MarketingPage = {
+const inventoryManagement: MarketingPage = {
   path: '/features/inventory-management',
   section: 'features',
   label: 'Inventory',
@@ -163,7 +163,7 @@ Goods received, damage, a recount: use **Update Stock** on the product with a po
 
 ## Restock suggestions
 
-The dashboard’s **AI insights** read your recent sales and current stock and show the day’s sales forecast, what to restock before it runs out, and your best-selling product. It refreshes by itself through the day.
+The dashboard’s **AI insights** read your recent sales and current stock and compare today’s sales with a forecast from your recent daily sales, suggest what to restock before it runs out from how fast it sells, and show owners and managers their top earner by profit over the last 30 days. It refreshes by itself through the day.
 
 ## Adding products
 
@@ -192,7 +192,7 @@ Cashiers sell and see stock levels, but never your cost prices, profit, stock va
   updated: UPDATED,
 };
 
-export const billScanner: MarketingPage = {
+const billScanner: MarketingPage = {
   path: '/features/bill-scanner',
   section: 'features',
   label: 'AI bill scanner',
@@ -244,7 +244,7 @@ Owners and managers. Purchase prices on supplier bills are financial information
   updated: UPDATED,
 };
 
-export const cashDrawerShifts: MarketingPage = {
+const cashDrawerShifts: MarketingPage = {
   path: '/features/cash-drawer-shifts',
   section: 'features',
   label: 'Cash drawer and shifts',

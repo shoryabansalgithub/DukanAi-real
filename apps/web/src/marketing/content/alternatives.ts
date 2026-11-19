@@ -50,7 +50,7 @@ OkCredit describes itself as a free digital bahi khata and udhar ledger for shop
 
 ## Khatabook
 
-Khatabook is widely known as a digital khata app for recording what customers owe and pay. Its website did not load for us on ${CHECKED}, so we are not listing its current features here; check [khatabook.com](https://khatabook.com/) and its app store page directly.
+Khatabook is widely known as a digital khata app for recording what customers owe and pay. We have not reviewed its current features, so we do not list them here; check [khatabook.com](https://khatabook.com/) and its app store page directly.
 
 ## DukaanAI
 

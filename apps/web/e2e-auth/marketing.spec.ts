@@ -258,6 +258,32 @@ test.describe('marketing site', () => {
     expect((await request.get('/no-such-page.md')).status()).toBe(404);
   });
 
+  test('a public page stays light and readable when the app left dark mode on <html>', async ({
+    page,
+  }) => {
+    // The app's theme toggle puts `.dark` on <html>, which a client navigation
+    // (Back from the dashboard, say) carries onto a public page; inverted, its
+    // white page turned near black under slate text.
+    await page.goto('/features');
+    await page.evaluate(() => document.documentElement.classList.add('dark'));
+    const { background, heading } = await page.locator('.marketing-root').evaluate((root) => ({
+      background: getComputedStyle(root).backgroundColor,
+      heading: getComputedStyle(root.querySelector('h1')!).color,
+    }));
+    const luminance = (rgb: string) => {
+      const [r, g, b] = (rgb.match(/[\d.]+/g) ?? []).slice(0, 3).map((c) => {
+        const v = Number(c) / 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    expect(background).toBe('rgb(255, 255, 255)');
+    const [light, dark] = [luminance(background), luminance(heading)].sort((a, b) => b - a);
+    expect((light + 0.05) / (dark + 0.05), `heading ${heading} on ${background}`).toBeGreaterThan(
+      7
+    );
+  });
+
   test('the landing page fits a 390 px phone and its menu opens without JavaScript', async ({
     browser,
   }) => {

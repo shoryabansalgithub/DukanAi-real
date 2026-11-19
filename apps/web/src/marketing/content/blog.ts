@@ -6,7 +6,7 @@ import type { MarketingPage } from './types';
  * post tells the reader to confirm with their own tax adviser.
  */
 
-export const gstBillFormat: MarketingPage = {
+const gstBillFormat: MarketingPage = {
   path: '/blog/gst-bill-format-kirana-store',
   section: 'blog',
   label: 'GST bill format for kirana stores',
@@ -68,7 +68,7 @@ The CGST Act asks you to keep invoices and accounts for 72 months from the due d
 
 ## How DukaanAI prints a bill
 
-DukaanAI prints every counter sale as a tax invoice with your GSTIN, a 15-character serial number in a new series each financial year, CGST and SGST split by rate, and Cess when an item carries it. It is built for B2C counter sales: it does not yet print HSN codes or a buyer's GSTIN, and has no bill of supply for composition dealers. See [GST billing in DukaanAI](/features/gst-billing).
+DukaanAI prints every counter sale as a tax invoice with your GSTIN, a 15-character serial number in a new series each financial year, CGST and SGST split by rate, and Cess when an item carries it. It is built for B2C counter sales, and some particulars in the table above are not printed yet: HSN codes, the buyer's GSTIN, the place of supply, the reverse-charge line and a signatory line (sign the printed bill by hand where you need one). It does not yet ask for the customer's name and address on a bill of ₹50,000 or more, and has no bill of supply for composition dealers. See [GST billing in DukaanAI](/features/gst-billing).
 
 > This guide explains the rules in general terms. Tax rules change and your situation may differ, so confirm with your chartered accountant before you change how you bill.
 `,
@@ -91,7 +91,7 @@ DukaanAI prints every counter sale as a tax invoice with your GSTIN, a 15-charac
   published: '2026-10-28',
 };
 
-export const manageUdhar: MarketingPage = {
+const manageUdhar: MarketingPage = {
   path: '/blog/manage-udhar-kirana-store',
   section: 'blog',
   label: 'How to manage udhar',
@@ -221,7 +221,7 @@ Every product in DukaanAI has a reorder point (10 unless you set your own). When
   published: '2026-10-28',
 };
 
-export const gstReturnsCreditNotes: MarketingPage = {
+const gstReturnsCreditNotes: MarketingPage = {
   path: '/blog/gst-returns-credit-notes',
   section: 'blog',
   label: 'Returns and credit notes under GST',
@@ -269,7 +269,7 @@ When a bill is wrong and caught at once, before the customer has left and before
 
 ## How DukaanAI handles returns
 
-In DukaanAI a return is made from the original bill and refunds exactly what was paid for the returned quantity, however many returns follow. Returns have their own numbered series, damaged or expired items are not put back into stock, a credit customer's balance is reduced before any cash is paid out, and a return after the section 34 deadline is refused so your tax is never reduced by mistake. A same-day bill with no returns can be cancelled by a manager. See [GST billing in DukaanAI](/features/gst-billing).
+In DukaanAI a return is made from the original bill and refunds exactly what was paid for the returned quantity, however many returns follow. Returns have their own numbered series (the printed document is titled “Sales Return” today, not “Credit Note”, and has no signatory line), damaged or expired items are not put back into stock, a credit customer's balance is reduced before any cash is paid out, and a return after the section 34 deadline is refused so your tax is never reduced by mistake. A same-day bill with no returns can be cancelled by a manager. See [GST billing in DukaanAI](/features/gst-billing).
 
 > This guide explains the rules in general terms. Confirm the treatment of your own returns with your chartered accountant.
 `,

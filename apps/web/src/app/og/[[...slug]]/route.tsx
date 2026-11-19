@@ -13,6 +13,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ slug?: 
   const page = pageByPath(path);
   if (!page) return new Response('Not found\n', { status: 404 });
   const response = ogCard({ title: page.h1, kicker: page.eyebrow ?? page.label });
-  response.headers.set('Cache-Control', 'public, max-age=86400, immutable');
+  // The URL carries no version, so a renamed page must reach the card within the hour.
+  response.headers.set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
   return response;
 }

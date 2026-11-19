@@ -5,25 +5,15 @@
  * `SITE_URL` is read on the server at run time (one image serves every
  * environment, roadmap 9.9). Unset, it is the production Vercel address;
  * when the custom domain arrives, set SITE_URL to it and every canonical
- * moves with it.
+ * moves with it. The rules live in `site-rules.js`, which next.config.js
+ * also checks so a bad value fails the build instead of the running site.
  */
-export const DEFAULT_SITE_URL = 'https://dukan-ai-chi.vercel.app';
+import { parseSiteIndexable, parseSiteUrl } from './site-rules';
 
 export const SITE_NAME = 'DukaanAI';
 
 export function siteUrl(): string {
-  const raw = (process.env.SITE_URL ?? '').trim();
-  if (!raw) return DEFAULT_SITE_URL;
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error(`SITE_URL is not an absolute URL: "${raw}"`);
-  }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error(`SITE_URL must be an http(s) URL: "${raw}"`);
-  }
-  return parsed.origin;
+  return parseSiteUrl(process.env.SITE_URL);
 }
 
 /**
@@ -34,13 +24,7 @@ export function siteUrl(): string {
  * is noindex and neither the sitemap nor llms.txt is published.
  */
 export function siteIndexable(): boolean {
-  const raw = (process.env.SITE_INDEXABLE ?? '').trim().toLowerCase();
-  if (raw !== '' && raw !== 'true' && raw !== 'false') {
-    throw new Error(`SITE_INDEXABLE must be "true" or "false": "${process.env.SITE_INDEXABLE}"`);
-  }
-  if (raw === 'false') return false;
-  const vercelEnv = (process.env.VERCEL_ENV ?? '').trim();
-  return vercelEnv === '' || vercelEnv === 'production';
+  return parseSiteIndexable(process.env.SITE_INDEXABLE, process.env.VERCEL_ENV);
 }
 
 /**

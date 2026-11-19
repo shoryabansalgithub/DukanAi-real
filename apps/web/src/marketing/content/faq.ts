@@ -19,7 +19,7 @@ export const GENERAL_FAQS: Faq[] = [
   },
   {
     q: 'Are DukaanAI bills GST compliant?',
-    a: 'Every counter sale prints as a tax invoice with your GSTIN, a 15-character serial number in a new series each financial year, and CGST and SGST split by rate. It does not yet print HSN codes or a buyer’s GSTIN, has no bill of supply for composition dealers and no e-invoicing. See [GST billing](/features/gst-billing) and the [GST bill format guide](/blog/gst-bill-format-kirana-store).',
+    a: 'Not fully yet. Every counter sale prints as a tax invoice with your GSTIN, a 15-character serial number in a new series each financial year, and CGST and SGST split by rate. Not printed yet: HSN codes, the buyer’s GSTIN, the place of supply, the “Reverse charge: No” line and a signatory line, and a return is titled “Sales Return” rather than “Credit Note”. A bill of ₹50,000 or more is not held back until you add the customer’s name and address, there is no bill of supply for composition dealers and no e-invoicing. Check the printed bill with your accountant before you rely on it for sales to businesses or large bills. See [GST billing](/features/gst-billing) and the [GST bill format guide](/blog/gst-bill-format-kirana-store).',
   },
   {
     q: 'Can I track udhar (customer credit)?',
@@ -35,7 +35,7 @@ export const GENERAL_FAQS: Faq[] = [
   },
   {
     q: 'What does the AI do?',
-    a: 'Two things today. The [AI bill scanner](/features/bill-scanner) reads a photo of a supplier bill and matches its lines to your products. The dashboard’s AI insights forecast the day’s sales, suggest what to restock and show your best-selling product.',
+    a: 'Two things today. The [AI bill scanner](/features/bill-scanner) reads a photo of a supplier bill and matches its lines to your products. The dashboard’s insights compare today’s sales with a forecast from your recent daily sales, suggest what to restock from how fast each item sells, and show your top earner by profit over the last 30 days (owners and managers only).',
   },
   {
     q: 'Can I get all my data out?',

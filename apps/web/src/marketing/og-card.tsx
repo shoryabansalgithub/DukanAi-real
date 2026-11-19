@@ -1,6 +1,6 @@
 import { ImageResponse } from 'next/og';
 
-export const OG_SIZE = { width: 1200, height: 630 };
+const OG_SIZE = { width: 1200, height: 630 };
 
 /** The 1200×630 social card: the shop mark, a headline and a kicker, in the site's colours. */
 export function ogCard({ title, kicker }: { title: string; kicker: string }) {
