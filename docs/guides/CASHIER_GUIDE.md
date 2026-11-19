@@ -127,7 +127,8 @@ When a customer pays off their udhar:
 ## Good habits
 
 - Never sign in as someone else, and sign out when you leave the
-  counter: tap **Sign Out** at the top.
+  counter: tap your name at the top, then **Sign out** at the bottom of
+  the box that opens.
 - Cost prices, profit, stock value, suppliers, expenses and **Reports &
   Analytics** are for the owner and managers: they are not in your menu,
   and if you open one of those pages it says *"Only the owner or a manager
