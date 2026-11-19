@@ -24,6 +24,10 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 262.1 83.3% 57.8%;
     --radius: 0.75rem;
+    /* Head of Tailwind's `font-sans` stack (tailwind.config.js). It must be
+       defined: an undefined var() voids the whole font-family declaration
+       and every page fell back to the browser's serif default. */
+    --font-sans: ui-sans-serif, system-ui, sans-serif;
 
     /* Base Colors for Light Mode */
     --color-white: #ffffff;
@@ -196,10 +200,9 @@
   }
 }
 
-/* The marketing pages (src/app/(marketing)) use the system sans-serif stack.
-   Tailwind's `font-sans` reads --font-sans, which nothing else defines, so
-   it is set here for that surface only. */
+/* The marketing pages (src/app/(marketing)) are light only (their palette is
+   restored under .dark above), native controls included. Their font is the
+   app's: --font-sans in :root. */
 .marketing-root {
   color-scheme: light;
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
 }

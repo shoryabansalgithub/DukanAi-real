@@ -83,8 +83,11 @@ export class AuthController {
     return this.authService.login(user, ip, userAgent);
   }
 
+  // The general limits, not the brute-force ones: a refresh token is 80 random
+  // hex characters, so nothing is guessed here, and behind a web server that
+  // runs as several instances every user's refresh arrives from that server's
+  // few addresses (the auth limits signed people out there).
   @Public()
-  @AuthThrottle()
   @Post('refresh')
   @ApiOperation({ summary: 'Rotate the refresh token and issue a new access token' })
   @ApiBody({ type: RefreshTokenDto })

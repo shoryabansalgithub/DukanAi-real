@@ -23,7 +23,13 @@ cp "${CONFIG:-$root/.gitleaks.toml}" "$copy/.gitleaks.toml"
 
 # Fresh values every run: a fixed fake token would itself be a finding.
 token="ghp_$(openssl rand -hex 18)"
-generic="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-40)"
+# The generic key alternates letters and digits: gitleaks drops a
+# generic-api-key match that contains one of its stopwords ("case", "flex",
+# ...), and a run of random letters spelled one in about 1 in 100 runs, which
+# failed this control with nothing wrong in .gitleaks.toml. With no two
+# letters adjacent no word can appear, and the entropy stays well above the
+# rule's threshold (3,000 of 3,000 reported, gitleaks 8.30.0).
+generic="$(node -e 'const c = require("crypto"), L = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", D = "0123456789"; let s = ""; for (let i = 0; i < 40; i++) { const a = i % 2 ? D : L; s += a[c.randomInt(a.length)]; } process.stdout.write(s);')"
 printf '\nGITHUB_TOKEN=%s\n' "$token" >> "$copy/apps/api/.env.production"
 printf "\nexport const plantedToken = '%s';\nexport const api_key = '%s';\n" "$token" "$generic" > "$copy/apps/api/src/gitleaks-control.spec.ts"
 printf "\nexport const plantedToken = '%s';\n" "$token" > "$copy/apps/api/test/gitleaks-control.ts"
