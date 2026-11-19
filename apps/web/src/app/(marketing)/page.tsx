@@ -85,6 +85,7 @@ const ROLES = [
 const NOT_YET = [
   'Billing without an internet connection',
   'Buyer GSTIN and HSN codes on invoices (B2B billing)',
+  'Place of supply, reverse-charge and signatory lines on the bill, and “Credit Note” as the title of a return',
   'Bills of supply for composition dealers, e-invoicing and e-way bills',
   'Automatic SMS or WhatsApp payment reminders',
   'Screens in languages other than English',

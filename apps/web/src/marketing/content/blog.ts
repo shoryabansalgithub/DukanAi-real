@@ -87,7 +87,7 @@ DukaanAI prints every counter sale as a tax invoice with your GSTIN, a 15-charac
     },
   ],
   related: ['/features/gst-billing', '/blog/gst-returns-credit-notes', '/glossary', '/faq'],
-  updated: '2026-10-28',
+  updated: '2026-11-19',
   published: '2026-10-28',
 };
 
@@ -149,7 +149,7 @@ In DukaanAI, credit is a way to pay on the bill itself: the customer's limit is 
   published: '2026-10-28',
 };
 
-export const reorderPoint: MarketingPage = {
+const reorderPoint: MarketingPage = {
   path: '/blog/reorder-point-kirana-store',
   section: 'blog',
   label: 'Reorder points for kirana stores',
@@ -284,7 +284,7 @@ In DukaanAI a return is made from the original bill and refunds exactly what was
     },
   ],
   related: ['/blog/gst-bill-format-kirana-store', '/features/gst-billing', '/glossary'],
-  updated: '2026-10-28',
+  updated: '2026-11-19',
   published: '2026-10-28',
 };
 

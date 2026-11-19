@@ -60,5 +60,5 @@ export const faqPage: MarketingPage = {
   body: '',
   faqs: GENERAL_FAQS,
   related: ['/features', '/alternatives', '/blog'],
-  updated: '2026-10-28',
+  updated: '2026-11-19',
 };

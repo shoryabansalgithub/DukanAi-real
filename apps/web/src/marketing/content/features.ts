@@ -1,6 +1,6 @@
 import type { MarketingPage } from './types';
 
-const UPDATED = '2026-10-28';
+const UPDATED = '2026-11-19';
 
 const gstBilling: MarketingPage = {
   path: '/features/gst-billing',
