@@ -270,3 +270,37 @@ record_success() {
   fi
   printf 'WARNING: could not record the %s success in %s (the stale-backup alert will fire)\n' "$kind" "$BACKUP_STATUS_DIR" >&2
 }
+
+# Dead man's switch for a host with no Prometheus (the Azure VM): with
+# BACKUP_HEARTBEAT_URL set (a healthchecks.io-style check URL), the backup
+# agent pings it after every run that succeeded, and "<url>/fail" with the
+# failures as the body after one that did not. The checker emails the owner
+# on a /fail AND when the pings stop (the VM or the agent is down). The URL
+# is a credential (whoever holds it can ping) and is never printed; a ping
+# that cannot be delivered is only a warning, since the missing ping is the
+# alert.
+backup_heartbeat() {
+  local failures="$1" url="${BACKUP_HEARTBEAT_URL:-}" curl_bin="${CURL_BIN:-curl}"
+  [ -n "$url" ] || return 0
+  if [ -z "$failures" ]; then
+    "$curl_bin" -fsS -m 10 --retry 3 -o /dev/null "$url" 2>/dev/null \
+      || printf 'WARNING: the backup heartbeat could not be delivered\n' >&2
+  else
+    "$curl_bin" -fsS -m 10 --retry 3 -o /dev/null --data-raw "$failures" "${url%/}/fail" 2>/dev/null \
+      || printf 'WARNING: the backup failure heartbeat could not be delivered\n' >&2
+  fi
+}
+
+# One line per directory whose filesystem has less than
+# BACKUP_MIN_FREE_PERCENT (10) of its space free; nothing when all have room.
+# A missing directory is skipped (STORAGE_ROOT is not mounted everywhere).
+low_disk() {
+  local min="${BACKUP_MIN_FREE_PERCENT:-10}" dir used
+  case "$min" in *[!0-9]*|"") die "BACKUP_MIN_FREE_PERCENT must be a whole number (got '$min')" ;; esac
+  for dir in "$@"; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    used="$(df -P "$dir" 2>/dev/null | awk 'NR == 2 { sub("%", "", $5); print $5 }')"
+    case "$used" in ''|*[!0-9]*) continue ;; esac
+    [ $((100 - used)) -ge "$min" ] || printf '%s has %s%% free (below %s%%)\n' "$dir" "$((100 - used))" "$min"
+  done
+}

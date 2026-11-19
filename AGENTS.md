@@ -1037,6 +1037,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   migration; a compound body ends at END on MySQL 8 and MariaDB alike) and
   `backup.sh` drops such a terminator so pre-fix backups restore too. Give
   every future trigger a compound body.
+- Azure target (`deploy/azure`): one 1 GiB Arm64 VM plus Azure Database
+  for MySQL 8.4 with `lower_case_table_names=1` (a dump from it restores only
+  into a server started with `--lower-case-table-names=1`). No Prometheus runs
+  there (`stack.sh` refuses the `ops` profile), so its alerts are the backup
+  heartbeat (`BACKUP_HEARTBEAT_URL`: the backup loop pings it after every run
+  and `<url>/fail` with the failed jobs or a disk under
+  `BACKUP_MIN_FREE_PERCENT`; `backup_heartbeat` / `low_disk` in
+  `scripts/db/lib.sh`, tested by `lib.test.sh`), the Azure Monitor metric
+  alerts and optional budget of `main.bicep` (`alertEmail`, `monthlyBudget`;
+  the CI deploy job compiles the template) and an outside uptime checker
+  (`docs/OBSERVABILITY.md` "Azure target").
 - 7.8 retention: `RetentionSweepService` (`src/common/retention`, cron
   `RetentionSweep` on `CRON_RETENTION_SWEEP`, default `30 3 * * *`, lock
   `cron:retention-sweep` 15 min, `runAsSuperAdmin`) deletes with

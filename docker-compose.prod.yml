@@ -212,6 +212,9 @@ services:
     command: ["backup-loop"]
     user: "1000:1000"
     environment:
+      # The dead man's switch where no Prometheus runs (scripts/db/lib.sh backup_heartbeat).
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
+      BACKUP_MIN_FREE_PERCENT: ${BACKUP_MIN_FREE_PERCENT:-10}
       # No home directory for uid 1000 in the image: rclone and the MySQL clients look in HOME.
       HOME: /tmp
       DATABASE_URL: ${DB_OPS_DATABASE_URL:-${DATABASE_URL}}

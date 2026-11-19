@@ -451,7 +451,7 @@ OWNER=(IMAGE_TAG WEB_HOST API_HOST WEB_ORIGIN API_PUBLIC_URL
   OFFSITE_REMOTE RCLONE_CONFIG_B2_ENDPOINT RCLONE_CONFIG_B2_REGION
   RCLONE_CONFIG_B2_ACCESS_KEY_ID RCLONE_CONFIG_B2_SECRET_ACCESS_KEY
   SMTP_URL EMAIL_FROM)
-OPTIONAL=(GEMINI_API_KEY ALERT_EMAIL_TO SENTRY_DSN)
+OPTIONAL=(GEMINI_API_KEY ALERT_EMAIL_TO SENTRY_DSN BACKUP_HEARTBEAT_URL)
 
 # The value KEY has in the settings file (last assignment wins, as in
 # compose), quotes removed; empty when absent. The file is parsed, never
@@ -605,6 +605,11 @@ EMAIL_FROM=
 GEMINI_API_KEY=
 ALERT_EMAIL_TO=
 SENTRY_DSN=
+# The backup alert (this VM runs no Prometheus): a healthchecks.io check URL,
+# period 1 hour, grace 30 minutes. Every backup run pings it; a failed job or
+# a disk under 10 % free pings <url>/fail; silence means the VM or the agent
+# is down. docs/OBSERVABILITY.md "Azure target".
+BACKUP_HEARTBEAT_URL=
 EOF
 }
 

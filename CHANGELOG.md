@@ -72,6 +72,12 @@ release notes of the tag.
 
 ### Added
 
+- Alerts for the Azure target, which runs no Prometheus: the backup agent pings a dead man's switch
+  (`BACKUP_HEARTBEAT_URL`, e.g. a free healthchecks.io check) after every run, and `<url>/fail` naming a failed dump,
+  documents archive or off-site copy, or a disk under `BACKUP_MIN_FREE_PERCENT` (10) free; silence means the VM or
+  the agent is down. `deploy/azure/main.bicep` adds Azure Monitor alerts by email (`alertEmail`: MySQL storage above
+  80 %, MySQL and VM CPU credits nearly spent, VM memory under 100 MB) and an optional monthly budget
+  (`monthlyBudget`). Setup: `docs/OBSERVABILITY.md` "Azure target".
 - `node dist/cli/tenant-audit` (`npm run tenant-audit` from a checkout): checks, read-only, that no row of one shop
   names a row of another across every relation of the schema; exit 1 lists the rows. Run it after each release.
 - Expenses reach the books and the drawer: a paid expense posts to the ledger, a cash one leaves the recorder's open
