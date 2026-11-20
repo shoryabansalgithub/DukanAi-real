@@ -149,7 +149,8 @@ export default function DashboardPage() {
           label="Today's sales (net)"
           value={money(s?.todaySales)}
           hint={s && s.todayGrossSales !== null ? `Gross ${formatMoney(s.todayGrossSales)} · Returns ${formatMoney(s.todayReturns ?? 0)}` : undefined}
-          onClick={() => setSalesOpen(true)}
+          // The breakdown needs the summary's business date: the tile opens it once the summary is in.
+          onClick={s ? () => setSalesOpen(true) : undefined}
           {...tile('today')}
         />
         {shows('todayProfit') && (

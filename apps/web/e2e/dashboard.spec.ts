@@ -130,6 +130,45 @@ test.describe('Dashboard', () => {
     await expect(kpiValue(page, 'Net revenue')).toHaveText(formatMoney(after.todaySales));
   });
 
+  test("the sales tile opens today's shift breakdown: the API's shifts for the business day, closed by Escape", async ({ page, request }) => {
+    // Make sure the day has a shift: open one unless the system user already has it, close it afterwards.
+    const current = await request.get(`${API_URL}/shifts/current`);
+    const hadShift = Boolean((await current.text()).trim()) && (await current.json()) !== null;
+    if (!hadShift) await api(request, 'POST', '/shifts/open', { openingCash: 0 });
+    try {
+      const shiftCalls: string[] = [];
+      page.on('request', (req) => {
+        if (/\/api\/shifts\?/.test(req.url())) shiftCalls.push(req.url());
+      });
+      await page.goto('/dashboard');
+      await waitLoaded(page);
+
+      const summary = await api<Summary & { businessDate: string }>(request, 'GET', '/dashboard/summary');
+      const shifts = await api<{ items: Array<{ totalSales: number }>; total: number }>(
+        request,
+        'GET',
+        `/shifts?businessDate=${summary.businessDate}&take=100`
+      );
+      expect(shifts.total).toBeGreaterThan(0);
+
+      const tile = page.getByRole('button', { name: /Today's sales \(net\)/ });
+      await tile.click();
+      const dialog = page.getByRole('dialog', { name: "Today's sales (net)" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByText(formatMoney(summary.todaySales), { exact: true }).first()).toBeVisible();
+      await expect(dialog.getByRole('listitem')).toHaveCount(shifts.items.length);
+      const shiftTotal = shifts.items.reduce((sum, shift) => sum + Number(shift.totalSales), 0);
+      await expect(dialog.getByText('Shift total').locator('xpath=following-sibling::span[1]')).toHaveText(formatMoney(shiftTotal));
+      expect(shiftCalls.some((url) => new URL(url).searchParams.get('businessDate') === summary.businessDate)).toBe(true);
+
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(tile).toBeFocused();
+    } finally {
+      if (!hadShift) await api(request, 'POST', '/shifts/current/close', { closingCash: 0 });
+    }
+  });
+
   test('while loading, cards show skeletons instead of claiming they are empty', async ({ page }) => {
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => (release = resolve));

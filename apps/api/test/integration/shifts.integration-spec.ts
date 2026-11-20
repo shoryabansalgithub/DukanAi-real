@@ -81,6 +81,60 @@ describe('shifts: one open shift per cashier, enforced by the database (roadmap 
     await asCashier(() => shifts.close({ closingCash: 1 }, cashier(), again.id));
   });
 
+  it('?businessDate lists exactly the shifts open at some point of that day in the shop\'s zone, a running one from earlier days included', async () => {
+    // A shop of its own, so the shifts the other cases leave behind do not count. Asia/Kolkata (UTC+5:30):
+    // 10 March 2026 runs from 2026-03-09T18:30Z to 2026-03-10T18:30Z.
+    const day = await createShop(app, 'shiftday', { resolveLocation: false });
+    const at = (iso: string) => new Date(iso);
+    const insert = (key: string, openedById: string, openedAt: string, closedAt: string | null) =>
+      run.system(() =>
+        prisma.shift.create({
+          data: {
+            shopId: day.shopId,
+            openedById,
+            openingCash: 0,
+            expectedCash: 0,
+            status: closedAt ? 'CLOSED' : 'OPEN',
+            openToken: closedAt ? null : OPEN_TOKEN,
+            openedAt: at(openedAt),
+            closedAt: closedAt ? at(closedAt) : null,
+            notes: key,
+          },
+        }),
+      );
+    const ids = {
+      before: (await insert('before', day.cashierId, '2026-03-08T10:00:00Z', '2026-03-09T12:00:00Z')).id,
+      endsAtMidnight: (await insert('endsAtMidnight', day.cashierId, '2026-03-09T15:00:00Z', '2026-03-09T18:30:00Z')).id,
+      overnight: (await insert('overnight', day.cashierId, '2026-03-09T17:00:00Z', '2026-03-09T19:00:00Z')).id,
+      daytime: (await insert('daytime', day.cashierId, '2026-03-10T04:00:00Z', '2026-03-10T10:00:00Z')).id,
+      nextDay: (await insert('nextDay', day.cashierId, '2026-03-10T18:30:00Z', '2026-03-10T20:00:00Z')).id,
+      running: (await insert('running', day.ownerId, '2026-03-01T04:00:00Z', null)).id,
+    };
+
+    const owner = actorFor(day, day.ownerId, Role.OWNER);
+    const asOwner = await run.as(day.shopId, day.ownerId, Role.OWNER, () => shifts.list({ businessDate: '2026-03-10' }, owner));
+    // `endsAtMidnight` closed at the very start of the 10th and `nextDay` opened at its end: neither was open during it.
+    expect(new Set(asOwner.items.map((s) => s.id))).toEqual(new Set([ids.overnight, ids.daytime, ids.running]));
+    expect(asOwner.total).toBe(3);
+
+    // A cashier still sees only their own shifts.
+    const asCashierOfDay = await run.as(day.shopId, day.cashierId, Role.CASHIER, () =>
+      shifts.list({ businessDate: '2026-03-10' }, actorFor(day, day.cashierId, Role.CASHIER)),
+    );
+    expect(new Set(asCashierOfDay.items.map((s) => s.id))).toEqual(new Set([ids.overnight, ids.daytime]));
+
+    // The day before: everything that ran on the 9th, the overnight shift included.
+    const before = await run.as(day.shopId, day.ownerId, Role.OWNER, () => shifts.list({ businessDate: '2026-03-09' }, owner));
+    expect(new Set(before.items.map((s) => s.id))).toEqual(new Set([ids.before, ids.endsAtMidnight, ids.overnight, ids.running]));
+
+    // Without the filter every shift of the shop is listed; an impossible date is a 400.
+    const all = await run.as(day.shopId, day.ownerId, Role.OWNER, () => shifts.list({}, owner));
+    expect(all.total).toBe(6);
+    await expect(run.as(day.shopId, day.ownerId, Role.OWNER, () => shifts.list({ businessDate: '2026-02-30' }, owner))).rejects.toMatchObject({
+      response: { code: 'INVALID_DATE' },
+    });
+  });
+
   it('the unique key exists on the database (migration 20261004090000_shift_open_token)', async () => {
     const rows = await run.system(
       () => prisma.$queryRaw<Array<{ COLUMN_NAME: string }>>`

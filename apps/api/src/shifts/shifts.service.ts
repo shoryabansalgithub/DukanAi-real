@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { BillingActor, isManager, money } from '../billing/billing.types';
 import { BillingHelpers } from '../billing/billing.helpers';
 import { Clock } from '../common/time/clock';
+import { businessDayRange, safeTimeZone } from '../common/time/business-day';
 import { CloseShiftDto, ListShiftsDto, OpenShiftDto } from './dto/shift.dto';
 import { pageArgs } from '../common/pagination';
 import { rethrowUniqueViolation } from '../common/db/unique-violation';
@@ -156,6 +157,13 @@ export class ShiftsService {
   async list(query: ListShiftsDto, actor: BillingActor) {
     const where: Prisma.ShiftWhereInput = { shopId: actor.shopId, isDeleted: false };
     if (!isManager(actor.role)) where.openedById = actor.userId;
+    if (query.businessDate !== undefined) {
+      const settings = await this.prisma.shopSettings.findUnique({ where: { shopId: actor.shopId }, select: { timezone: true } });
+      const { start, end } = businessDayRange(query.businessDate, query.businessDate, safeTimeZone(settings?.timezone));
+      where.openedAt = { lt: end };
+      // Open at some moment inside [start, end): a shift closed exactly at midnight belongs to the day before.
+      where.OR = [{ closedAt: null }, { closedAt: { gt: start } }];
+    }
     const { skip, take } = pageArgs(query, 25);
     const [rows, total] = await Promise.all([
       this.prisma.shift.findMany({ where, include: SHIFT_INCLUDE, orderBy: [{ openedAt: 'desc' }, { id: 'asc' }], skip, take }),
