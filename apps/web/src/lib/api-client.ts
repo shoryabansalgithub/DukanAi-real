@@ -1859,9 +1859,9 @@ export const shiftsApi = {
   close: (data: { closingCash: number; notes?: string }) =>
     post<Raw>('/shifts/current/close', data).then((raw) => mapShift(asRaw(raw))),
 
-  /** `GET /shifts?skip&take` */
-  list: (params?: { skip?: number; take?: number }) =>
-    get<unknown>(`/shifts${buildQuery({ skip: params?.skip, take: params?.take ?? 50 })}`).then((data) => {
+  /** `GET /shifts?skip&take[&businessDate]`; `businessDate` keeps the shifts open at some moment of that day. */
+  list: (params?: { skip?: number; take?: number; businessDate?: string }) =>
+    get<unknown>(`/shifts${buildQuery({ skip: params?.skip, take: params?.take ?? 50, businessDate: params?.businessDate })}`).then((data) => {
       const rows = Array.isArray(data) ? data : (asRaw(data).items as unknown[]) ?? [];
       const total = Array.isArray(data) ? data.length : toNumber(asRaw(data).total, rows.length);
       return { items: rows.map((row) => mapShift(asRaw(row))), total };

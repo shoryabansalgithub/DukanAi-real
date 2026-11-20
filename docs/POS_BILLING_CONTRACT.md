@@ -348,8 +348,12 @@ its number. Codes: `INVOICE_NOT_CANCELLABLE`.
 - `GET /shifts/current` returns the caller's OPEN shift or `null`.
 - `POST /shifts/current/close { closingCash, notes? }` closes it; response
   includes `expectedCash`, `closingCash`, `variance`.
-- `GET /shifts?skip&take` lists the shop's shifts (`MANAGER`+ see all, cashiers
-  see their own).
+- `GET /shifts?skip&take[&businessDate]` lists the shop's shifts, newest first,
+  `{ items, total, skip, take }` (`MANAGER`+ see all, cashiers see their own).
+  `businessDate=YYYY-MM-DD` keeps the shifts open at some moment of that day in
+  the shop's time zone (opened before it ends, closed after it starts or still
+  open), which is what the dashboard's "Today's sales" breakdown reads; an
+  impossible date is `400 INVALID_DATE`.
 
 Shift shape: `{ id, status, openedAt, closedAt, openingCash, expectedCash,
 closingCash, variance, totalSales, cashSales, upiSales, cardSales, udharSales,

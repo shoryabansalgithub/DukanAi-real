@@ -86,6 +86,9 @@ release notes of the tag.
   published once the web has `LEGAL_OPERATOR_NAME` and `LEGAL_CONTACT_EMAIL` (the grievance contact); the address,
   grievance officer, phone, jurisdiction and data location are optional `LEGAL_*` settings. Have your advisor review
   the wording, the liability section in particular.
+- The dashboard's "Today's sales (net)" tile opens a breakdown by shift: each shift open at some moment of the
+  business day (one left running since an earlier day too), its sales and tender split, and the shift total with the
+  reason when it differs from the day's net. Cashiers see their own shifts. `GET /shifts` takes `businessDate`.
 - The top bar's name and avatar open a profile popup (name, email, role, shop) with **Sign out** as its last item;
   clicking the name no longer signs you out.
 - Alerts for the Azure target, which runs no Prometheus: the backup agent pings a dead man's switch
