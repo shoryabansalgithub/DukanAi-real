@@ -42,6 +42,8 @@ release notes of the tag.
 
 ### Security
 
+- The Prisma CLI's `effect` dependency is moved from 3.21.0 to 3.22.4 (high-severity ReDoS, GHSA-7589-6fvf-x4pw;
+  Prisma 6.19.3 pins the vulnerable version). The production dependency audit is clean again.
 - The db-ops image (backups, off-site copy) builds rclone v1.76.0 from source on Go 1.27.4 instead of installing
   rclone's 1.75.2 release, whose Go runtime and `golang.org/x/net` carried three fixable HIGH advisories and stopped
   the release's vulnerability gate. Same rclone commands and remotes; the off-site copies are unchanged.

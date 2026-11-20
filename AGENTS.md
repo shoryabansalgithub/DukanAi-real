@@ -857,7 +857,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   carry the fixes that upstream pins block, each with its reason here
   (JSON has no comments): next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
-  same `deepmerge` export; `prisma generate` / `migrate` run on it),
+  same `deepmerge` export; `prisma generate` / `migrate` run on it) and its
+  exact `effect` pin (3.21.0, ReDoS GHSA-7589-6fvf-x4pw, fixed after 3.22.0; no
+  Prisma 6 release moves it) to 3.22.4,
   `@nestjs/swagger`'s `js-yaml` to 5.4.x, `@nestjs/platform-express`'s
   exact `multer` pin (2.4.0) to 2.5.x, `archiver-utils`' `glob` to 14.x
   (archiver 7 stays on 7.x, and its `glob ^10` line has no fixed release;
