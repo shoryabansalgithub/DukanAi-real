@@ -150,7 +150,7 @@ RootLayout
 ## 🎯 Development Workflow
 
 ### Adding a New Page
-1. Create folder in `src/app/[pageName]/`
+1. Create folder in `src/app/(app)/[pageName]/` (app pages; public marketing pages live in `src/app/(marketing)/`)
 2. Create `page.tsx` inside
 3. Import components and use mock data
 4. Export as default

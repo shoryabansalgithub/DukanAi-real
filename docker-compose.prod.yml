@@ -143,6 +143,20 @@ services:
       # The API as the browser reaches it, read at run time: the same image
       # serves staging and production (roadmap 9.9).
       API_PUBLIC_URL: ${API_PUBLIC_URL:?Set API_PUBLIC_URL in .env (https://api.example.com/api)}
+      # The marketing site's canonical address (sitemap, robots.txt, Open
+      # Graph, llms.txt); the web origin unless the site lives elsewhere.
+      SITE_URL: ${SITE_URL:-${WEB_ORIGIN}}
+      # false on staging: noindex pages, robots.txt Disallow: /, no sitemap
+      # or llms.txt (docs/STAGING.md).
+      SITE_INDEXABLE: ${SITE_INDEXABLE:-true}
+      # Who runs the service: publishes /privacy and /terms (apps/web/.env.example).
+      LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
+      LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
+      LEGAL_ADDRESS: ${LEGAL_ADDRESS:-}
+      LEGAL_GRIEVANCE_OFFICER: ${LEGAL_GRIEVANCE_OFFICER:-}
+      LEGAL_CONTACT_PHONE: ${LEGAL_CONTACT_PHONE:-}
+      LEGAL_JURISDICTION: ${LEGAL_JURISDICTION:-}
+      LEGAL_DATA_LOCATION: ${LEGAL_DATA_LOCATION:-}
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
@@ -212,6 +226,9 @@ services:
     command: ["backup-loop"]
     user: "1000:1000"
     environment:
+      # The dead man's switch where no Prometheus runs (scripts/db/lib.sh backup_heartbeat).
+      BACKUP_HEARTBEAT_URL: ${BACKUP_HEARTBEAT_URL:-}
+      BACKUP_MIN_FREE_PERCENT: ${BACKUP_MIN_FREE_PERCENT:-10}
       # No home directory for uid 1000 in the image: rclone and the MySQL clients look in HOME.
       HOME: /tmp
       DATABASE_URL: ${DB_OPS_DATABASE_URL:-${DATABASE_URL}}

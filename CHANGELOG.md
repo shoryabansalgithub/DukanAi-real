@@ -42,6 +42,15 @@ release notes of the tag.
 
 ### Security
 
+- The db-ops image (backups, off-site copy) builds rclone v1.76.0 from source on Go 1.27.4 instead of installing
+  rclone's 1.75.2 release, whose Go runtime and `golang.org/x/net` carried three fixable HIGH advisories and stopped
+  the release's vulnerability gate. Same rclone commands and remotes; the off-site copies are unchanged.
+- The production dependency audit is clean again (`npm audit --omit=dev`: 0 advisories, it had 1 critical, 5 high
+  and 11 moderate). Next.js 16.4.6 (three advisories in the image optimizer, `use cache` and Server Actions, which this
+  app does not use), multer 2.5 and body-parser 2.4 (denial of service on uploads and compressed request bodies), zod
+  4 (memory exhaustion on oversized collections), follow-redirects 1.16.3 (credentials kept across a redirect), qs,
+  fast-uri, nodemailer 10.1, Sentry 11.14 and, through a `glob` 14 override for `archiver-utils`, glob and
+  minimatch. No behaviour changes: archiver stays on 7.x and every backup is still a real zip.
 - Cashiers and stock clerks no longer see the shop's money behind the counter. Cost prices, profit and margin, stock
   value at cost, supplier balances and purchasing, expenses and Reports & Analytics are for owners, admins and managers
   (`FINANCE_ROLES`): those reads answer 403 to anyone else, and every other answer leaves the cost, profit, valuation
@@ -66,6 +75,23 @@ release notes of the tag.
 
 ### Added
 
+- A public website for shop owners, search engines and AI assistants: the landing page, feature pages, GST and udhar
+  guides, a comparison with other billing apps, FAQ and glossary, with a sitemap, `robots.txt`, `/llms.txt`, a
+  Markdown copy of every page and social cards. `/` shows it to visitors and still opens the dashboard for a signed-in
+  user. The canonical address is `SITE_URL`, else the Vercel project's production domain; a bad value fails the build
+  instead of the live site. The copy states the GST invoice gaps and what the dashboard insights compute.
+- The privacy notice (`/privacy`) and terms for shops (`/terms`), linked from the footer and the sign-up form. They are
+  published once the web has `LEGAL_OPERATOR_NAME` and `LEGAL_CONTACT_EMAIL` (the grievance contact); the address,
+  grievance officer, phone, jurisdiction and data location are optional `LEGAL_*` settings. Have your advisor review
+  the wording, the liability section in particular.
+- The top bar's name and avatar open a profile popup (name, email, role, shop) with **Sign out** as its last item;
+  clicking the name no longer signs you out.
+- Alerts for the Azure target, which runs no Prometheus: the backup agent pings a dead man's switch
+  (`BACKUP_HEARTBEAT_URL`, e.g. a free healthchecks.io check) after every run, and `<url>/fail` naming a failed dump,
+  documents archive or off-site copy, or a disk under `BACKUP_MIN_FREE_PERCENT` (10) free; silence means the VM or
+  the agent is down. `deploy/azure/main.bicep` adds Azure Monitor alerts by email (`alertEmail`: MySQL storage above
+  80 %, MySQL and VM CPU credits nearly spent, VM memory under 100 MB) and an optional monthly budget
+  (`monthlyBudget`). Setup: `docs/OBSERVABILITY.md` "Azure target".
 - `node dist/cli/tenant-audit` (`npm run tenant-audit` from a checkout): checks, read-only, that no row of one shop
   names a row of another across every relation of the schema; exit 1 lists the rows. Run it after each release.
 - Expenses reach the books and the drawer: a paid expense posts to the ledger, a cash one leaves the recorder's open
@@ -131,6 +157,17 @@ release notes of the tag.
 
 ### Fixed
 
+- Every page rendered in a serif font (Times New Roman): Tailwind's sans-serif stack started with a variable nothing
+  defined. On a phone the navbar search now has the width the icons leave instead of showing only "Sea".
+- The API was type-checked against Node 24's types (a stale lockfile entry) while it runs on Node 22.
+- Creating a store or signing in on a first visit could land back on the sign-in page: concurrent requests replaced
+  the sign-in's security cookie, the server refused the attempt without saying so, and the page took it for success.
+  The refused attempt is now tried again, and one that keeps failing says so instead of leaving the form.
+- Shop owners on the Vercel-hosted web were signed out of every device now and then: two web instances refreshed the
+  same session at once and the API took the second exchange for a stolen token. A refresh token presented again
+  within `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation, while its session is live, now gets a successor; later
+  reuse still ends every session. `POST /auth/refresh` takes the general rate limits instead of the brute-force ones
+  (a refresh token cannot be guessed, and through Vercel every user's refresh shared a few addresses).
 - Dark mode: dialogs (add / edit product, expense, supplier, customer, confirmations), slide-out panels and toasts
   painted white with white labels and typed text; the theme already inverts white and the grays, and the components'
   own dark-mode classes flipped them back. Form fields now take the themed surface, the sidebar keeps its light text

@@ -16,10 +16,13 @@ env:
   TEST_DATABASE_URL: mysql://root:password@127.0.0.1:3306/dukaanai_test?connection_limit=25&pool_timeout=120
   TEST_REDIS_URL: redis://127.0.0.1:6379/1
 
+# Runners are pinned like the actions (7.4): ubuntu-latest moved to 26.04,
+# where Playwright 1.56 installs no Chromium and the apt MySQL client is 8.4
+# (its mysqldump sends SHOW BINARY LOG STATUS, which a MySQL 8.0 server refuses).
 jobs:
   build:
     name: Build and type-check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -34,7 +37,7 @@ jobs:
 
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -70,6 +73,12 @@ jobs:
       - run: bash scripts/check-tracked-artifacts.sh
       # The backup scripts' connection parsing (TLS verification, URL decoding, owner-only files).
       - run: bash scripts/db/lib.test.sh
+      # The incremental off-site push: only unconfirmed files are shipped and
+      # checked, check and push --full verify everything (a local remote).
+      - name: Off-site push self-test
+        run: |
+          sudo apt-get install -y -q rclone >/dev/null
+          bash scripts/backup/offsite.test.sh
       # Roadmap 9.21: the release checker's own tests, and CHANGELOG.md in the
       # shape a release needs (dated sections, newest first = package.json).
       - run: node --test scripts/release/release.test.mjs scripts/release/attach-release.test.mjs
@@ -77,7 +86,7 @@ jobs:
 
   unit:
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -94,7 +103,7 @@ jobs:
 
   integration:
     name: Integration tests (MySQL ${{ matrix.mysql }} + Redis)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     # MySQL 8.0 reached end of life in April 2026 and managed providers move
     # to 8.4 LTS: every suite runs on both (audit 2026-10-11, R17). The
@@ -206,7 +215,7 @@ jobs:
 
   e2e:
     name: Browser tests (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       mysql:
@@ -273,7 +282,7 @@ jobs:
 
   deploy:
     name: Deployment (compose smoke)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 70
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -339,6 +348,13 @@ jobs:
           job="$(grep -m1 -o 'dukaanai-api:[^"[:space:]]*' <<<"$job_yaml")"
           if [ -z "$app" ] || [ "$app" != "$job" ]; then echo "::error::the migration Job runs $job, the API $app"; exit 1; fi
           rm deploy/k8s/common/dukaanai-secrets.env
+      # The Azure target's template (deploy/azure/main.bicep, incl. its alert
+      # rules) compiles: the runner image ships the Azure CLI, which installs
+      # the pinned Bicep CLI. No Azure account is involved.
+      - name: Azure template compiles (bicep build)
+        run: |
+          az bicep install --version v0.45.6
+          az bicep build --file deploy/azure/main.bicep --stdout >/dev/null
       - name: Fresh clone -> compose up -> migrate -> login -> sale
         run: bash scripts/compose-smoke.sh
       - name: Container logs
@@ -354,5 +370,34 @@ jobs:
         run: |
           docker ps -a --filter label=com.docker.compose.project=dukaanai-prod
           for c in $(docker ps -aq --filter label=com.docker.compose.project=dukaanai-prod); do
+            echo "=== $c ($(docker inspect --format '{{.Name}}' "$c"))"; docker logs --tail=200 "$c" 2>&1 || true
+          done
+
+  # The Azure target (deploy/azure) on the architecture of its VM
+  # (Standard_B2pts_v2, Arm64): images built here, stack.sh up against an
+  # Azure-like TLS-only MySQL 8.4 and an S3 stand-in for B2, the app through
+  # the edge, isolation, a photo round trip, hourly dump + incremental
+  # encrypted push, disaster restore into a fresh MySQL, memory under load
+  # with the overlay's limits, the drills, stop / start.
+  azure:
+    name: Azure target (end to end, arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      - name: The edge's hostnames resolve to this runner
+        run: |
+          for h in app.localhost api.localhost; do
+            getent hosts "$h" >/dev/null || echo "127.0.0.1 $h" | sudo tee -a /etc/hosts >/dev/null
+          done
+      - name: Images -> stack.sh up -> flow, isolation, backups, disaster restore, memory, drills, restart
+        run: bash deploy/azure/e2e.sh
+      - name: Container logs (Azure target)
+        if: failure()
+        run: |
+          for c in $(docker ps -aq --filter label=com.docker.compose.project=dukaanai-azure-e2e); do
             echo "=== $c ($(docker inspect --format '{{.Name}}' "$c"))"; docker logs --tail=200 "$c" 2>&1 || true
           done

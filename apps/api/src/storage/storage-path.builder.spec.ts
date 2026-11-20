@@ -22,7 +22,7 @@ describe('StoragePathBuilder', () => {
 
   it('strips path characters from ids so a segment can never leave its directory', () => {
     const dir = builder('/srv/store').getCustomerDirectory('shop1', '../../etc', StorageCustomerDirectory.Bills);
-    expect(dir).toBe(path.join('/srv/store', 'shop1', 'Customers', 'etc', StorageCustomerDirectory.Bills));
+    expect(dir).toBe(path.resolve('/srv/store', 'shop1', 'Customers', 'etc', StorageCustomerDirectory.Bills));
     expect(() => builder('/srv/store').getShopRoot('../')).toThrow(BadRequestException);
   });
 
@@ -31,7 +31,7 @@ describe('StoragePathBuilder', () => {
     // Sibling-prefix bypass: `/srv/store2` starts with `/srv/store` but is not under it.
     const b = builder('/srv/store') as unknown as { secureJoin(base: string, ...segments: string[]): string };
     expect(() => b.secureJoin('/srv/store', '../store2')).toThrow(BadRequestException);
-    expect(b.secureJoin('/srv/store', '.')).toBe('/srv/store');
+    expect(b.secureJoin('/srv/store', '.')).toBe(path.resolve('/srv/store'));
   });
 
   it('containment is path.relative, not a string prefix (roadmap 7.5)', () => {

@@ -684,7 +684,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `fetch('data:…')` is a connection under `connect-src` and is refused:
   decode data URLs with `dataUrlToBlob` (`src/lib/data-url.ts`), never fetch
   them.
-- 6.5 web robustness: `app/error.tsx` (page segment, keeps the shell) and
+- 6.5 web robustness: `app/(app)/error.tsx` (page segment, keeps the shell) and
   `app/global-error.tsx` (root layout, inline styles only). `src/lib/uuid.ts`
   is the one uuid v4 (falls back from `crypto.randomUUID` to
   `getRandomValues`); the POS store and `RecordPaymentModal` use it. The POS
@@ -769,7 +769,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   (failures are not kept; the table is bounded). Without it, an owner with
   the dashboard open was signed out of everything after one access-token
   lifetime (the business day found it). `e2e/refresh-handoff.spec.ts`
-  covers the logic (pure, runs in the ordinary e2e project).
+  covers the logic (pure, runs in the ordinary e2e project). The table lives
+  in one process: on Vercel the instances do not share it, and the API's
+  `JWT_REFRESH_REUSE_GRACE_MS` window answers the other instances instead.
 - The shared axios instance (`src/lib/api.ts`) defaults to JSON and axios
   serialises a `FormData` body as JSON under that header (`{"file":{}}`); its
   request interceptor drops the content type for `FormData` so the browser
@@ -800,6 +802,48 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   needs an `idempotencyKey`, and under the bypass `/login` leaves for the
   dashboard as soon as it hydrates, so a bypass test never clicks through
   it (read its served markup, then go to the target page).
+- Public marketing site (SEO / AI answers): `src/app` has two route groups
+  under a bare root layout. `(app)` holds the signed-in application and the
+  sign-in pages (its layout mounts Providers, toasts and `RootLayout`, every
+  page noindex, `[...missing]` renders unknown paths as the shell's 404);
+  `(marketing)` holds the public, indexable pages (server components only,
+  no session JS). `/` is the landing page without a session and redirects to
+  `/dashboard` with one (or under the bypass). Content is data:
+  `src/marketing/content/*` feeds `src/marketing/registry.ts`
+  (`MARKETING_PAGES`), the one list behind `sitemap.ts`, `/llms.txt`,
+  `/llms-full.txt`, the `.md` twins (`/<path>.md`, `/index.md`, rewritten
+  to `app/markdown/[...slug]` in `next.config.js`), the `/og/...` cards and
+  JSON-LD (`structured-data.ts`). A new section goes in
+  `MARKETING_SECTIONS` (`src/marketing/paths.ts`, read by the proxy), the
+  registry, and mounts `MarketingMissingPage` as its `[...missing]`, or
+  logged-out visitors are sent to /login / get the app shell's 404.
+  `robots.ts` disallows the app paths. `SITE_URL` (canonical origin; unset,
+  Vercel's `VERCEL_PROJECT_PRODUCTION_URL`, the project's production domain
+  on every deployment, else `https://dukan-ai-chi.vercel.app`) and `SITE_INDEXABLE` (`false` on
+  staging; a Vercel preview is never indexed; closed = noindex, `Disallow:
+  /`, empty sitemap, 404 llms.txt and twins) are read at run time
+  (`src/config/site.ts`) under the rules in `src/config/site-rules.js`
+  (CommonJS, also checked by `next.config.js`): every page renders per
+  request, so a bad value used to pass `next build` and stop every server
+  start; now `next build` / `next start` refuse it (Vercel keeps the previous
+  deployment) and `src/instrumentation.ts` refuses it in the standalone
+  image. A bare host means https; a path, query or credentials is refused.
+  The public pages are light only (`.dark .marketing-root` restores the light
+  palette like `.sidebar-bg`: the app's theme class survives a client
+  navigation onto them). Their copy states what the product does today: the
+  GST gaps are `docs/compliance/GST_INVOICE_CHECK.md` §4, and a claim about a
+  feature is checked against the code before it ships. `/privacy` and
+  `/terms` (`src/marketing/legal.ts`, from `docs/privacy/PRIVACY_NOTICE.md`
+  and `TERMS_FOR_SHOPS.md`) are published only when the web has
+  `LEGAL_OPERATOR_NAME` and `LEGAL_CONTACT_EMAIL` (rules in `site-rules.js`:
+  both or neither, a real email, Markdown characters dropped; optional
+  address, grievance officer, phone, jurisdiction, data location), so no
+  placeholder ever reaches a visitor and the operator's details stay out of
+  git; then the footer and the sign-up form link them (`<meta
+  name="dukaanai-legal-pages">`) and `scripts/pilot/readiness.mjs` checks
+  them. They are not in the sitemap. Keep their wording in step with the
+  drafts and the retention settings. Specs: `e2e/site-indexing.spec.ts` (the switch)
+  and `e2e-auth/marketing.spec.ts` (every sitemap page, without the bypass).
 
 ## Dependencies (roadmap phase 7)
 
@@ -810,16 +854,28 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere removed the jest chain and the critical handlebars) and CI's lint job fails on any high or critical
   production advisory (`npm audit --omit=dev --audit-level=high`); re-check
   after any dependency change and keep it that way. The root `overrides`
-  carry the fixes that upstream pins block, each with its reason in
-  `package.json`: next-auth 4's `nodemailer` (its unused Email provider) is
+  carry the fixes that upstream pins block, each with its reason here
+  (JSON has no comments): next-auth 4's `nodemailer` (its unused Email provider) is
   forced to 10.x, `@prisma/config`'s `deepmerge-ts` to 8.x (CJS build,
   same `deepmerge` export; `prisma generate` / `migrate` run on it),
-  `@nestjs/swagger`'s `js-yaml` to 5.4.x, and `postcss` to 8.5.28 (next 16
+  `@nestjs/swagger`'s `js-yaml` to 5.4.x, `@nestjs/platform-express`'s
+  exact `multer` pin (2.4.0) to 2.5.x, `archiver-utils`' `glob` to 14.x
+  (archiver 7 stays on 7.x, and its `glob ^10` line has no fixed release;
+  `archiver-utils` only calls `glob.sync`, which 14 keeps, and the backup
+  uses `archive.directory`, which does not reach it), and `postcss` to 8.5.28 (next 16
   pins 8.5.23; the override keeps every copy on the patched line). Keep an override scoped to its consumer: a blanket
   `js-yaml` override breaks eslint 8 and the istanbul loader (they need
   3.x / 4.x). `npm audit fix` is not usable here: it tries to downgrade
   `prisma` to 6.12 and stops on the peer conflict; apply fixes as explicit
-  versions instead. `prisma` and `@prisma/client` are pinned to the same
+  versions instead. Change the lock with npm 10 (`npx npm@10.9.7`, the
+  `packageManager`), one targeted `install <pkg>@<range> -w <workspace>` or
+  `update <pkg>` at a time, and diff the resolved versions afterwards; never
+  `npm dedupe` (it rewrites unrelated packages). A transitive subtree that
+  must pick up a new override is re-resolved by deleting its lock entries all
+  the way up to the package a workspace declares (`archiver` for
+  `archiver-utils`) and running `install --package-lock-only`: npm re-adds a
+  deleted declared dependency with its whole subtree, but never a deleted
+  transitive entry on its own. `prisma` and `@prisma/client` are pinned to the same
   exact version (6.19.3): bump both together, then `npx prisma generate`.
   The gate audits production dependencies only, so build-time tooling must
   live in `devDependencies`: `tailwindcss-animate` (a Tailwind plugin used
@@ -841,7 +897,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   everywhere (`engines`, `.nvmrc`).
 
 - 7.2: the web runs Next.js 16 on React 19 (`react`/`react-dom`/`@types/react`
-  19, framer-motion 14, lucide-react 1.x, recharts 2.15). What the major
+  19, framer-motion 14, lucide-react 1.x, recharts 2.15, zod 4: write
+  `z.url()`, not `z.string().url()`, and `code: 'custom'`, not
+  `z.ZodIssueCode`, as `src/config/env.ts` does). What the major
   changed here: `next lint` is gone, so `npm run lint` in apps/web is
   `eslint .` over `eslint.config.mjs` (ESLint 9 flat config: `eslint-config-next`
   core-web-vitals + typescript; the React Compiler rules of
@@ -1002,9 +1060,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `<db>_drill_<stamp>` -> `migrate status` up to date -> `migrate diff`
   clean -> every table's row count equal -> ledger triggers present -> drop;
   CI runs it in the integration job after the suites, on MySQL 8). Compose:
-  `db-ops` service (profile `ops`, image `deploy/db-ops/Dockerfile` on
-  `mysql:8.0-debian` plus rclone: the Oracle Linux `mysql:8.0` image has no
-  mysqlbinlog; the whole `scripts/` directory mounted at `/scripts`,
+  `db-ops` service (profile `ops`, image `deploy/db-ops/Dockerfile`: Oracle
+  Linux 9 slim with the MySQL 8.4 client package and rclone, amd64 and arm64;
+  the official `mysql` image has no mysqlbinlog; the whole `scripts/`
+  directory mounted at `/scripts`,
   `db-backups` volume, `db-ops.sh` entrypoint). Runbooks:
   `docs/BACKUP_RESTORE.md` (rehearsal record) and the "Rolling back a
   release" section of `prisma/MIGRATIONS.md` (additive: redeploy the old
@@ -1020,6 +1079,17 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   migration; a compound body ends at END on MySQL 8 and MariaDB alike) and
   `backup.sh` drops such a terminator so pre-fix backups restore too. Give
   every future trigger a compound body.
+- Azure target (`deploy/azure`): one 1 GiB Arm64 VM plus Azure Database
+  for MySQL 8.4 with `lower_case_table_names=1` (a dump from it restores only
+  into a server started with `--lower-case-table-names=1`). No Prometheus runs
+  there (`stack.sh` refuses the `ops` profile), so its alerts are the backup
+  heartbeat (`BACKUP_HEARTBEAT_URL`: the backup loop pings it after every run
+  and `<url>/fail` with the failed jobs or a disk under
+  `BACKUP_MIN_FREE_PERCENT`; `backup_heartbeat` / `low_disk` in
+  `scripts/db/lib.sh`, tested by `lib.test.sh`), the Azure Monitor metric
+  alerts and optional budget of `main.bicep` (`alertEmail`, `monthlyBudget`;
+  the CI deploy job compiles the template) and an outside uptime checker
+  (`docs/OBSERVABILITY.md` "Azure target").
 - 7.8 retention: `RetentionSweepService` (`src/common/retention`, cron
   `RetentionSweep` on `CRON_RETENTION_SWEEP`, default `30 3 * * *`, lock
   `cron:retention-sweep` 15 min, `runAsSuperAdmin`) deletes with
@@ -1181,7 +1251,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   require`, `auto` skips with the reason (no binlog, no position, no
   mysqlbinlog, no sql_log_bin right). A MariaDB mysqlbinlog cannot read
   MySQL 8 logs (`MYSQLBINLOG_BIN`). Compose: 7-day binlog expiry, `db-ops`
-  on `mysql:8.0-debian` (the Oracle Linux image lacks mysqlbinlog) connects
+  (MySQL 8.4 clients incl. mysqlbinlog, `deploy/db-ops/Dockerfile`) connects
   as root, `db-ops binlog-archive|archive-loop|latest`, the `binlog-archiver`
   service is `archive-loop` (`--flush` every
   `BINLOG_ARCHIVE_INTERVAL_SECONDS`), and the compose smoke proves the
@@ -1338,8 +1408,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   first. Never read `process.env.NEXT_PUBLIC_API_URL` directly for a URL
   the browser uses. `.github/workflows/release.yml` builds the three images
   once per main commit / `v*` tag and pushes `ghcr.io/<owner>/dukaanai-
-  {api,web,db-ops}:sha-<7>` (plain `docker build`/`push`, no third-party
-  action); `docker-compose.prod.yml` pulls `${IMAGE_REGISTRY}/...:${IMAGE_TAG:?}`
+  {api,web,db-ops}:sha-<7>` as amd64 + arm64 indexes (native runner per
+  arch, then `docker buildx imagetools create`; no third-party action);
+  `docker-compose.prod.yml` pulls `${IMAGE_REGISTRY}/...:${IMAGE_TAG:?}`
   and never builds; `docker-compose.build.yml` is the overlay that builds
   from a checkout (the prod smoke uses it, web image WITHOUT an API URL, and
   asserts the served `<meta>` equals the runtime `API_PUBLIC_URL`);
@@ -1478,9 +1549,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   image (`TRIVY_CONTROL_IMAGE`, default `alpine:3.12.0`) WITHOUT
   `--ignore-unfixed` and fails if Trivy finds nothing (so the gate is never a
   no-op — bump the control image if it ever reads clean). The release
-  `images` job scans the three images before pushing and writes a per-image
-  SBOM after, uploads them as `sbom-<sha>` and, on a `v*` tag, attaches
-  `sbom-dukaanai-{api,web,db-ops}.cdx.json` to the release
+  `images` job scans the three images per architecture before pushing and
+  writes a per-image SBOM after, uploads them as `sbom-<tag>-<arch>` and, on
+  a `v*` tag, attaches `sbom-dukaanai-{api,web,db-ops}-{amd64,arm64}.cdx.json`
+  to the release
   (`attach-release.sh` now takes many files). The CI deploy job runs the
   control on every push. gitleaks (9.11) and `npm audit --omit=dev
   --audit-level=high` stay the secret and advisory gates;
@@ -1491,12 +1563,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   scan, SBOM and control are proven by the jobs; locally the pinned Trivy
   was shown to produce a valid CycloneDX document and `trivy fs` of the
   tree is clean. What the first gate run on main found, keep it so: every
-  image `apt-get upgrade`s Debian at build time (the Node and MySQL base
-  images lag the security archive; db-ops holds its `mysql-*` packages), the
-  API and web runtime stages delete the npm / npx / corepack the Node image
-  bundles (npm's own tar, brace-expansion, sigstore ... are fixable HIGH /
-  CRITICAL and an npm upgrade still carries some), and db-ops deletes the
-  unused `gosu` (an old Go stdlib). So nothing in a container runs `npx`:
+  image takes its distribution's security updates at build time (the Node
+  base images lag the archive: `apt-get upgrade`; db-ops `microdnf upgrade`
+  with the MySQL repository left out, so its clients stay at the pinned
+  release; rclone is built from source in a pinned `golang` stage, because
+  its release binaries lag Go's security releases: bump the Go image with
+  Go's patch releases), and the API and web runtime stages delete the npm / npx /
+  corepack the Node image bundles (npm's own tar, brace-expansion, sigstore
+  ... are fixable HIGH / CRITICAL and an npm upgrade still carries some). So
+  nothing in a container runs `npx`:
   the migrate step is `/app/node_modules/.bin/prisma migrate deploy` (an
   absolute path, so new compose files still run an older image on rollback).
   Read the gate with `trivy rootfs` locally: `trivy fs` skips the
@@ -1932,7 +2007,13 @@ the fixes made true, and must stay true:
   sidebar is navy in both themes. The sidebar pins Notifications and Settings
   under the scrolling list inside the same `nav` "Main" (`pinned` items) and
   the Upgrade card shrinks under `max-height` 820 / 640 px
-  (`e2e/sidebar.spec.ts`, five window sizes). Expense receipts:
+  (`e2e/sidebar.spec.ts`, five window sizes). Tailwind's `font-sans` stack
+  starts with `var(--font-sans)`, defined in `globals.css` `:root`: an
+  undefined `var()` voids the whole `font-family` and every page fell back
+  to serif (Times). On a phone the navbar search takes the width the icons
+  leave and starts clear of the sidebar's fixed menu button (`pl-16`);
+  `e2e/navbar-typography.spec.ts` checks the font at 1440 and 390 px and
+  the search at 390 px. Expense receipts:
   `POST /expenses/:id/receipt` (MANAGEMENT_ROLES, `documents` feature gate,
   multer memory storage with `expenseReceiptUploadPolicy`: JPEG / PNG / PDF,
   10 MB, bytes sniffed) writes `<shop>/Expenses/<id>/receipt-<stamp>.<ext>`
@@ -2071,9 +2152,12 @@ the fixes made true, and must stay true:
   1000 fails boot); the old second-based `RATE_LIMIT_*_TTL` keys are not read.
   Counters live in Redis (`RedisThrottlerStorage`, keys `throttle:{...}`) and
   degrade to the per-process storage when Redis is down. Routes that take
-  credentials carry `@AuthThrottle()` (login, register, refresh, google,
-  invitation accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the
-  general ones (`src/common/throttling`). `.env.test` opens every window wide;
+  credentials carry `@AuthThrottle()` (login, register, google, invitation
+  accept) and get the `AUTH_RATE_LIMIT_*` limits instead of the general ones
+  (`src/common/throttling`). `POST /auth/refresh` takes the general limits: an
+  80-hex-character token has nothing to guess, and behind a web server with
+  several instances (Vercel) every user's refresh comes from its few
+  addresses, where the auth limits signed people out. `.env.test` opens every window wide;
   `test/integration/rate-limit.integration-spec.ts` proves the limiter with its
   own overrides and clears `throttle:*` before and after.
 - The tracker is `req.ip`, so `TRUST_PROXY` (Express `trust proxy`, applied in
@@ -2167,7 +2251,11 @@ the fixes made true, and must stay true:
   opens a family (`RefreshToken.familyId`), every refresh consumes the token
   (`rotatedAt`, conditional `updateMany`) and writes a successor in one
   transaction; a consumed token presented again is reuse and revokes the
-  family AND bumps `tokenVersion` (all sessions end); `absoluteExpiresAt`
+  family AND bumps `tokenVersion` (all sessions end), except within
+  `JWT_REFRESH_REUSE_GRACE_MS` (60 s) of its rotation while its family is
+  live, when it gets a successor of its own (a second web instance with the
+  old cookie, or the loser of a concurrent exchange; a family that has ended
+  answers a plain 401 there); `absoluteExpiresAt`
   (`SESSION_ABSOLUTE_LIFETIME`, 12h) caps a family, `JWT_REFRESH_EXPIRES_IN`
   (7d) is one token's idle life. Access tokens live 15 min (`JWT_EXPIRES_IN`)
   and carry `sid` = familyId; `JwtStrategy`/the socket adapter reject a token
@@ -2176,7 +2264,9 @@ the fixes made true, and must stay true:
   through `issueTokens`/`httpAs` (`test/security/security-fixtures.ts`, async):
   a bare `jwtService.sign` token names no session and is refused. The web's
   sign-out buttons call `signOutEverywhere` (`apps/web/src/lib/sign-out.ts`),
-  which hits `/auth/logout` before NextAuth `signOut`.
+  which hits `/auth/logout` before NextAuth `signOut`. The top bar's name and
+  avatar open `ProfileMenu` (`components/navigation`), whose last item is
+  Sign out; clicking the name never signs out (`e2e-auth/profile-popup.spec.ts`).
 
 ## Git attribution rule
 

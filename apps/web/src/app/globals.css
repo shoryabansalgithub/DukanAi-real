@@ -24,6 +24,10 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 262.1 83.3% 57.8%;
     --radius: 0.75rem;
+    /* Head of Tailwind's `font-sans` stack (tailwind.config.js). It must be
+       defined: an undefined var() voids the whole font-family declaration
+       and every page fell back to the browser's serif default. */
+    --font-sans: ui-sans-serif, system-ui, sans-serif;
 
     /* Base Colors for Light Mode */
     --color-white: #ffffff;
@@ -76,8 +80,11 @@
 
   /* The sidebar is dark navy in both themes, so it keeps the light theme's
      palette: inverted, its white brand name and card titles turned near
-     black on navy. */
-  .dark .sidebar-bg {
+     black on navy. The public marketing pages are light only: the app's
+     theme class stays on <html> across a client navigation, and inverted,
+     their white page turned near black under slate (not inverted) text. */
+  .dark .sidebar-bg,
+  .dark .marketing-root {
     --color-white: #ffffff;
     --color-gray-50: #f9fafb;
     --color-gray-100: #f3f4f6;
@@ -191,4 +198,11 @@
   .print-document [class*='shadow'] {
     box-shadow: none !important;
   }
+}
+
+/* The marketing pages (src/app/(marketing)) are light only (their palette is
+   restored under .dark above), native controls included. Their font is the
+   app's: --font-sans in :root. */
+.marketing-root {
+  color-scheme: light;
 }

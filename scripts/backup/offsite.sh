@@ -6,8 +6,8 @@
 # clean machine. The key never leaves the secret store: it arrives as an
 # environment variable and is obscured for rclone at run time.
 #
-#   scripts/backup/offsite.sh push             copy everything new to the remote, verify, prune by age
-#   scripts/backup/offsite.sh check            verify the remote against the local directory (cryptcheck)
+#   scripts/backup/offsite.sh push [--full]    copy what is not yet confirmed off-site, verify it, prune by age
+#   scripts/backup/offsite.sh check            verify every local file against the remote (cryptcheck)
 #   scripts/backup/offsite.sh list             what the remote holds (decrypted names, sizes)
 #   scripts/backup/offsite.sh fetch DIR [--only GLOB]
 #                                              copy the remote (or the files matching GLOB) into DIR
@@ -22,23 +22,38 @@
 #   OFFSITE_CRYPT_PASSWORD  the encryption key (32+ characters; losing it loses every off-site copy)
 #   OFFSITE_CRYPT_SALT      optional second key (recommended; same rules)
 #   OFFSITE_KEEP_DAYS       remote files older than this are deleted on push (default 30; 0 = keep all)
+#   OFFSITE_HOURLY_KEEP_DAYS  the same for the hourly/ directory (db-ops backup-loop's hourly dumps),
+#                           when shorter (default OFFSITE_KEEP_DAYS)
 #   BACKUP_DIR              the local backup directory (default /var/backups/dukaanai)
 #
 # File names and contents are encrypted (crypt "standard" names); a listing of
 # the bucket shows nothing readable. Records the success in BACKUP_STATUS_DIR.
+#
+# push is incremental: <BACKUP_DIR>/.offsite-confirmed lists every file (path,
+# size, modification time) a push copied and cryptchecked, and the next push
+# ships and checks only the files not on that list, so an hourly push does not
+# re-read every archive. --full ignores the list (every file checked again);
+# check always verifies the whole set. A local file older than its remote
+# retention is neither shipped nor checked (the prune would delete it). The
+# status stamps are copied on every push and never checked (every job
+# rewrites them). A file deleted from the bucket behind the list's back is
+# found by check and re-shipped by push --full. Two pushes at once are
+# harmless: each lists only what it verified itself, so the worst a race
+# costs is a file checked again by the next push.
 set -euo pipefail
 . "$(dirname "$0")/../db/lib.sh"
 
 CMD="${1:-}"; shift || true
-[ -n "$CMD" ] || { sed -n '2,30p' "$0"; exit 2; }
-DEST=""; ONLY=""
+[ -n "$CMD" ] || { sed -n '2,42p' "$0"; exit 2; }
+DEST=""; ONLY=""; FULL=0
 case "$CMD" in
   fetch) DEST="${1:-}"; shift || true; [ -n "$DEST" ] || die "fetch needs a destination directory" ;;
 esac
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    --full) FULL=1; shift ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -50,7 +65,10 @@ command -v rclone >/dev/null 2>&1 || die "rclone not found (apt-get install rclo
 [ -z "${OFFSITE_CRYPT_SALT:-}" ] || [ "${#OFFSITE_CRYPT_SALT}" -ge 32 ] || die "OFFSITE_CRYPT_SALT must be at least 32 characters when set"
 KEEP_DAYS="${OFFSITE_KEEP_DAYS:-30}"
 case "$KEEP_DAYS" in *[!0-9]*|"") die "OFFSITE_KEEP_DAYS must be a whole number (got '$KEEP_DAYS')" ;; esac
-SRC="${BACKUP_DIR:-/var/backups/dukaanai}"
+HOURLY_KEEP_DAYS="${OFFSITE_HOURLY_KEEP_DAYS:-$KEEP_DAYS}"
+case "$HOURLY_KEEP_DAYS" in *[!0-9]*|"") die "OFFSITE_HOURLY_KEEP_DAYS must be a whole number (got '$HOURLY_KEEP_DAYS')" ;; esac
+SRC="${BACKUP_DIR:-/var/backups/dukaanai}"; SRC="${SRC%/}"
+STATE="$SRC/.offsite-confirmed"
 
 # The crypt remote "offsite" wraps OFFSITE_REMOTE; configured through the
 # environment only, so no rclone.conf holds the key. "local" is defined here
@@ -66,39 +84,67 @@ RCLONE_CONFIG_OFFSITE_PASSWORD="$(printf '%s' "$OFFSITE_CRYPT_PASSWORD" | rclone
 if [ -n "${OFFSITE_CRYPT_SALT:-}" ]; then
   RCLONE_CONFIG_OFFSITE_PASSWORD2="$(printf '%s' "$OFFSITE_CRYPT_SALT" | rclone obscure -)" || die "rclone obscure failed"; export RCLONE_CONFIG_OFFSITE_PASSWORD2
 fi
-# In-flight and temporary files, and dot directories (a local drill remote
-# placed under the backup directory, for instance), never leave the host.
-FILTERS=(--exclude '.*' --exclude '**/.*' --exclude '.*/**' --exclude '**/.*/**')
 RC=(rclone --transfers 4 --checkers 8 --stats 0 --retries 3 --low-level-retries 10)
+
+# Every local file a push ships, one "path<TAB>size<TAB>mtime" line each,
+# sorted. In-flight and temporary files and dot directories (a local drill
+# remote placed under the backup directory, for instance) never leave the
+# host, nor does a file older than its remote retention.
+shippable() {
+  local now cutoff=0 hourly_cutoff=0
+  now="$(date +%s)"
+  [ "$KEEP_DAYS" -eq 0 ] || cutoff=$((now - KEEP_DAYS * 86400))
+  [ "$HOURLY_KEEP_DAYS" -eq 0 ] || hourly_cutoff=$((now - HOURLY_KEEP_DAYS * 86400))
+  ( cd "$SRC" && find . -type f ! -path '*/.*' -printf '%P\t%s\t%T@\n' ) \
+    | awk -F '\t' -v c="$cutoff" -v h="$hourly_cutoff" '{ limit = ($1 ~ /^hourly\//) ? h : c; if ($3 >= limit) print }' \
+    | LC_ALL=C sort
+}
 
 case "$CMD" in
   push)
     [ -d "$SRC" ] || die "backup directory not found: $SRC (BACKUP_DIR)"
-    # One snapshot of what to ship (audit F11): the binary-log archiver and
-    # the backup jobs keep writing into SRC, and a file that appeared between
-    # the copy and the check failed every push. The copy and the check both
-    # work from this list. The status stamps are rewritten by every job at any
-    # moment: they are copied, but not part of the check.
-    list="$(mktemp)"; checklist="$(mktemp)"
-    trap 'rm -f "$list" "$checklist"' EXIT
-    ( cd "$SRC" && find . -type f ! -path '*/.*' -printf '%P\n' | LC_ALL=C sort ) > "$list"
-    grep -v '^status/' "$list" > "$checklist" || true
-    step "Off-site copy: $SRC -> $OFFSITE_REMOTE (encrypted, $(wc -l < "$list" | tr -d ' ') file(s))"
-    "${RC[@]}" copy "$SRC" offsite: --files-from-raw "$list" || die "rclone copy failed: nothing is confirmed off-site"
-    step "Verifying every shipped file against its encrypted copy (rclone cryptcheck)"
-    "${RC[@]}" cryptcheck "$SRC" offsite: --one-way --files-from-raw "$checklist" || die "the off-site copy does not match the local files"
+    # One snapshot of what to ship (audit F11): the backup jobs keep writing
+    # into SRC, and the copy and the check both work from this list.
+    current="$(mktemp)"; confirmed="$(mktemp)"; pending="$(mktemp)"; copylist="$(mktemp)"
+    trap 'rm -f "$current" "$confirmed" "$pending" "$copylist" "$STATE.tmp"' EXIT
+    shippable > "$current"
+    if [ "$FULL" = 0 ] && [ -f "$STATE" ]; then
+      LC_ALL=C sort -u "$STATE" | LC_ALL=C comm -12 - "$current" > "$confirmed"
+    fi
+    LC_ALL=C comm -23 "$current" "$confirmed" | grep -v '^status/' > "$pending" || true
+    { cut -f1 "$pending"; grep '^status/' "$current" | cut -f1 || true; } > "$copylist"
+    total="$(grep -vc '^status/' "$current" || true)"; n="$(wc -l < "$pending" | tr -d ' ')"
+    step "Off-site copy: $SRC -> $OFFSITE_REMOTE (encrypted): $n new of $total file(s)"
+    if [ -s "$copylist" ]; then
+      "${RC[@]}" copy "$SRC" offsite: --files-from-raw "$copylist" || die "rclone copy failed: nothing new is confirmed off-site"
+    fi
+    if [ "$n" -gt 0 ]; then
+      step "Verifying the $n new file(s) against their encrypted copies (rclone cryptcheck)"
+      cut -f1 "$pending" > "$copylist"
+      "${RC[@]}" cryptcheck "$SRC" offsite: --one-way --files-from-raw "$copylist" || die "the off-site copy does not match the local files"
+    fi
+    LC_ALL=C sort -u "$confirmed" "$pending" > "$STATE.tmp"
+    mv -f "$STATE.tmp" "$STATE"
     if [ "$KEEP_DAYS" -gt 0 ]; then
       step "Pruning off-site files older than $KEEP_DAYS days"
       "${RC[@]}" delete offsite: --min-age "${KEEP_DAYS}d" || die "pruning failed"
-      "${RC[@]}" rmdirs offsite: --leave-root >/dev/null 2>&1 || true
     fi
+    if [ -d "$SRC/hourly" ] && [ "$HOURLY_KEEP_DAYS" -gt 0 ] && { [ "$KEEP_DAYS" -eq 0 ] || [ "$HOURLY_KEEP_DAYS" -lt "$KEEP_DAYS" ]; }; then
+      step "Pruning off-site hourly dumps older than $HOURLY_KEEP_DAYS days"
+      "${RC[@]}" delete offsite:hourly --min-age "${HOURLY_KEEP_DAYS}d" || die "pruning the hourly dumps failed"
+    fi
+    "${RC[@]}" rmdirs offsite: --leave-root >/dev/null 2>&1 || true
     summary="$(rclone size offsite: 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
     record_success offsite "$OFFSITE_REMOTE $summary"
-    step "Off-site copy complete: $OFFSITE_REMOTE holds $summary"
+    step "Off-site copy complete: $n shipped and verified, $((total - n)) already confirmed; $OFFSITE_REMOTE holds $summary"
     ;;
   check)
-    step "Verifying $SRC against $OFFSITE_REMOTE (rclone cryptcheck)"
-    "${RC[@]}" cryptcheck "$SRC" offsite: --one-way "${FILTERS[@]}" || die "the off-site copy does not match the local files"
+    [ -d "$SRC" ] || die "backup directory not found: $SRC (BACKUP_DIR)"
+    list="$(mktemp)"
+    trap 'rm -f "$list"' EXIT
+    shippable | grep -v '^status/' | cut -f1 > "$list" || true
+    step "Verifying all $(wc -l < "$list" | tr -d ' ') file(s) of $SRC against $OFFSITE_REMOTE (rclone cryptcheck)"
+    "${RC[@]}" cryptcheck "$SRC" offsite: --one-way --files-from-raw "$list" || die "the off-site copy does not match the local files"
     step "Every local file has an identical encrypted copy off-site"
     ;;
   list)
@@ -115,5 +161,5 @@ case "$CMD" in
     n="$(find "$DEST" -type f | wc -l | tr -d ' ')"
     step "Fetched $n file(s) into $DEST; verify the .sha256 sidecars before restoring (sha256sum -c)"
     ;;
-  *) die "unknown command: $CMD (push | check | list | fetch DIR)" ;;
+  *) die "unknown command: $CMD (push [--full] | check | list | fetch DIR)" ;;
 esac

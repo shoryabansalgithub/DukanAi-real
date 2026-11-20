@@ -91,7 +91,11 @@ orchestrator.
 ## Images and promotion
 
 Roadmap 9.9: nothing is built on a server. `.github/workflows/release.yml`
-builds the three images once per commit on `main` and per `v*` tag, and
+builds the three images once per commit on `main` and per `v*` tag, for
+linux/amd64 and linux/arm64 (each on a native runner; every pushed tag is
+one multi-arch index, so an x86-64 host and an ARM server pull the
+same tag, and the `<tag>-amd64` / `<tag>-arm64` tags are build
+intermediates), and
 only after CI passed for that commit (it runs on the CI workflow's
 successful completion, never on the push itself; a manual run builds main's
 tip and checks CI's result for it first; audit R8). It pushes
@@ -99,7 +103,7 @@ tip and checks CI's result for it first; audit R8). It pushes
 commit as `sha-<7 hex>` and `main`, a version tag as `v<version>` ONLY (a tag
 build is its own build with the release in its labels; re-pushing
 `sha-<7>` from it would move a tag main's build had already published to
-other bits, audit R7). The job summary lists each image's digest; pin
+other bits, audit R7). The job summary lists each image's index digest; pin
 `<image>@sha256:<digest>` where a tag is not trusted to stay put
 (`docs/STAGING.md`, "Deploying by digest"). A deployment names
 the release with `IMAGE_TAG` (`IMAGE_REGISTRY` defaults to the owner's
@@ -177,17 +181,20 @@ bash scripts/certify/certify.sh --api ghcr.io/<owner>/dukaanai-api:v1.2.3 \
 
 Roadmap 9.14, in `.github/workflows/release.yml` and `.github/workflows/ci.yml`:
 
-- **Image vulnerabilities.** The release `images` job scans each built image
+- **Image vulnerabilities.** The release `images` job scans each built image,
+  on both architectures,
   with Trivy (`scripts/certify/trivy-scan.sh gate`, the binary pinned by
-  sha256 in that script, no third-party action) and refuses to push an image
+  sha256 in that script, the arm64 build of the same version pinned in the
+  workflow, no third-party action) and refuses to push an image
   that carries a HIGH or CRITICAL vulnerability *with a fix available*
   (`--ignore-unfixed`). The CI deploy job runs the same scanner against a
   pinned known-vulnerable image (`trivy-scan.sh control`) and fails if Trivy
   reports it clean, so the gate can never be a silent no-op.
 - **Bill of materials.** The release job writes a CycloneDX SBOM per image
-  (`trivy-scan.sh sbom`), uploads them as the workflow artifact
-  `sbom-<sha>`, and on a `v*` tag attaches `sbom-dukaanai-{api,web,db-ops}.cdx.json`
-  to the tag's release (`scripts/certify/attach-release.sh`).
+  and architecture (`trivy-scan.sh sbom`), uploads them as the workflow
+  artifacts `sbom-<tag>-amd64` and `sbom-<tag>-arm64`, and on a `v*` tag
+  attaches `sbom-dukaanai-{api,web,db-ops}-{amd64,arm64}.cdx.json` to the
+  tag's release (`scripts/certify/attach-release.sh`).
 - **Secrets.** gitleaks scans the tree and the whole history on every push
   (CI lint job, roadmap 9.11); a planted secret turns CI red. Its fixture
   allowlists match by rule AND file AND value, and the lint job's control
@@ -314,6 +321,8 @@ Web:
 | Variable | When | Notes |
 |---|---|---|
 | `API_PUBLIC_URL` | runtime; required behind an edge | the API as the browser reaches it (`https://<API_HOST>/api`), read by the web server at run time: the page gets it in `<meta name="dukaanai-api-url">`, the CSP `connect-src` names its origin. One image serves every environment |
+| `SITE_URL` | runtime | the public site's canonical origin (canonical links, `sitemap.xml`, robots.txt, Open Graph, `llms.txt`); the compose files default it to `WEB_ORIGIN`, the image alone to the Vercel address. A malformed value refuses to start |
+| `SITE_INDEXABLE` | runtime | `false` on staging: every public page answers noindex, robots.txt is `Disallow: /`, no sitemap or `llms.txt`. Blank is `true` (production); a Vercel preview (`VERCEL_ENV` other than `production`) is never indexed. Any other value refuses to start |
 | `NEXT_PUBLIC_API_URL` | build argument only | inlined into the server and browser bundles at build time, so setting it on a running container changes nothing; the fallback of a container started without `API_PUBLIC_URL` (release images are built without it) and the local default of `next dev` |
 | `API_INTERNAL_URL` | runtime, optional | the API as the web server reaches it (sign-in, refresh); defaults to the public URL |
 | `KEEP_ALIVE_TIMEOUT` | runtime, recommended | idle keep-alive of the Next server in ms; every compose file and the Kubernetes Deployment set `65000`, above the edge's 55 s and ingress-nginx's 60 s (Node's 5 s default made the proxy reuse closed connections: 502s) |
@@ -542,31 +551,33 @@ afterwards; `docker compose up -d --force-recreate` recreates them).
 
 ## MySQL versions
 
-MySQL 8.0 reached end of life in April 2026; managed providers move to 8.4
-LTS. What runs where (audit 2026-10-11, R17):
+MySQL 8.0 reached end of life in April 2026; the servers and the backup
+clients here run 8.4 LTS. What runs where (audit 2026-10-11, R17):
 
+- **The `db-ops` image** (`deploy/db-ops/Dockerfile`) is Oracle Linux 9
+  slim with the MySQL 8.4.11 client package (`mysql`, `mysqldump`,
+  `mysqlbinlog`) from the MySQL YUM repository, verified with the key the
+  official `mysql:8.4.11` image ships, and rclone pinned by checksum per
+  architecture. It builds for linux/amd64 and linux/arm64. The official
+  image is not used directly because its minimal server package has no
+  `mysqlbinlog`, and MySQL 8.4 has no official Debian image.
+- **The reference compose stack** (`docker-compose.yml`) runs MySQL
+  8.4.11, the same release as the clients. A reference stack whose `mysql-data` volume was
+  created by 8.0 is upgraded in place on the first 8.4 start; that is one
+  way (8.4 data cannot be opened by 8.0), so take a backup first
+  (`docs/BACKUP_RESTORE.md`).
+- **Point in time.** `mysqldump` 8.4 records the binary-log position with
+  `SHOW BINARY LOG STATUS`, the statement 8.4 kept when it removed `SHOW
+  MASTER STATUS`, so every dump of an 8.4 server carries its position.
+  A MySQL 8.0 server has no such statement: the `db-ops` dump of one fails
+  unless `BACKUP_COORDINATES=skip` (no position, so no point-in-time
+  replay). Upgrade a managed 8.0 server to 8.4 rather than run that way.
 - **CI** runs every integration suite on MySQL 8.0.46 and 8.4.11 (job
-  "Integration tests", a matrix); certify's `migrate-diff` step applies and
-  diffs the migrations on 8.0.46, 8.4.11 and MariaDB 10.11.19. A production
-  database on 8.4 is therefore tested.
-- **The reference compose stack and the drills** keep MySQL 8.0.46: the
-  `db-ops` image's clients are 8.0.
-- **The `db-ops` image** (`deploy/db-ops/Dockerfile`) is
-  `mysql:8.0.46-debian`, the last Debian build of the official image. MySQL
-  8.4 has no official Debian image (Oracle Linux only, whose minimal server
-  package is the one that lacked `mysqlbinlog` for 8.0), and the MySQL APT
-  repository could not be reached from where this was prepared, so the move
-  is planned rather than done: build the image on `debian:bookworm-slim`
-  with the MySQL 8.4 client packages from repo.mysql.com (pinned key and
-  version), prove `mysqldump`, `mysqlbinlog` and `mysql` 8.4 against 8.0
-  and 8.4 servers with `scripts/db/restore-drill.sh --pitr require`, then
-  switch the reference stack's server to 8.4 too.
-- **Until then, against an 8.4 server**, the 8.0 clients dump and restore,
-  but `mysqldump` 8.0 reads the binary-log position with `SHOW MASTER
-  STATUS`, which 8.4 removed: check that a backup prints its
-  `binary-log position` line, or run the agent with
-  `BACKUP_COORDINATES=skip` (point in time is the managed provider's in the
-  production topology).
+  "Integration tests", a matrix) and its backup and restore drills on
+  8.0.46 with the runner's own 8.0 clients; certify's `migrate-diff` step
+  applies and diffs the migrations on 8.0.46, 8.4.11 and MariaDB 10.11.19;
+  the production-variant smoke (`scripts/smoke-prod/external-services.yml`)
+  starts 8.4.11.
 
 ## The edge
 

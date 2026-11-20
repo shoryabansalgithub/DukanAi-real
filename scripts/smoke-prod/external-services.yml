@@ -1,13 +1,14 @@
 # The "managed" services the production compose variant is proven against
 # (scripts/compose-smoke-prod.sh, CI job "Deployment (compose smoke)"): a
-# throwaway MySQL 8 that accepts TLS connections only, with a server
-# certificate from a private CA the API has to verify (DATABASE_URL carries
+# throwaway MySQL 8.4, the release of the db-ops clients, that accepts TLS
+# connections only, with a server certificate from a private CA the API has
+# to verify (DATABASE_URL carries
 # ?sslaccept=strict&sslcert=/etc/dukaanai/db-ca.pem, DB_CA_FILE mounts the
 # CA), and a Redis. Layered over docker-compose.prod.yml for the smoke only;
 # never part of a deployment.
 services:
   dukaanai-ext-mysql:
-    image: mysql:8.0.46
+    image: mysql:8.4.11
     command:
       - --require_secure_transport=ON
       - --ssl-ca=/certs/ca.pem

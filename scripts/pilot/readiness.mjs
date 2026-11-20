@@ -105,6 +105,16 @@ if (forgot.status === 200) record('email', 'PASS', 'forgot-password answers 200:
 else if (forgot.status === 503) record('email', 'FAIL', 'forgot-password answers 503: SMTP_URL is not set, so invitations and reset links cannot be sent');
 else record('email', 'FAIL', `forgot-password answered ${answer(forgot)}`);
 
+// ---- the privacy notice and terms -----------------------------------------
+// A public site that takes sign-ups needs both
+// (published once LEGAL_OPERATOR_NAME and LEGAL_CONTACT_EMAIL are set).
+{
+  const privacy = await call('GET', `${WEB}/privacy`);
+  const terms = await call('GET', `${WEB}/terms`);
+  if (privacy.status === 200 && terms.status === 200) record('legal-pages', 'PASS', '/privacy and /terms are published');
+  else record('legal-pages', 'FAIL', `GET /privacy -> ${answer(privacy)}, GET /terms -> ${answer(terms)}: set LEGAL_OPERATOR_NAME and LEGAL_CONTACT_EMAIL on the web (apps/web/.env.example)`);
+}
+
 // ---- the scrape endpoint must not be public (roadmap 9.8) ---------------------
 const metrics = await call('GET', `${API}/api/metrics`);
 if (metrics.status === 404 || metrics.status === 401) record('metrics-hidden', 'PASS', `GET /api/metrics from outside -> ${answer(metrics)}`);

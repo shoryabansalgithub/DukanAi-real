@@ -35,8 +35,11 @@ include:
 services:
   mysql:
     # Pinned to a patch release (Dependabot proposes the next one): the same
-    # server line as the db-ops clients (deploy/db-ops/Dockerfile).
-    image: mysql:8.0.46
+    # 8.4 LTS release as the db-ops clients (MYSQL_VERSION in
+    # deploy/db-ops/Dockerfile). An existing 8.0 data volume is upgraded in
+    # place on first start and cannot go back to 8.0 (docs/DEPLOYMENT.md,
+    # "MySQL versions").
+    image: mysql:8.4.11
     # Migrations create the ledger immutability triggers; with binary logging on
     # (MySQL 8 default) a non-SUPER user may only do so with this flag. The
     # binary log is what restore.sh --to rolls a dump forward with (roadmap
@@ -193,6 +196,21 @@ services:
       # inlines it into the server and browser bundles at build time, so a
       # value here would change nothing (audit R14).
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:3002/api}
+      # The public address of the marketing site (canonical URLs, sitemap.xml,
+      # robots.txt, Open Graph, llms.txt), read at run time; unset, the image
+      # would publish the Vercel address.
+      SITE_URL: ${SITE_URL:-${WEB_ORIGIN:-http://localhost:3000}}
+      # false keeps search engines out (staging): noindex pages, robots.txt
+      # Disallow: /, no sitemap or llms.txt.
+      SITE_INDEXABLE: ${SITE_INDEXABLE:-true}
+      # Who runs the service: publishes /privacy and /terms (apps/web/.env.example).
+      LEGAL_OPERATOR_NAME: ${LEGAL_OPERATOR_NAME:-}
+      LEGAL_CONTACT_EMAIL: ${LEGAL_CONTACT_EMAIL:-}
+      LEGAL_ADDRESS: ${LEGAL_ADDRESS:-}
+      LEGAL_GRIEVANCE_OFFICER: ${LEGAL_GRIEVANCE_OFFICER:-}
+      LEGAL_CONTACT_PHONE: ${LEGAL_CONTACT_PHONE:-}
+      LEGAL_JURISDICTION: ${LEGAL_JURISDICTION:-}
+      LEGAL_DATA_LOCATION: ${LEGAL_DATA_LOCATION:-}
       # Sign-in and token refresh go to the API over the compose network.
       API_INTERNAL_URL: http://api:3002/api
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

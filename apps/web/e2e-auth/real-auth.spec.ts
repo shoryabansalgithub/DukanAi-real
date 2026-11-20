@@ -47,7 +47,9 @@ async function signIn(page: Page, email: string, password: string): Promise<void
 }
 
 async function signOut(page: Page): Promise<void> {
-  await page.getByTitle('Sign out').click();
+  // Sign out lives in the profile popup the top bar's name and avatar open.
+  await page.getByRole('button', { name: /, account$/ }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Sign out' }).click();
   await page.waitForURL('**/login**');
   // The URL changes before NextAuth has finished clearing the session: wait until the session endpoint is empty,
   // or the next protected navigation can still carry the old cookie.
@@ -85,6 +87,38 @@ test.describe('real sign-in (6.9)', () => {
     await page.locator('form button[type="submit"]').click();
     await page.waitForURL('**/products');
     await expect(page.getByRole('heading', { name: 'Products & Stock' })).toBeVisible();
+  });
+
+  test('a sign-in whose CSRF token the server refuses is tried again, and never reported as signed in', async ({ page }) => {
+    // On a first visit concurrent /api/auth answers can replace the CSRF cookie the token came from; NextAuth then
+    // refuses the sign-in with `?csrf=true` and no error, which the pages used to treat as success.
+    const bogus = () => ({ status: 200, contentType: 'application/json', body: JSON.stringify({ csrfToken: 'not-the-cookie-token' }) });
+    const posts: number[] = [];
+    page.on('response', (res) => {
+      if (res.url().includes('/api/auth/callback/credentials')) posts.push(res.status());
+    });
+
+    // Registration: the first token is refused, the second sign-in goes through.
+    let refusals = 1;
+    await page.route('**/api/auth/csrf', (route) => (refusals-- > 0 ? route.fulfill(bogus()) : route.fallback()));
+    const owner = await registerOwner(page);
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+    expect(posts).toHaveLength(2);
+    await signOut(page);
+
+    // Login: every token refused. The form says so and stays on /login without a session.
+    await page.unroute('**/api/auth/csrf');
+    await page.route('**/api/auth/csrf', (route) => route.fulfill(bogus()));
+    posts.length = 0;
+    await signIn(page, owner.email, PASSWORD);
+    await expect(page.getByRole('alert').getByText('Could not complete sign-in', { exact: false })).toBeVisible();
+    expect(posts).toHaveLength(3);
+    expect(new URL(page.url()).pathname).toBe('/login');
+    expect(await page.evaluate(() => fetch('/api/auth/session').then((r) => r.json()).then((s) => Boolean(s && s.user)))).toBe(false);
+
+    await page.unroute('**/api/auth/csrf');
+    await page.locator('form button[type="submit"]').click();
+    await page.waitForURL('**/dashboard');
   });
 
   test('every repaired page renders under a real session', async ({ page }) => {

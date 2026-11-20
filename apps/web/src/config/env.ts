@@ -1,13 +1,16 @@
 import { z } from 'zod';
 
 const DEFAULT_API_URL = 'http://localhost:3002/api';
-const apiUrlSchema = z.string().url();
+const apiUrlSchema = z.url();
 
 /** The `<meta>` the root layout renders so the browser learns the API URL at request time. */
 export const API_URL_META_NAME = 'dukaanai-api-url';
 
 /** The `<meta>` the root layout renders so the browser learns whether this server offers Google sign-in. */
 export const GOOGLE_SIGNIN_META_NAME = 'dukaanai-google-signin';
+
+/** The `<meta>` the root layout renders so the browser learns whether /privacy and /terms are published. */
+export const LEGAL_PAGES_META_NAME = 'dukaanai-legal-pages';
 
 let resolvedApiUrl: string | undefined;
 
@@ -71,6 +74,19 @@ export function googleSignInEnabled(): boolean {
 }
 
 /**
+ * Whether the privacy notice and the terms are published (the deployment
+ * names its operator and contact, `src/marketing/legal.ts`), so the sign-up
+ * form can link them. Decided at run time like Google sign-in: the server
+ * reads the environment, the browser the `<meta>` the root layout renders.
+ */
+export function legalPagesPublished(): boolean {
+  if (typeof window === 'undefined') {
+    return Boolean(process.env.LEGAL_OPERATOR_NAME?.trim() && process.env.LEGAL_CONTACT_EMAIL?.trim());
+  }
+  return document.querySelector<HTMLMetaElement>(`meta[name="${LEGAL_PAGES_META_NAME}"]`)?.content === 'on';
+}
+
+/**
  * A production server must run with a real NEXTAUTH_SECRET: set, at least 32
  * characters and not a template placeholder. `next build` runs with
  * NODE_ENV=production too but cannot know the runtime secret, so the rule is
@@ -82,14 +98,14 @@ const enforceProductionSecret =
 const serverSchema = z
   .object({
     NEXTAUTH_SECRET: z.string().min(32, 'NEXTAUTH_SECRET must be at least 32 characters').optional(),
-    NEXTAUTH_URL: z.string().url().default('http://localhost:3000'),
+    NEXTAUTH_URL: z.url().default('http://localhost:3000'),
     /**
      * Where THIS server reaches the API (sign-in, token refresh). Unset, the
      * public NEXT_PUBLIC_API_URL is used. In Docker the browser reaches the
      * API through a published port while the web container reaches it on the
      * compose network (http://api:3002/api), so the two differ (roadmap 7.3).
      */
-    API_INTERNAL_URL: z.string().url().optional(),
+    API_INTERNAL_URL: z.url().optional(),
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -99,9 +115,9 @@ const serverSchema = z
   .superRefine((env, ctx) => {
     if (!enforceProductionSecret) return;
     if (!env.NEXTAUTH_SECRET) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['NEXTAUTH_SECRET'], message: 'NEXTAUTH_SECRET must be set in production' });
+      ctx.addIssue({ code: 'custom', path: ['NEXTAUTH_SECRET'], message: 'NEXTAUTH_SECRET must be set in production' });
     } else if (PLACEHOLDER.test(env.NEXTAUTH_SECRET)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['NEXTAUTH_SECRET'], message: 'NEXTAUTH_SECRET is a template placeholder; production needs a real secret' });
+      ctx.addIssue({ code: 'custom', path: ['NEXTAUTH_SECRET'], message: 'NEXTAUTH_SECRET is a template placeholder; production needs a real secret' });
     }
   });
 
