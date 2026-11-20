@@ -1,0 +1,199 @@
+# Azure target: one Standard_B2pts_v2 VM (Arm64, 2 vCPU, 1 GiB RAM, a 2 GiB
+# swap file, Ubuntu 24.04) runs the edge, web, API, Redis and the backup
+# agent; the database is Azure Database for MySQL Flexible Server (B1ms,
+# MySQL 8.4) on the VM's virtual network, over verified TLS. An overlay on
+# the production file, never used alone:
+#
+#   COMPOSE_FILE=docker-compose.prod.yml:deploy/azure/compose.yml
+#   deploy/azure/stack.sh up      # the deploy steps, in order (reads /etc/dukaanai/dukaanai.env)
+#
+# Paths are relative to the project directory (the repository root, where
+# the first file lives), as in every file of a compose list.
+#
+# What it adds to docker-compose.prod.yml:
+#   - redis on a private `cache` network only the API joins; its password
+#     reaches redis-server on stdin, never as an argument. No published port:
+#     the edge's 80/443 stay the only ones.
+#   - a memory budget for 1 GiB: mem_limit / memswap_limit per service and
+#     Node heap caps (deploy/azure/e2e.sh measures them under load). The
+#     monitoring stack (profile ops) is never started on this VM: stack.sh
+#     refuses COMPOSE_PROFILES with ops, and uptime is watched from outside.
+#   - backups: the backup agent dumps hourly into /backups/hourly (keep 48)
+#     and runs the nightly dump + documents archive (keep 14), each followed
+#     by an incremental, encrypted push to Backblaze B2 through its S3 API.
+#     Point in time is Azure's automated backup (7 days). The dumps record
+#     no binary-log position (BACKUP_COORDINATES=skip): no binary log is
+#     archived here to roll one forward, and skipping it spares the server
+#     the global read lock that pins the position.
+#   - db-init (profile init): the server admin creates the application and
+#     backup users (deploy/azure/db-init.sh), run by stack.sh before migrate.
+#   - drill (profile drill): the restore drills as the admin
+#     (deploy/azure/drill.Dockerfile, stack.sh drill).
+#
+# DB_CA_FILE is the Azure root bundle (deploy/azure/azure-mysql-ca.pem,
+# installed at /etc/dukaanai/db-ca.pem by deploy/azure/bootstrap.sh).
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+x-db-ca: &db-ca ${DB_CA_FILE:-/dev/null}:/etc/dukaanai/db-ca.pem:ro
+
+# Backblaze B2 as the remote "b2" of OFFSITE_REMOTE=b2:<bucket>/<path>,
+# through B2's S3-compatible API: TYPE s3, PROVIDER Other, ENDPOINT
+# https://s3.<region>.backblazeb2.com, the application key's keyID and key,
+# NO_CHECK_BUCKET true (a bucket-scoped key may not list buckets). ACCOUNT /
+# KEY are rclone's native b2 backend (TYPE b2), passed too.
+x-rclone-b2: &rclone-b2
+  RCLONE_CONFIG_B2_TYPE: ${RCLONE_CONFIG_B2_TYPE:-}
+  RCLONE_CONFIG_B2_PROVIDER: ${RCLONE_CONFIG_B2_PROVIDER:-}
+  RCLONE_CONFIG_B2_ENDPOINT: ${RCLONE_CONFIG_B2_ENDPOINT:-}
+  RCLONE_CONFIG_B2_REGION: ${RCLONE_CONFIG_B2_REGION:-}
+  RCLONE_CONFIG_B2_NO_CHECK_BUCKET: ${RCLONE_CONFIG_B2_NO_CHECK_BUCKET:-}
+  RCLONE_CONFIG_B2_ACCESS_KEY_ID: ${RCLONE_CONFIG_B2_ACCESS_KEY_ID:-}
+  RCLONE_CONFIG_B2_SECRET_ACCESS_KEY: ${RCLONE_CONFIG_B2_SECRET_ACCESS_KEY:-}
+  RCLONE_CONFIG_B2_ACCOUNT: ${RCLONE_CONFIG_B2_ACCOUNT:-}
+  RCLONE_CONFIG_B2_KEY: ${RCLONE_CONFIG_B2_KEY:-}
+
+services:
+  redis:
+    image: redis:7.4.11-alpine
+    # AOF so queued jobs and outbox claims survive a restart; noeviction
+    # because an evicted BullMQ lock or job is lost work (docker-compose.yml).
+    # The cap refuses a runaway queue before it takes the VM.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        exec docker-entrypoint.sh redis-server - --appendonly yes --maxmemory 48mb --maxmemory-policy noeviction <<EOF
+        requirepass $$REDISCLI_AUTH
+        EOF
+    environment:
+      # redis-cli (the healthcheck, an operator's `exec redis redis-cli`) authenticates with it.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?Set REDIS_PASSWORD (openssl rand -hex 32)}
+    volumes:
+      - redis-data:/data
+    networks: [cache]
+    healthcheck:
+      test: ["CMD-SHELL", "[ \"$$(redis-cli ping)\" = PONG ]"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 96m
+    memswap_limit: 192m
+    logging: *logging
+    restart: unless-stopped
+
+  migrate:
+    mem_limit: 384m
+    memswap_limit: 1g
+
+  api:
+    networks: [default, cache]
+    environment:
+      NODE_OPTIONS: --max-old-space-size=224
+    depends_on:
+      redis:
+        condition: service_healthy
+    mem_limit: 384m
+    memswap_limit: 1g
+    # The last process the kernel picks when memory runs out.
+    oom_score_adj: -500
+
+  web:
+    environment:
+      NODE_OPTIONS: --max-old-space-size=128
+    mem_limit: 256m
+    memswap_limit: 640m
+    oom_score_adj: -300
+
+  edge:
+    mem_limit: 64m
+    memswap_limit: 128m
+    oom_score_adj: -500
+
+  backup-agent:
+    environment:
+      <<: *rclone-b2
+      BACKUP_COORDINATES: skip
+      BACKUP_LOOP_HOURLY_SECONDS: ${BACKUP_LOOP_HOURLY_SECONDS:-3600}
+      BACKUP_HOURLY_KEEP: ${BACKUP_HOURLY_KEEP:-48}
+      OFFSITE_HOURLY_KEEP_DAYS: ${OFFSITE_HOURLY_KEEP_DAYS:-3}
+    mem_limit: 256m
+    memswap_limit: 768m
+    # A backup that runs out of memory is killed before the shop's API.
+    oom_score_adj: 500
+
+  db-ops:
+    environment:
+      <<: *rclone-b2
+      BACKUP_COORDINATES: skip
+      OFFSITE_HOURLY_KEEP_DAYS: ${OFFSITE_HOURLY_KEEP_DAYS:-3}
+    mem_limit: 256m
+    memswap_limit: 768m
+    oom_score_adj: 500
+
+  backup-volume-init:
+    network_mode: none
+
+  db-init:
+    image: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
+    profiles: ["init"]
+    user: "1000:1000"
+    entrypoint: ["bash", "/azure/db-init.sh"]
+    environment:
+      HOME: /tmp
+      AZURE_MYSQL_HOST: ${AZURE_MYSQL_HOST:-}
+      AZURE_MYSQL_ADMIN_USER: ${AZURE_MYSQL_ADMIN_USER:-}
+      AZURE_MYSQL_ADMIN_PASSWORD: ${AZURE_MYSQL_ADMIN_PASSWORD:-}
+      APP_DATABASE_URL: ${DATABASE_URL:-}
+      BACKUP_DATABASE_URL: ${DB_OPS_DATABASE_URL:-}
+    volumes:
+      - ./deploy/azure/db-init.sh:/azure/db-init.sh:ro
+      - *db-ca
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    restart: "no"
+
+  # The three restore drills (deploy/azure/stack.sh drill): the db-ops
+  # clients plus Node and the API's dependencies (prisma, the reconcile
+  # command), built on the host from the checkout on first use. As the admin:
+  # the drills create and drop scratch databases.
+  drill:
+    build:
+      context: .
+      dockerfile: deploy/azure/drill.Dockerfile
+      args:
+        DB_OPS_IMAGE: ${IMAGE_REGISTRY:-ghcr.io/shoryabansalgithub}/dukaanai-db-ops:${IMAGE_TAG:?}
+    image: dukaanai-drill:${IMAGE_TAG:?}
+    profiles: ["drill"]
+    user: "1000:1000"
+    environment:
+      <<: *rclone-b2
+      HOME: /tmp
+      AZURE_MYSQL_HOST: ${AZURE_MYSQL_HOST:-}
+      AZURE_MYSQL_ADMIN_USER: ${AZURE_MYSQL_ADMIN_USER:-}
+      AZURE_MYSQL_ADMIN_PASSWORD: ${AZURE_MYSQL_ADMIN_PASSWORD:-}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-dukaanai}
+      BACKUP_COORDINATES: skip
+      STORAGE_ROOT: /data/storage
+      MEDIA_DIR: /data/uploads/media
+      OFFSITE_CRYPT_PASSWORD: ${OFFSITE_CRYPT_PASSWORD:-}
+      OFFSITE_CRYPT_SALT: ${OFFSITE_CRYPT_SALT:-}
+    volumes:
+      - ${STORAGE_PATH:-api-storage}:/data/storage:ro
+      - ${UPLOADS_PATH:-api-uploads}:/data/uploads:ro
+      - *db-ca
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    restart: "no"
+
+networks:
+  # No route out and only Redis and the API on it.
+  cache:
+    internal: true
+
+volumes:
+  redis-data:

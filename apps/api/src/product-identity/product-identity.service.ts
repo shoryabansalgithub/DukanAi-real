@@ -4,6 +4,8 @@ import { Gs1EngineService } from './gs1-engine.service';
 import { BarcodeGeneratorService } from './barcode-generator.service';
 import { IdentityAuditService } from './identity-audit.service';
 import { BarcodeFormat, BarcodeStatus } from '@prisma/client';
+import { assertOwned } from '../prisma/tenant-ownership';
+import { rethrowUniqueViolation } from '../common/db/unique-violation';
 
 @Injectable()
 export class ProductIdentityService {
@@ -35,6 +37,11 @@ export class ProductIdentityService {
       }
     }
 
+    // The identified product / variant / package must belong to the shop (roadmap 4.1).
+    await assertOwned(this.prisma, 'product', productId, shopId, { isDeleted: false });
+    await assertOwned(this.prisma, 'productVariant', variantId, shopId, { isDeleted: false });
+    await assertOwned(this.prisma, 'packageIdentity', packageId, shopId);
+
     // Check uniqueness within the shop
     const existing = await this.prisma.barcode.findUnique({
       where: { shopId_code: { shopId, code } },
@@ -52,19 +59,24 @@ export class ProductIdentityService {
       await this.ensureVariantIdentityExists(shopId, variantId);
     }
 
-    // Create the barcode
-    const barcode = await this.prisma.barcode.create({
-      data: {
-        shopId,
-        code,
-        format,
-        status: BarcodeStatus.ACTIVE,
-        productId,
-        variantId,
-        packageId,
-        isPrimary: true, // simplified logic, in reality we'd toggle old ones
-      },
-    });
+    // Create the barcode; the (shopId, code) index decides under concurrency.
+    let barcode;
+    try {
+      barcode = await this.prisma.barcode.create({
+        data: {
+          shopId,
+          code,
+          format,
+          status: BarcodeStatus.ACTIVE,
+          productId,
+          variantId,
+          packageId,
+          isPrimary: true, // simplified logic, in reality we'd toggle old ones
+        },
+      });
+    } catch (error) {
+      rethrowUniqueViolation(error, [{ index: 'Barcode_shopId_code', code: 'BARCODE_IN_USE', message: `Barcode ${code} already exists in this organization` }]);
+    }
 
     // Record audit history for the creation
     await this.identityAudit.recordBarcodeChange(
@@ -80,7 +92,7 @@ export class ProductIdentityService {
   }
 
   private async ensureProductIdentityExists(shopId: string, productId: string) {
-    const exists = await this.prisma.productIdentity.findUnique({ where: { productId } });
+    const exists = await this.prisma.productIdentity.findFirst({ where: { productId, shopId } });
     if (!exists) {
       await this.prisma.productIdentity.create({
         data: { shopId, productId },
@@ -89,13 +101,18 @@ export class ProductIdentityService {
   }
 
   private async ensureVariantIdentityExists(shopId: string, variantId: string) {
-    const exists = await this.prisma.variantIdentity.findUnique({ where: { variantId } });
+    const exists = await this.prisma.variantIdentity.findFirst({ where: { variantId, shopId } });
     if (!exists) {
-      const variant = await this.prisma.productVariant.findUnique({ where: { id: variantId } });
+      const variant = await this.prisma.productVariant.findFirst({ where: { id: variantId, shopId } });
       if (!variant) throw new NotFoundException('Variant not found');
-      await this.prisma.variantIdentity.create({
-        data: { shopId, variantId, sku: variant.sku },
-      });
+      try {
+        await this.prisma.variantIdentity.create({
+          data: { shopId, variantId, sku: variant.sku },
+        });
+      } catch (error) {
+        // SKU identities are unique per shop (roadmap 4.1); a clash is another live variant of this shop.
+        rethrowUniqueViolation(error, [{ index: 'VariantIdentity_shopId_sku', code: 'SKU_IDENTITY_IN_USE', message: `SKU ${variant.sku} already carries an identity in this shop` }]);
+      }
     }
   }
 
@@ -117,7 +134,7 @@ export class ProductIdentityService {
 
     // 2. Exact SKU Match (Variant)
     const exactSku = await this.prisma.variantIdentity.findUnique({
-      where: { sku: query, shopId },
+      where: { shopId_sku: { shopId, sku: query } },
       include: { variant: { include: { product: true } } },
     });
 

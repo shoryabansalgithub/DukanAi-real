@@ -1,17 +1,14 @@
-import { Controller, Post, Body, UseGuards, Request, Delete, Get, Patch } from '@nestjs/common';
+import { Controller, Post, Body, Request, Delete, Get, Patch } from '@nestjs/common';
 import { ShopsService } from './shops.service';
 import { TransferOwnershipDto } from './dto/transfer-ownership.dto';
 import { CurrentShop } from '../iam/decorators/current-shop.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { Role } from '@prisma/client';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { TenantGuard } from '../iam/guards/tenant.guard';
-import { RolesGuard } from '../auth/roles.guard';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { UpdateShopProfileDto } from './dto/update-shop-profile.dto';
 
 @ApiTags('shops')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, TenantGuard, RolesGuard)
 @Controller('shops')
 export class ShopsController {
   constructor(private readonly shopsService: ShopsService) {}
@@ -27,9 +24,9 @@ export class ShopsController {
   @ApiOperation({ summary: 'Update the current shop profile' })
   updateMyShop(
     @CurrentShop() shopId: string,
-    @Body() body: { name?: string; address?: string; city?: string; state?: string; pincode?: string; phone?: string; email?: string; gstin?: string },
+    @Body() dto: UpdateShopProfileDto,
   ) {
-    return this.shopsService.updateShopProfile(shopId, body);
+    return this.shopsService.updateShopProfile(shopId, dto);
   }
 
   @Post('transfer-ownership')

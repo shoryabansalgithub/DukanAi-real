@@ -1,10 +1,14 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { assertOwned, assertOwnedMany } from '../prisma/tenant-ownership';
 import { ValidationPipeline } from './validation-pipeline';
 import { QualityScoreEngine } from './quality-score.engine';
 import { DuplicateDetectionEngine } from './duplicate-detection.engine';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { MAX_LIST_TAKE } from '../common/pagination';
+import { enqueueWithin } from '../common/queues/enqueue';
+import { BullConfig } from '../config/domains/bull.config';
 
 @Injectable()
 export class ProductValidationService {
@@ -16,13 +20,25 @@ export class ProductValidationService {
     private readonly qualityEngine: QualityScoreEngine,
     private readonly duplicateEngine: DuplicateDetectionEngine,
     @InjectQueue('product-validation') private readonly validationQueue: Queue,
+    private readonly bullConfig: BullConfig,
   ) {}
 
   /**
    * Dispatches validation job to background (used heavily in imports/syncs).
+   * Bounded (audit R5): 503 QUEUE_UNAVAILABLE when Redis does not take it in
+   * time. A late add is harmless: validating a product again rewrites the same
+   * score and issues.
    */
   async queueValidation(shopId: string, productId: string) {
-    await this.validationQueue.add('validate-product', { shopId, productId });
+    await enqueueWithin(this.validationQueue, 'validate-product', { shopId, productId }, undefined, this.bullConfig.enqueueTimeoutMs);
+  }
+
+  /** Queues the shop's own products only; ids of other shops (or deleted products) are refused with 404. */
+  async queueValidationMany(shopId: string, productIds: string[]): Promise<number> {
+    const ids = [...new Set(productIds)];
+    await assertOwnedMany(this.prisma, 'product', ids, shopId, { isDeleted: false });
+    for (const productId of ids) await this.queueValidation(shopId, productId);
+    return ids.length;
   }
 
   /**
@@ -42,8 +58,10 @@ export class ProductValidationService {
     // 1. Calculate Quality Score
     const quality = this.qualityEngine.calculateScore({ product });
     
+    // Every state row is written and read by shop (roadmap 4.1): the tenant
+    // extension scopes the HTTP path, but the worker path must be explicit too.
     await this.prisma.productQualityScore.upsert({
-      where: { productId },
+      where: { productId, shopId },
       update: {
         score: quality.score,
         missingFields: JSON.stringify(quality.missingFields),
@@ -63,7 +81,7 @@ export class ProductValidationService {
     const result = await this.pipeline.execute(shopId, product);
 
     // Persist issues
-    await this.prisma.productValidationIssue.deleteMany({ where: { productId } });
+    await this.prisma.productValidationIssue.deleteMany({ where: { productId, shopId } });
     if (result.issues.length > 0) {
       await this.prisma.productValidationIssue.createMany({
         data: result.issues.map(issue => ({
@@ -90,10 +108,14 @@ export class ProductValidationService {
   }
 
   async getValidationState(shopId: string, productId: string) {
-    const score = await this.prisma.productQualityScore.findUnique({ where: { productId } });
-    const issues = await this.prisma.productValidationIssue.findMany({ where: { productId } });
-    const duplicates = await this.prisma.duplicateCandidate.findMany({ 
-      where: { sourceId: productId } 
+    await assertOwned(this.prisma, 'product', productId, shopId);
+    const score = await this.prisma.productQualityScore.findFirst({ where: { productId, shopId } });
+    // Issues are bounded by the rule set; duplicate candidates grow with the catalogue, so they are capped (roadmap 5.6).
+    const issues = await this.prisma.productValidationIssue.findMany({ where: { productId, shopId }, take: MAX_LIST_TAKE });
+    const duplicates = await this.prisma.duplicateCandidate.findMany({
+      where: { shopId, sourceId: productId },
+      orderBy: [{ score: 'desc' }, { id: 'asc' }],
+      take: MAX_LIST_TAKE,
     });
 
     return {

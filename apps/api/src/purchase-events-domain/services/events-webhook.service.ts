@@ -14,8 +14,11 @@ export class EventsWebhookService {
 
   /**
    * Routes an event from the Outbox to external webhooks securely via the enterprise delivery queue.
+   * `attempt` is the outbox row's retryCount: an event that is relayed again
+   * (a retry, an operator's retry of a FAILED row) gets fresh job ids, so it is
+   * not swallowed by a job BullMQ still retains for the earlier attempt (audit R7).
    */
-  async dispatchWebhooksForEvent(shopId: string, outboxEventId: string, type: string, payload: any) {
+  async dispatchWebhooksForEvent(shopId: string, outboxEventId: string, type: string, payload: any, attempt = 0) {
     const endpoints = await this.prisma.webhookEndpoint.findMany({
       where: { shopId, isActive: true }
     });
@@ -30,10 +33,11 @@ export class EventsWebhookService {
           data: {
             endpointId: endpoint.id,
             eventId: outboxEventId,
-            payload
+            payload,
+            shopId,
           },
           opts: {
-            jobId: `webhook-${endpoint.id}-${outboxEventId}`
+            jobId: `webhook-${endpoint.id}-${outboxEventId}-${attempt}`
           }
         });
       }

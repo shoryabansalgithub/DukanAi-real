@@ -31,13 +31,13 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
         }`}>
           <AlertTriangle size={24} />
         </div>
-        <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">{title}</h3>
-        <p className="text-gray-600 dark:text-gray-400 mb-6">{message}</p>
+        <h3 className="text-lg font-bold text-gray-900 mb-2">{title}</h3>
+        <p className="text-gray-600 mb-6">{message}</p>
         
         <div className="flex gap-3 w-full">
           <button
             onClick={onCancel}
-            className="flex-1 py-2.5 px-4 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 font-medium hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            className="flex-1 py-2.5 px-4 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition-colors"
           >
             Cancel
           </button>

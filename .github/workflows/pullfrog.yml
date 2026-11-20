@@ -1,0 +1,50 @@
+# Pullfrog agent workflow (manual dispatch only). Hardened in roadmap 7.4:
+# pinned actions, least-privilege permissions, one provider's secrets.
+name: Pullfrog
+run-name: ${{ inputs.name || github.workflow }}
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        type: string
+        description: Agent prompt
+      name:
+        type: string
+        description: Run name
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pullfrog-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  pullfrog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Least privilege (roadmap 7.4): the agent authenticates to Pullfrog with
+    # the OIDC token and acts on the repository through Pullfrog's GitHub App,
+    # so the job itself only reads the checkout. Every action is pinned to a
+    # commit (Dependabot bumps the pin and the version comment).
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Run agent
+        uses: pullfrog/pullfrog@ed800018463e1b84e8e3377f662173aed1da98b0 # v0.1.95
+        with:
+          prompt: ${{ inputs.prompt }}
+        env:
+          # Only the provider this project uses (roadmap 7.4). Another provider
+          # (OpenAI, Gemini, Bedrock, Vertex, Azure, an OpenAI-compatible
+          # endpoint) is added here together with its repository secret; see
+          # https://docs.pullfrog.com for the variable names. Every other
+          # repository secret stays out of this job's environment.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

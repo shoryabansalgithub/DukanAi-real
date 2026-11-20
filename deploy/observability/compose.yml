@@ -1,0 +1,166 @@
+# The monitoring stack (roadmap 7.6, 9.10), included by docker-compose.yml
+# and docker-compose.prod.yml under profile "ops":
+#
+#   docker compose --profile ops up -d prometheus alertmanager blackbox loki alloy grafana
+#   (or `docker compose -f docker-compose.prod.yml --profile ops up -d ...` on a server)
+#
+#   prometheus    scrapes the API (api:3002), runs deploy/prometheus/alerts.yml,
+#                 sends firing alerts to alertmanager      -> http://127.0.0.1:9090
+#   alertmanager  routes by severity to email / Slack / PagerDuty from the
+#                 ALERT_* variables (deploy/alertmanager)   -> http://127.0.0.1:9093
+#   blackbox      HTTP probes of the readiness route and the login page
+#   loki          the log store (31 days)                    -> http://127.0.0.1:3100
+#   alloy         ships every container's stdout to Loki through the Docker socket
+#   grafana       the dashboards (deploy/grafana/dashboards) -> http://127.0.0.1:3001
+#                 admin / GRAFANA_ADMIN_PASSWORD (required by the production
+#                 file, deploy/observability/compose.prod.yml)
+#
+# None of these publish anything a customer uses, and none has a login of
+# its own except Grafana (Alertmanager silences alerts, the blackbox exporter
+# fetches any URL it is given, Loki answers every query). Every port is
+# therefore published on 127.0.0.1 only (audit 2026-10-11, P1-15): Docker
+# writes its own iptables rules for a published port, ahead of ufw and
+# firewalld, so a host firewall does NOT protect a port published on
+# 0.0.0.0. Reach them through an SSH tunnel (docs/DEPLOYMENT.md,
+# "Monitoring access"):
+#   ssh -N -L 3001:127.0.0.1:3001 -L 9090:127.0.0.1:9090 -L 9093:127.0.0.1:9093 ops@<host>
+# PROMETHEUS_BIND / ALERTMANAGER_BIND / BLACKBOX_BIND / LOKI_BIND /
+# GRAFANA_BIND move one to another address (a private interface the
+# operators' network reaches), never 0.0.0.0 on a host with a public address.
+#
+# The services carry no depends_on on the application: Prometheus records a
+# scrape failure (DukaanAiApiDown) rather than refusing to start. Logs rotate
+# (json-file, 5 x 10 MB per container, audit R13).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["ops"]
+    # render.sh writes the scrape token, the public probe targets and the
+    # topology's backup kinds from the environment into the tmpfs, then
+    # execs Prometheus (deploy/prometheus/prometheus.yml header).
+    entrypoint: ["/bin/sh", "/etc/prometheus/render.sh", "--exec"]
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      PROMETHEUS_TOPOLOGY: ${PROMETHEUS_TOPOLOGY:-reference}
+      PROMETHEUS_PUBLIC_API_URL: ${PROMETHEUS_PUBLIC_API_URL:-}
+      PROMETHEUS_PUBLIC_WEB_URL: ${PROMETHEUS_PUBLIC_WEB_URL:-}
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    tmpfs:
+      - /run/dukaanai-prometheus
+    ports:
+      - "${PROMETHEUS_BIND:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
+    logging: *logging
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    profiles: ["ops"]
+    # render.sh writes the config and the secret files from ALERT_*, then execs Alertmanager.
+    entrypoint: ["/bin/sh", "/etc/alertmanager/render.sh", "--exec"]
+    environment:
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      ALERT_EMAIL_FROM: ${ALERT_EMAIL_FROM:-alerts@dukaanai.local}
+      ALERT_SMTP_SMARTHOST: ${ALERT_SMTP_SMARTHOST:-localhost:25}
+      ALERT_SMTP_USERNAME: ${ALERT_SMTP_USERNAME:-}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
+      ALERT_SMTP_REQUIRE_TLS: ${ALERT_SMTP_REQUIRE_TLS:-true}
+      ALERT_SLACK_WEBHOOK_URL: ${ALERT_SLACK_WEBHOOK_URL:-}
+      ALERT_SLACK_CHANNEL: ${ALERT_SLACK_CHANNEL:-#ops-alerts}
+      ALERT_PAGERDUTY_ROUTING_KEY: ${ALERT_PAGERDUTY_ROUTING_KEY:-}
+      ALERT_TIMEZONE: ${ALERT_TIMEZONE:-Asia/Kolkata}
+      ALERTMANAGER_EXTERNAL_URL: ${ALERTMANAGER_EXTERNAL_URL:-}
+    volumes:
+      - ./deploy/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    ports:
+      - "${ALERTMANAGER_BIND:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9093/-/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    logging: *logging
+    restart: unless-stopped
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.28.0
+    profiles: ["ops"]
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./deploy/blackbox:/etc/blackbox:ro
+    ports:
+      - "${BLACKBOX_BIND:-127.0.0.1}:${BLACKBOX_PORT:-9115}:9115"
+    logging: *logging
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.7.8
+    profiles: ["ops"]
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./deploy/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports:
+      - "${LOKI_BIND:-127.0.0.1}:${LOKI_PORT:-3100}:3100"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3100/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 20s
+    logging: *logging
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    profiles: ["ops"]
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./deploy/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    logging: *logging
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.12
+    profiles: ["ops"]
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # The reference stack (a laptop, the smoke, the drills) keeps a local
+      # default behind 127.0.0.1; deploy/observability/compose.prod.yml
+      # requires a value for docker-compose.prod.yml.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3001}
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_BIND:-127.0.0.1}:${GRAFANA_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 18
+      start_period: 20s
+    logging: *logging
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  loki-data:
+  alloy-data:
+  grafana-data:

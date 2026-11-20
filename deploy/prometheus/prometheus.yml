@@ -1,0 +1,116 @@
+# Prometheus configuration for the DukaanAI monitoring stack (roadmap 7.6,
+# 9.10): the API scrape, the alert rules, Alertmanager as the delivery path
+# and the blackbox uptime probes. `docker compose --profile ops up -d`
+# (deploy/observability/compose.yml) runs it against the compose stack.
+#
+# Nothing here is edited per deployment (audit 2026-10-11, R11: the scrape
+# token and the public probes were commented-out lines to uncomment by hand,
+# and following the production docs, which set METRICS_TOKEN, broke the
+# scrape). What differs comes from the environment: render.sh, the compose
+# entrypoint of the prometheus service, writes it under
+# /run/dukaanai-prometheus (a tmpfs, never the repository) before Prometheus
+# starts:
+#   metrics-token             METRICS_TOKEN, sent as the scrape's bearer token
+#                             (an empty file when unset; the API then ignores
+#                             the header)
+#   targets/public-*.json     the public addresses the probes watch through
+#                             the edge: PROMETHEUS_PUBLIC_API_URL and
+#                             PROMETHEUS_PUBLIC_WEB_URL (the production
+#                             compose file defaults them to API_PUBLIC_URL and
+#                             WEB_ORIGIN); none when blank
+#   rules/topology.rules.yml  the backup kinds the topology runs
+#                             (PROMETHEUS_TOPOLOGY: reference | production,
+#                             deploy/prometheus/topology)
+# A Prometheus of your own (Kubernetes) provides the same three paths from a
+# Secret and its own files: deploy/k8s/README.md, "Monitoring".
+#
+# The API exposes `GET /api/metrics` on its own port, hidden by the edge:
+# keep the scrape on the internal network. Validate after an edit (CI runs
+# it after render.sh): promtool check config deploy/prometheus/prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+  - /run/dukaanai-prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: dukaanai-api
+    metrics_path: /api/metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/dukaanai-prometheus/metrics-token
+    static_configs:
+      - targets: ["api:3002"]
+
+  # Uptime probes through the blackbox exporter, every minute: the readiness
+  # route (database + Redis + not draining) and the login page. The inner
+  # targets watch the containers; the public ones (rendered from the
+  # environment, above) watch what customers see through the edge. An
+  # external checker complements this one (docs/OBSERVABILITY.md, "Uptime
+  # checks").
+  - job_name: blackbox-http
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://api:3002/api/health/ready
+    file_sd_configs:
+      - files: [/run/dukaanai-prometheus/targets/public-ready.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: blackbox-login
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [http_login_page]
+    static_configs:
+      - targets:
+          - http://web:3000/login
+    file_sd_configs:
+      - files: [/run/dukaanai-prometheus/targets/public-login.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  # The certificate of each public address, read whether or not it verifies
+  # (module tls_certificate): DukaanAiCertificateExpiring and
+  # DukaanAiCertificateExpired read this job, so an expired certificate pages
+  # as itself and holds back the EndpointDown of the same address. Only the
+  # public addresses serve a certificate, so the job has no inner target.
+  - job_name: blackbox-tls
+    metrics_path: /probe
+    scrape_interval: 1m
+    params:
+      module: [tls_certificate]
+    file_sd_configs:
+      - files: [/run/dukaanai-prometheus/targets/public-tls.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]

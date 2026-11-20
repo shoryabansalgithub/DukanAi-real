@@ -1,5 +1,11 @@
 # Sprint 1 Production Freeze Declaration
 
+> **Historical.** This declared v1.0.0-rc2 (June 2026, never tagged in git)
+> ready for staging. The release process is now `RELEASE.md`, what each
+> release contains is `CHANGELOG.md`, and a release candidate is certified
+> against its images by the release workflow (`scripts/certify/certify.sh`).
+
+
 This document certifies the completion status of Sprint 1 (Epic 1) Production Hardening.
 
 ---
@@ -18,7 +24,7 @@ This document certifies the completion status of Sprint 1 (Epic 1) Production Ha
 |------|--------|----------|
 | Build | ✅ PASS | `npx nest build` completes with 0 errors |
 | Tests | ✅ PASS | 3/3 tests pass (concurrency + idempotency) |
-| Schema Sync | ✅ PASS | `prisma db push` applies cleanly |
+| Schema Sync | ✅ PASS | `prisma migrate deploy` applies cleanly and `prisma migrate diff` reports no drift |
 | Migration SQL | ✅ PASS | All 5 migration directories contain valid SQL |
 
 ---
@@ -26,7 +32,7 @@ This document certifies the completion status of Sprint 1 (Epic 1) Production Ha
 ## 3. Database Guarantees
 
 - **Foreign Key Enforcement:** `relationMode = "prisma"` has been **removed**. MySQL now enforces all foreign key constraints natively at the database level.
-- **Ledger Immutability Triggers:** `prevent_ledger_update` and `prevent_ledger_delete` triggers are defined inside `20260612000000_add_ledger_fk_and_triggers/migration.sql`. They are deployed via `prisma migrate deploy` — no manual SQL required.
+- **Ledger Immutability Triggers:** `prevent_ledger_update` and `prevent_ledger_delete` are defined in `20260929090200_ledger_immutability_triggers/migration.sql`. They are deployed via `prisma migrate deploy` — no manual SQL required.
 - **Transactional Invoice Boundaries:** All 11 financial operations (stock, invoice, items, inventory logs, shift, udhar, audit, outbox, ledger DEBIT, ledger CREDIT) execute inside a single `Prisma.$transaction()` with `ReadCommitted` isolation.
 - **Proper Double-Entry Accounting:** Ledger entries use typed `LedgerAccount` enum (`CASH`, `ACCOUNTS_RECEIVABLE`, `SALES_REVENUE`) with computed running `balanceAfter` values.
 - **Composite Indexes:** Multi-tenant isolation indexes on `[shopId, createdAt]`, `[shopId, idempotencyKey]`, `[shopId, account]` patterns.

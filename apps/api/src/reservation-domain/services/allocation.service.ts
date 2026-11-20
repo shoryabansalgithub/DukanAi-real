@@ -1,5 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { Injectable, Logger, ConflictException } from '@nestjs/common';
 import { Prisma, AllocationStatus } from '@prisma/client';
 import { InventoryMutationEngine, MutationType } from '../../inventory-domain/services/inventory-mutation.engine';
 
@@ -20,9 +19,10 @@ export class AllocationService {
     reservationItemId: string,
     productId: string,
     variantId: string | null,
-    requestedQuantity: number
+    requestedQuantity: Prisma.Decimal | number | string
   ) {
-    let remainingToAllocate = requestedQuantity;
+    // Decimal throughout (release audit S16): 1.1 across 0.9 + 0.2 in floats leaves 1.1 − 0.9 = 0.20000000000000007.
+    let remainingToAllocate = new Prisma.Decimal(requestedQuantity.toString());
 
     // Fetch available inventory items, sorted by oldest location first (FIFO)
     const inventoryItems = await tx.inventoryItem.findMany({
@@ -32,17 +32,17 @@ export class AllocationService {
         variantId: variantId || null,
         isDeleted: false
       },
-      orderBy: { createdAt: 'asc' }
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
     });
 
     for (const item of inventoryItems) {
-      if (remainingToAllocate <= 0) break;
+      if (remainingToAllocate.lessThanOrEqualTo(0)) break;
 
-      const availableAtLocation = item.onHand.toNumber() - item.reserved.toNumber();
-      
-      if (availableAtLocation > 0) {
-        const allocateFromHere = Math.min(availableAtLocation, remainingToAllocate);
-        
+      const availableAtLocation = item.onHand.minus(item.reserved);
+
+      if (availableAtLocation.greaterThan(0)) {
+        const allocateFromHere = Prisma.Decimal.min(availableAtLocation, remainingToAllocate);
+
         // 1. Create the physical allocation lock
         await tx.reservationAllocation.create({
           data: {
@@ -59,7 +59,8 @@ export class AllocationService {
           shopId,
           locationId: item.locationId,
           productId: item.productId,
-          quantity: allocateFromHere,
+          variantId: item.variantId,
+          quantity: allocateFromHere.toNumber(),
           mutationType: MutationType.RESERVATION,
           reason: `Reservation allocation: ${reservationItemId}`,
           referenceId: reservationItemId,
@@ -70,12 +71,12 @@ export class AllocationService {
 
         // (We do not emit a StockLedgerEntry here because this is merely a reservation lock, not a final deduction).
 
-        remainingToAllocate -= allocateFromHere;
+        remainingToAllocate = remainingToAllocate.minus(allocateFromHere);
       }
     }
 
-    if (remainingToAllocate > 0) {
-      throw new BadRequestException(`Race condition detected! Could not allocate ${remainingToAllocate} units across physical locations.`);
+    if (remainingToAllocate.greaterThan(0)) {
+      throw new ConflictException({ message: `Could not allocate ${remainingToAllocate.toString()} units across physical locations.`, code: 'INSUFFICIENT_STOCK', details: { missing: remainingToAllocate.toString() } });
     }
   }
 }

@@ -48,18 +48,23 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, size = 'md
             className="absolute inset-0 bg-black/60 backdrop-blur-sm"
           />
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-label={title}
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 20 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            className={`relative w-full ${sizeClasses[size]} bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden`}
+            className={`relative w-full ${sizeClasses[size]} bg-white rounded-2xl shadow-2xl overflow-hidden`}
           >
             {title && (
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-800">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{title}</h3>
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
                 <button
                   onClick={onClose}
-                  className="p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+                  type="button"
+                  aria-label="Close"
+                  className="p-1.5 rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
                 >
                   <X size={20} />
                 </button>
@@ -68,7 +73,9 @@ export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, size = 'md
             {!title && (
               <button
                 onClick={onClose}
-                className="absolute top-4 right-4 p-1.5 z-10 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 transition-colors"
+                type="button"
+                aria-label="Close"
+                className="absolute top-4 right-4 p-1.5 z-10 rounded-full hover:bg-gray-100 text-gray-500 transition-colors"
               >
                 <X size={20} />
               </button>

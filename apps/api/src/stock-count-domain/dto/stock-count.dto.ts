@@ -1,4 +1,4 @@
-import { IsEnum, IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { CountType, AdjustmentReason } from '@prisma/client';
 
 export class CreateStockCountSessionDto {
@@ -19,6 +19,8 @@ export class SubmitCountItemDto {
   inventoryItemId: string;
 
   @IsNumber()
+  @Min(0)
+  @Max(1_000_000)
   countedQuantity: number;
 
   @IsOptional()
@@ -30,8 +32,12 @@ export class CreateAdjustmentRequestDto {
   @IsString()
   inventoryItemId: string;
 
+  /** Manual requests only: a request raised from a count item takes its delta from the recorded variance. */
+  @IsOptional()
   @IsNumber()
-  requestedQuantityDelta: number;
+  @Min(-1_000_000)
+  @Max(1_000_000)
+  requestedQuantityDelta?: number;
 
   @IsEnum(AdjustmentReason)
   reason: AdjustmentReason;

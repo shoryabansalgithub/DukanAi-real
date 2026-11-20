@@ -34,7 +34,7 @@ export class CustomerSearchService {
       },
       skip,
       take,
-      orderBy: { createdAt: 'desc' }
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }]
     });
 
     await this.cacheManager.set(cacheKey, results, this.cacheConfig.customerSearchTtlMs); // 60s cache

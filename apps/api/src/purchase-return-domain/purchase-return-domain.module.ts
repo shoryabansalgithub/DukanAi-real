@@ -3,7 +3,6 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { SalesEventsDomainModule } from '../sales-events-domain/sales-events-domain.module';
 import { StockLedgerModule } from '../stock-ledger-domain/stock-ledger.module';
 import { ProductEventsModule } from '../product-events/product-events.module';
-import { BullModule } from '@nestjs/bullmq';
 
 import { PurchaseReturnController } from './purchase-return.controller';
 import { PurchaseReturnRepository } from './repositories/purchase-return.repository';
@@ -14,7 +13,6 @@ import { PurchaseReturnFinancialService } from './services/purchase-return-finan
 import { PurchaseReturnShipmentService } from './services/purchase-return-shipment.service';
 import { PurchaseReturnApprovalService } from './services/purchase-return-approval.service';
 import { PurchaseReturnReplacementService } from './services/purchase-return-replacement.service';
-import { PurchaseReturnProcessorService } from './services/purchase-return-processor.service';
 import { PurchaseEventsDomainModule } from '../purchase-events-domain/purchase-events-domain.module';
 import { StorageModule } from '../storage/storage.module';
 import { DocumentModule } from '../common/document/document.module';
@@ -29,8 +27,7 @@ import { InventoryDomainModule } from '../inventory-domain/inventory-domain.modu
     PurchaseEventsDomainModule,
     StorageModule,
     DocumentModule,
-    InventoryDomainModule,
-    BullModule.registerQueue({ name: 'purchase-returns' })
+    InventoryDomainModule
   ],
   controllers: [PurchaseReturnController],
   providers: [
@@ -41,8 +38,7 @@ import { InventoryDomainModule } from '../inventory-domain/inventory-domain.modu
     PurchaseReturnFinancialService,
     PurchaseReturnShipmentService,
     PurchaseReturnApprovalService,
-    PurchaseReturnReplacementService,
-    PurchaseReturnProcessorService
+    PurchaseReturnReplacementService
   ],
   exports: [PurchaseReturnRepository]
 })

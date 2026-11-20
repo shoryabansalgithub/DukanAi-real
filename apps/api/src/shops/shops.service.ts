@@ -4,6 +4,7 @@ import { TransferOwnershipDto } from './dto/transfer-ownership.dto';
 import * as bcrypt from 'bcrypt';
 import { Role } from '@prisma/client';
 import { SocketSessionService } from '../iam/websockets/socket-session.service';
+import { SHOP_PROFILE_FIELDS, UpdateShopProfileDto } from './dto/update-shop-profile.dto';
 
 @Injectable()
 export class ShopsService {
@@ -34,18 +35,24 @@ export class ShopsService {
     return shop;
   }
 
-  async updateShopProfile(
-    shopId: string,
-    data: { name?: string; address?: string; city?: string; state?: string; pincode?: string; phone?: string; email?: string; gstin?: string },
-  ) {
-    const { gstin, ...shopFields } = data;
-    const cleanShopFields = Object.fromEntries(
-      Object.entries(shopFields).filter(([, value]) => value !== undefined),
-    );
+  /**
+   * Writes only the profile columns named in SHOP_PROFILE_FIELDS. The body is a
+   * validated UpdateShopProfileDto, and the Prisma `data` object is built field
+   * by field: a request can never reach relations such as `users` or `owner`.
+   */
+  async updateShopProfile(shopId: string, dto: UpdateShopProfileDto) {
+    const shopFields: Partial<Pick<UpdateShopProfileDto, Exclude<(typeof SHOP_PROFILE_FIELDS)[number], 'email'>>> & { email?: string | null } = {};
+    for (const field of SHOP_PROFILE_FIELDS) {
+      if (field === 'email') continue;
+      if (dto[field] !== undefined) shopFields[field] = dto[field];
+    }
+    // A blank email clears the column (audit W3): store NULL, never ''.
+    if (dto.email !== undefined) shopFields.email = dto.email?.trim() || null;
+    const gstin = dto.gstin;
 
     await this.prisma.$transaction(async (tx) => {
-      if (Object.keys(cleanShopFields).length > 0) {
-        await tx.shop.update({ where: { id: shopId }, data: cleanShopFields });
+      if (Object.keys(shopFields).length > 0) {
+        await tx.shop.update({ where: { id: shopId }, data: shopFields });
       }
       if (gstin !== undefined) {
         await tx.shopSettings.upsert({
@@ -73,9 +80,11 @@ export class ShopsService {
     const passwordValid = await bcrypt.compare(dto.currentPassword, currentOwner.password);
     if (!passwordValid) throw new ForbiddenException('Invalid password');
 
-    const newOwner = await this.prisma.user.findUnique({ where: { id: dto.newOwnerId } });
-    if (!newOwner) throw new NotFoundException('New owner not found');
-    if (newOwner.shopId !== shopId) throw new BadRequestException('New owner must belong to this shop');
+    // User is a global model (not narrowed by the tenant extension): the lookup names the shop, so a
+    // user of another shop answers exactly like an id of nobody (cross-shop audit 2026-10-12; a 400
+    // "must belong to this shop" told an owner that the id was a user of some other shop).
+    const newOwner = await this.prisma.user.findFirst({ where: { id: dto.newOwnerId, shopId } });
+    if (!newOwner) throw new NotFoundException({ message: 'New owner not found', code: 'USER_NOT_FOUND' });
     if (newOwner.isDeleted || !newOwner.isActive) throw new BadRequestException('New owner account is inactive or deleted');
 
     // Execute atomic ownership transfer and token version invalidation

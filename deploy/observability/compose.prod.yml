@@ -1,0 +1,32 @@
+# The monitoring stack's production settings: docker-compose.prod.yml
+# includes deploy/observability/compose.yml with this file as its override
+# (compose `include` with a path list; the reference docker-compose.yml
+# includes compose.yml alone).
+#
+#   - Prometheus expects the production topology's backups (dump, documents,
+#     off-site; no binary-log archiver: deploy/prometheus/topology) and
+#     probes the public addresses through the edge, by default the
+#     API_PUBLIC_URL and WEB_ORIGIN the stack already has (audit 2026-10-11,
+#     R11 / R12). It sends METRICS_TOKEN as its bearer token (compose.yml).
+#   - Grafana has no default password (audit P1-15): set
+#     GRAFANA_ADMIN_PASSWORD in .env (`openssl rand -hex 24`).
+services:
+  prometheus:
+    environment:
+      PROMETHEUS_TOPOLOGY: production
+      PROMETHEUS_PUBLIC_API_URL: ${PROMETHEUS_PUBLIC_API_URL:-${API_PUBLIC_URL:-}}
+      PROMETHEUS_PUBLIC_WEB_URL: ${PROMETHEUS_PUBLIC_WEB_URL:-${WEB_ORIGIN:-}}
+
+  grafana:
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env (a long random value, e.g. `openssl rand -hex 24`; Grafana has no default login in production)}
+    # The template's placeholder or "admin" is refused at start, then the
+    # image's own entrypoint (/run.sh) runs.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        case "$$GF_SECURITY_ADMIN_PASSWORD" in admin|*REPLACE_ME*|*CHANGE_ME*)
+        echo "grafana: GRAFANA_ADMIN_PASSWORD is a placeholder or admin; set a real one in .env" >&2; exit 1 ;; esac;
+        exec /run.sh "$$@"
+      - grafana

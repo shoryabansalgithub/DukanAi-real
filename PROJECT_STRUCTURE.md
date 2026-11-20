@@ -1,3 +1,10 @@
+> **Historical document, superseded.** Kept for the record: it describes an
+> earlier state of the project (mock data, Next.js 14, Node 18/20, features
+> that were never built) and is no longer maintained. Current documentation:
+> [README.md](./README.md) (what is built, how to run it, the docs map),
+> [AGENTS.md](./AGENTS.md) (architecture and sharp edges) and
+> [docs/](./docs) (deployment, operations, release, go-live).
+
 ## DukaanAI Project Structure
 
 ```
@@ -143,7 +150,7 @@ RootLayout
 ## 🎯 Development Workflow
 
 ### Adding a New Page
-1. Create folder in `src/app/[pageName]/`
+1. Create folder in `src/app/(app)/[pageName]/` (app pages; public marketing pages live in `src/app/(marketing)/`)
 2. Create `page.tsx` inside
 3. Import components and use mock data
 4. Export as default

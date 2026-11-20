@@ -1,0 +1,17 @@
+# The release step on its own (audit 2026-10-11, P1-16): the migration Job
+# is applied, and waited for, BEFORE the application kustomization rolls the
+# new API (README.md, "Release"). It shares the namespace, the Secret and the
+# release tag with the application through ../common, so the Job always runs
+# the API image of the release being deployed.
+#
+#   kubectl -n dukaanai delete job dukaanai-migrate --ignore-not-found --wait
+#   kubectl apply -k deploy/k8s/migrate
+#   kubectl -n dukaanai wait --for=condition=complete --timeout=600s job/dukaanai-migrate
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: dukaanai
+resources:
+  - networkpolicy.yaml
+  - job-migrate.yaml
+components:
+  - ../common

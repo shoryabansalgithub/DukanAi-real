@@ -5,8 +5,14 @@
  * runtime environment, for middleware).
  *
  * Secure by default: unset, empty, or unrecognized values keep the login
- * gate active. Only an explicit truthy value skips it.
+ * gate active. Only an explicit truthy value skips it, and never in a
+ * production build: `process.env.NODE_ENV` is inlined too, so a production
+ * bundle compiles this to `false` whatever the variable says (roadmap 6.4;
+ * next.config.js additionally refuses to build or start with it set).
  */
-export const AUTH_DISABLED = ['1', 'true', 'yes', 'on'].includes(
-  (process.env.NEXT_PUBLIC_AUTH_DISABLED ?? '').trim().toLowerCase(),
-);
+const REQUESTED = ['1', 'true', 'yes', 'on'].includes((process.env.NEXT_PUBLIC_AUTH_DISABLED ?? '').trim().toLowerCase());
+
+export const AUTH_DISABLED = process.env.NODE_ENV !== 'production' && REQUESTED;
+
+/** True when the bypass is requested where it is not allowed (used by the middleware to refuse the request). */
+export const AUTH_BYPASS_REFUSED = process.env.NODE_ENV === 'production' && REQUESTED;

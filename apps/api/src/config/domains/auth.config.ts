@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { IsBoolean } from 'class-validator';
+import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { isPlaceholderValue } from '../validation/env-rules';
 
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const FALSY = new Set(['false', '0', 'no', 'off', '']);
@@ -24,6 +25,38 @@ export function parseAuthDisabled(
   return undefined;
 }
 
+/** Environments in which `AUTH_DISABLED=true` is accepted at all. */
+const BYPASS_ENVIRONMENTS = new Set(['development', 'test']);
+
+/**
+ * The bypass is a local-demo and test-harness switch. Production, and a
+ * process that never said which environment it is, must not honour it: the
+ * config factory refuses to boot and `AuthBypassService.isEnabled` stays
+ * false either way.
+ */
+export function authBypassPermitted(nodeEnv: string | undefined): boolean {
+  return nodeEnv !== undefined && BYPASS_ENVIRONMENTS.has(nodeEnv);
+}
+
+/** Boot-time check for the AuthConfig factory: throws when the bypass is requested where it is not permitted. */
+export function assertAuthBypassPermitted(authDisabled: boolean | undefined, nodeEnv: string | undefined): void {
+  if (authDisabled === true && !authBypassPermitted(nodeEnv)) {
+    throw new Error(
+      `AUTH_DISABLED=true is only accepted when NODE_ENV is development or test (NODE_ENV=${JSON.stringify(nodeEnv)}). Remove the flag or set it in an untracked .env.local of a development machine.`,
+    );
+  }
+}
+
+/**
+ * `GOOGLE_CLIENT_ID` as the API uses it: blank or a template placeholder is
+ * "Google sign-in off", the same rule the web applies before it registers
+ * the provider (roadmap 9.19).
+ */
+export function parseGoogleClientId(raw: string | undefined | null): string | undefined {
+  const value = raw?.trim();
+  return value && !isPlaceholderValue(value) ? value : undefined;
+}
+
 /**
  * Authentication configuration domain.
  *
@@ -38,4 +71,14 @@ export class AuthConfig {
   @IsBoolean()
   @EnvVariable('AUTH_DISABLED')
   readonly authDisabled: boolean = false;
+
+  /**
+   * The OAuth web client Google issues id tokens for: a token is accepted only
+   * when its `aud` is this id. The web's NextAuth provider uses the same value.
+   * Unset: Google sign-in answers 503 GOOGLE_SIGNIN_NOT_CONFIGURED.
+   */
+  @IsOptional()
+  @IsString()
+  @EnvVariable('GOOGLE_CLIENT_ID')
+  readonly googleClientId?: string;
 }

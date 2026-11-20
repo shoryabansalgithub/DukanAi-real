@@ -1,25 +1,17 @@
 import { Injectable } from '@nestjs/common';
+import { IsBoolean } from 'class-validator';
 import { ConfigDomain, EnvVariable } from '../registry/registry.decorators';
-import { IsOptional, IsBoolean, IsArray, IsString, IsNumber } from 'class-validator';
+import { BooleanFromEnv } from '../hydrate-from-env';
 
+/** Prisma client logging. Hydrated with `hydrateFromEnv`. */
 @Injectable()
-@ConfigDomain({ owner: 'Prisma', feature: 'Configuration', version: '1.0.0', description: 'PrismaConfig Domain' })
+@ConfigDomain({ owner: 'Prisma', feature: 'Configuration', version: '2.0.0', description: 'PrismaConfig Domain' })
 export class PrismaConfig {
-  @IsOptional()
   @IsBoolean()
-  logQueries?: boolean;
+  @BooleanFromEnv()
+  @EnvVariable('PRISMA_LOG_QUERIES')
+  logQueries: boolean = false;
 
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  logLevelProduction?: string[];
-
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  logLevelDevelopment?: string[];
-
-  @IsOptional()
-  @IsNumber()
-  slowQueryThreshold?: number;
+  readonly logLevelProduction: string[] = ['warn', 'error'];
+  readonly logLevelDevelopment: string[] = ['query', 'info', 'warn', 'error'];
 }

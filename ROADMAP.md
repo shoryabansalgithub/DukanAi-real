@@ -1,3 +1,10 @@
+> **Historical document, superseded.** Kept for the record: it describes an
+> earlier state of the project (mock data, Next.js 14, Node 18/20, features
+> that were never built) and is no longer maintained. Current documentation:
+> [README.md](./README.md) (what is built, how to run it, the docs map),
+> [AGENTS.md](./AGENTS.md) (architecture and sharp edges) and
+> [docs/](./docs) (deployment, operations, release, go-live).
+
 # DukaanAI - Development Roadmap
 
 ## Project Status: PHASE 2 ✅ UI Implementation Complete
@@ -49,7 +56,7 @@
 **Key Files:**
 - `apps/web/package.json` - Dependencies
 - `apps/web/src/app/layout.tsx` - Root layout
-- `apps/web/src/app/dashboard/page.tsx` - Main dashboard
+- `apps/web/src/app/(app)/dashboard/page.tsx` - Main dashboard
 - `apps/web/src/components/` - Component library
 - `apps/web/src/data/mockData.ts` - Mock data
 

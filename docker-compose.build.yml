@@ -1,0 +1,31 @@
+# Overlay for docker-compose.prod.yml that builds the three images from this
+# checkout instead of pulling a release from the registry: the compose smoke
+# in CI and local work on the production variant. A server never uses it:
+# promotion is an image tag (docs/DEPLOYMENT.md, "Images and promotion").
+#
+#   IMAGE_REGISTRY=local IMAGE_TAG=dev docker compose -f docker-compose.prod.yml -f docker-compose.build.yml up --build -d --wait
+#
+# The web image is built WITHOUT a public API URL on purpose: the running
+# container supplies API_PUBLIC_URL, which is what proves one image serves
+# every environment (roadmap 9.9).
+#
+# A locally built image reports IMAGE_TAG as its release (GET /api/health)
+# unless APP_RELEASE says otherwise.
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      args: &release-args
+        APP_RELEASE: ${APP_RELEASE:-${IMAGE_TAG:-}}
+        APP_REVISION: ${APP_REVISION:-}
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args: *release-args
+  backup-agent:
+    build:
+      context: .
+      dockerfile: deploy/db-ops/Dockerfile
+      args: *release-args

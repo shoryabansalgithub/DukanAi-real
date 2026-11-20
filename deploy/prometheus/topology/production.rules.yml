@@ -1,0 +1,26 @@
+# The backup kinds the PRODUCTION topology runs (docker-compose.prod.yml and
+# deploy/k8s: the backup agent's daily `backup-loop`): the dump of the managed
+# database, the documents archive and the encrypted off-site copy. There is
+# no binary-log archiver: point in time is the managed provider's
+# (docs/DEPLOYMENT.md, "Production topology"), so no binlog stamp is expected
+# and none pages. DukaanAiBackupNeverRecorded fires for every kind recorded
+# here that has no backup_last_success_timestamp_seconds series
+# (deploy/prometheus/alerts.yml; reference.rules.yml is the other topology).
+groups:
+  - name: dukaanai-topology
+    rules:
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: dump
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: documents
+      - record: dukaanai:backup_expected
+        expr: vector(1)
+        labels:
+          job: dukaanai-api
+          kind: offsite

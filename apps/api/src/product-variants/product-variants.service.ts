@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { rethrowUniqueViolation } from '../common/db/unique-violation';
+import { attributeMatrixProblem, countCombinations, MAX_VARIANT_COMBINATIONS } from './dto/generate-variants.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../iam/tenant-context/tenant-context.service';
 
@@ -47,38 +49,56 @@ export class ProductVariantsService {
       });
       if (!product) throw new NotFoundException('Product not found');
 
-      // Cartesian product logic
-      const keys = Object.keys(attributes);
-      const valuesArray = keys.map(k => attributes[k]);
+      // Roadmap 5.2: the matrix is bounded before it is expanded (the DTO checks the same; this guards direct callers).
+      const problem = attributeMatrixProblem(attributes);
+      if (problem) {
+        throw new BadRequestException({ message: problem, code: countCombinations(attributes) > MAX_VARIANT_COMBINATIONS ? 'VARIANT_MATRIX_TOO_LARGE' : 'VARIANT_MATRIX_INVALID' });
+      }
 
-      const cartesian = (...a: any[]) => a.reduce((a, b) => a.flatMap((d: any) => b.map((e: any) => [d, e].flat())));
-      const combinations = valuesArray.length > 1 ? cartesian(...valuesArray) : valuesArray[0].map(v => [v]);
+      // Cartesian product of the value lists, in attribute order.
+      const keys = Object.keys(attributes);
+      const combinations = keys.reduce<string[][]>((acc, key) => acc.flatMap((prefix) => attributes[key].map((value) => [...prefix, value])), [[]]);
+
+      // One SKU per combination, unique within the matrix (release audit S20: "Red" and
+      // "Redwood" both shortened to RED and the second variant was silently dropped).
+      const used = new Set<string>();
+      const planned = combinations.map((comboValues) => {
+          const base = `${product.sku}-${comboValues.map((v) => v.substring(0, 3).toUpperCase()).join('-')}`;
+          let sku = base;
+          for (let n = 2; used.has(sku); n++) sku = `${base}-${n}`;
+          used.add(sku);
+          return { comboValues, sku };
+      });
+      const skus = planned.map((p) => p.sku);
 
       return this.prisma.$transaction(async (tx) => {
-          // 1. Bulk Create Variants
-          const variantData = combinations.map((combination: any) => {
-              const comboValues = Array.isArray(combination) ? combination : [combination];
-              const skuSuffix = comboValues.map((v: any) => v.substring(0, 3).toUpperCase()).join('-');
-              return {
-                  productId,
-                  shopId,
-                  sku: `${product.sku}-${skuSuffix}`,
-                  costPrice: product.costPrice,
-                  sellingPrice: product.sellingPrice,
-                  mrp: product.mrp,
-              };
-          });
+          // 1. Bulk Create Variants. A SKU this product already has is its own
+          // variant (a re-run); one another product holds is a conflict, reported, never skipped.
+          const taken = await tx.productVariant.findMany({ where: { shopId, sku: { in: skus }, isDeleted: false }, select: { sku: true, productId: true } });
+          const foreign = taken.filter((v) => v.productId !== productId).map((v) => v.sku);
+          if (foreign.length > 0) {
+              throw new ConflictException({ message: `These variant SKUs are already used by another product: ${foreign.join(', ')}.`, code: 'VARIANT_SKU_CONFLICT', details: { skus: foreign } });
+          }
+          const own = new Set(taken.map((v) => v.sku));
+          const variantData = planned.filter((p) => !own.has(p.sku)).map((p) => ({
+              productId,
+              shopId,
+              sku: p.sku,
+              costPrice: product.costPrice,
+              sellingPrice: product.sellingPrice,
+              mrp: product.mrp,
+          }));
 
-          await tx.productVariant.createMany({
-              data: variantData,
-              skipDuplicates: true
-          });
+          try {
+              if (variantData.length > 0) await tx.productVariant.createMany({ data: variantData });
+          } catch (error) {
+              rethrowUniqueViolation(error, [{ index: 'sku', code: 'VARIANT_SKU_CONFLICT', message: 'A variant SKU was taken concurrently; retry.' }]);
+          }
 
-          const createdVariantSkus = variantData.map((v: any) => v.sku);
           const variants = await tx.productVariant.findMany({
-              where: { shopId, sku: { in: createdVariantSkus }, isDeleted: false }
+              where: { shopId, productId, sku: { in: skus }, isDeleted: false }
           });
-          const variantMap = new Map(variants.map((v: any) => [v.sku, v]));
+          const variantMap = new Map(variants.map((v) => [v.sku, v]));
 
           // 2. Process Attributes and Values efficiently
           const attributeValueIds = new Map<string, string>(); // 'AttrName:AttrVal' -> attributeValueId
@@ -109,26 +129,13 @@ export class ProductVariantsService {
           }
 
           // 3. Link Variants and Attributes
-          const linkData: any[] = [];
-          for (const combination of combinations) {
-              const comboValues = Array.isArray(combination) ? combination : [combination];
-              const skuSuffix = comboValues.map((v: any) => v.substring(0, 3).toUpperCase()).join('-');
-              const variantSku = `${product.sku}-${skuSuffix}`;
-              const variant = variantMap.get(variantSku);
-
-              if (variant) {
-                  for (let i = 0; i < keys.length; i++) {
-                      const attrName = keys[i];
-                      const attrVal = comboValues[i];
-                      const attrValId = attributeValueIds.get(`${attrName}:${attrVal}`);
-                      
-                      if (attrValId) {
-                          linkData.push({
-                              variantId: variant.id,
-                              attributeValueId: attrValId
-                          });
-                      }
-                  }
+          const linkData: Array<{ variantId: string; attributeValueId: string }> = [];
+          for (const { comboValues, sku } of planned) {
+              const variant = variantMap.get(sku);
+              if (!variant) continue;
+              for (let i = 0; i < keys.length; i++) {
+                  const attrValId = attributeValueIds.get(`${keys[i]}:${comboValues[i]}`);
+                  if (attrValId) linkData.push({ variantId: variant.id, attributeValueId: attrValId });
               }
           }
 

@@ -1,4 +1,4 @@
-import { ConfigDomain, EnvVariable, RuleDependencies, CONFIG_DOMAIN_KEY, ENV_VARIABLE_KEY, RULE_DEPENDENCIES_KEY } from './registry.decorators';
+import { ConfigDomain, ConfigDomainClass, EnvVariable, RuleDependencies, CONFIG_DOMAIN_KEY, ENV_VARIABLE_KEY, RULE_DEPENDENCIES_KEY } from './registry.decorators';
 
 describe('Registry Decorators', () => {
   describe('@ConfigDomain', () => {
@@ -58,7 +58,7 @@ describe('Registry Decorators', () => {
       @RuleDependencies([DepConfig1, DepConfig2])
       class TestRule {}
 
-      const reflected: Function[] = Reflect.getMetadata(RULE_DEPENDENCIES_KEY, TestRule);
+      const reflected: ConfigDomainClass[] = Reflect.getMetadata(RULE_DEPENDENCIES_KEY, TestRule);
       expect(reflected).toBeDefined();
       expect(reflected).toHaveLength(2);
       expect(reflected[0]).toBe(DepConfig1);

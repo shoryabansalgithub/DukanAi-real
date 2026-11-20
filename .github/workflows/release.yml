@@ -1,0 +1,472 @@
+# Release images (roadmap 9.9): every main commit and every v* tag builds the
+# three images ONCE, after CI passed for that commit, and pushes them to the
+# GitHub Container Registry. Staging runs a tag; production runs the same tag
+# after the staging smoke passed. Nothing is ever built on a server
+# (docs/DEPLOYMENT.md, "Images and promotion"; docs/STAGING.md). Only
+# `docker build` / `docker push` / `docker buildx imagetools` with the
+# workflow's own token: no third-party action beyond the pinned checkout and
+# artifact actions.
+#
+#   ghcr.io/<owner>/dukaanai-api:sha-<7 hex>    a main commit
+#   ghcr.io/<owner>/dukaanai-web:sha-<7 hex>
+#   ghcr.io/<owner>/dukaanai-db-ops:sha-<7 hex>
+#   ...:main                                  the newest main build
+#   ...:v1.2.3                                a release tag (ONLY that tag)
+#
+# Every one of those tags is a multi-arch index over linux/amd64 and
+# linux/arm64 (ARM servers such as Azure's B2pts v2 run the arm64 image). Each
+# architecture is built natively on its own runner (`images`, a matrix), its
+# images checked, Trivy-gated and pushed as `<tag>-amd64` / `<tag>-arm64`,
+# with a CycloneDX SBOM each; `manifest` then publishes the index under the
+# tag people pull. The per-architecture tags are build intermediates.
+#
+# A tag build pushes the version tag alone (audit 2026-10-11, R7): its images
+# are a fresh build with the release in their labels, so re-pushing
+# sha-<commit> would move a tag that main's build of the same commit had
+# already published to different bits. Each push lists its digests in the
+# job summary; a deployment may pin `<image>@sha256:...` (docs/STAGING.md).
+#
+# When it runs (audit R8: images were pushed whether or not CI passed):
+#   - after the CI workflow completed SUCCESSFULLY for a push of main or of
+#     a v* tag of this repository (`workflow_run`; a pull request's CI never
+#     starts it, a failed or cancelled CI never builds);
+#   - by hand (workflow_dispatch) from main only, and only for a commit CI
+#     has passed.
+#
+# A v* tag is a release only when scripts/release/release.mjs says so
+# (roadmap 9.21, RELEASE.md): a semantic version, the root package.json at
+# that version, a dated CHANGELOG.md section for it, above every earlier
+# release tag, and the commit on main. A version tag is published once:
+# `prepare` refuses to rebuild a version the registry already holds, before
+# any architecture is built. Every image
+# carries its release (APP_RELEASE: the tag, else sha-<7>) and commit as OCI
+# labels and in the environment, so GET /api/health and the build_info
+# metric say which release answers.
+#
+# On a v* tag (and on a manual run) the `certify` job then re-runs the
+# repository's checklist against the images just pushed, not the source tree
+# (roadmap 9.12, scripts/certify/certify.sh). On a tag, the SBOMs and the
+# evidence bundle are attached to ONE draft release (audit R6), whose notes
+# are the CHANGELOG.md section; the owner publishes it after reading the
+# evidence. Only the two attach jobs may write repository contents (audit
+# R24); the token reaches every script through the environment, never
+# interpolated into it.
+name: Release images
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_branch || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: CI passed for the commit
+    if: >-
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_repository.full_name == github.repository)
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # a manual run asks whether CI passed for main's commit
+    outputs:
+      sha: ${{ steps.ref.outputs.sha }}
+      kind: ${{ steps.ref.outputs.kind }}
+      tag: ${{ steps.ref.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0 # the tags and origin/main
+          persist-credentials: false
+      - name: The commit, what it is (main or a version tag) and its CI run
+        id: ref
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_REF_NAME: ${{ github.event.workflow_run.head_branch }}
+          DISPATCH_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+        run: |
+          if [ "$EVENT" = workflow_run ]; then
+            sha="$RUN_SHA"; name="$RUN_REF_NAME"
+          else
+            sha="$DISPATCH_SHA"; name=main
+            count="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+              "$API/repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&status=success&per_page=1" \
+              | node -e 'let b="";process.stdin.on("data",(d)=>b+=d).on("end",()=>process.stdout.write(String(JSON.parse(b).total_count||0)))')"
+            [ "${count:-0}" -gt 0 ] || { echo "::error::CI has not passed for $sha: nothing is built"; exit 1; }
+          fi
+          # A tag push's CI run names the tag as its head branch; the tag must
+          # point at the commit CI tested. Any other branch builds nothing.
+          kind=none; tag=""
+          if [ "$name" = main ] && git merge-base --is-ancestor "$sha" origin/main; then
+            kind=main
+          elif [[ "$name" == v* ]] && [ "$(git rev-parse -q --verify "refs/tags/$name^{commit}" || true)" = "$sha" ]; then
+            kind=tag; tag="$name"
+          fi
+          {
+            echo "sha=$sha"
+            echo "kind=$kind"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "CI passed for $sha ($name): $([ "$kind" = none ] && echo 'neither main nor a version tag, nothing is built' || echo "a $kind build${tag:+ of $tag}")" >> "$GITHUB_STEP_SUMMARY"
+
+  # Names, tags and the two refusals (not a release, already published) run
+  # once, before any leg builds or pushes anything.
+  prepare:
+    name: Release check and image tags
+    needs: gate
+    if: needs.gate.outputs.kind == 'main' || needs.gate.outputs.kind == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      registry: ${{ steps.meta.outputs.registry }}
+      sha: ${{ steps.meta.outputs.sha }}
+      revision: ${{ steps.meta.outputs.revision }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      release: ${{ steps.meta.outputs.release }}
+      extra: ${{ steps.meta.outputs.extra }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          fetch-depth: 0 # the release check reads every tag and origin/main
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      # Roadmap 9.21: nothing is built for a tag that is not a release.
+      - name: Release check (version tags)
+        if: needs.gate.outputs.kind == 'tag'
+        env:
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: node scripts/release/release.mjs check "$TAG"
+      - name: Image names and tags
+        id: meta
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          KIND: ${{ needs.gate.outputs.kind }}
+          TAG: ${{ needs.gate.outputs.tag }}
+        run: |
+          owner="$(printf '%s' "$REPO_OWNER" | tr '[:upper:]' '[:lower:]')"
+          sha="sha-$(git rev-parse --short=7 HEAD)"
+          # image_tag: the one tag that names these bits (what certify pulls);
+          # extra: the moving tag a main build also carries.
+          if [ "$KIND" = tag ]; then image_tag="$TAG"; release="$TAG"; extra=""; else image_tag="$sha"; release="$sha"; extra=main; fi
+          {
+            echo "registry=ghcr.io/${owner}"
+            echo "sha=$sha"
+            echo "revision=$(git rev-parse HEAD)"
+            echo "image_tag=$image_tag"
+            echo "release=$release"
+            echo "extra=$extra"
+          } >> "$GITHUB_OUTPUT"
+      # A version tag names one set of bits for good: staging and production run
+      # what certify certified. A re-run of certify alone ("Re-run failed jobs")
+      # does not come here; a fix is the next version (RELEASE.md). The registry
+      # is asked directly and its HTTP status decides: 404 is "not published",
+      # 200 "published", anything else stops the release. (`docker manifest
+      # inspect` reports an authorization failure as "no such manifest", which
+      # would read as "not published".) The version is published once its
+      # multi-arch index exists: the per-architecture tags are build
+      # intermediates, so a run whose index job never ran can be re-run.
+      - name: A published version is never rebuilt
+        if: needs.gate.outputs.kind == 'tag'
+        env:
+          REG: ${{ steps.meta.outputs.registry }}
+          VERSION: ${{ steps.meta.outputs.image_tag }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          repo="${REG#ghcr.io/}"
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            bearer="$(curl -fsS -u "$ACTOR:$TOKEN" "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo/$image:pull" \
+              | node -e 'let b="";process.stdin.on("data",(d)=>b+=d).on("end",()=>process.stdout.write(JSON.parse(b).token||""))')" || bearer=""
+            [ -n "$bearer" ] || { echo "::error::no registry token for $repo/$image: cannot tell whether $VERSION exists"; exit 1; }
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --head -H "Authorization: Bearer $bearer" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$repo/$image/manifests/$VERSION")" || code="000"
+            case "$code" in
+              404) echo "$REG/$image:$VERSION: not published yet" ;;
+              200) echo "::error::$REG/$image:$VERSION is already published; a version is never rebuilt or re-pushed (cut the next version, RELEASE.md)"; exit 1 ;;
+              *) echo "::error::cannot tell whether $REG/$image:$VERSION exists: the registry answered $code"; exit 1 ;;
+            esac
+          done
+
+  # One leg per architecture on a native runner (no emulation): build, gate
+  # and push :<image_tag>-<arch>. The `manifest` job then publishes the tags
+  # people pull as one index over both.
+  images:
+    name: Build and push images (${{ matrix.arch }})
+    needs: [gate, prepare]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REG: ${{ needs.prepare.outputs.registry }}
+      ARCH_TAG: ${{ needs.prepare.outputs.image_tag }}-${{ matrix.arch }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Build the three images from the repository root
+        env:
+          RELEASE: ${{ needs.prepare.outputs.release }}
+          REVISION: ${{ needs.prepare.outputs.revision }}
+        run: |
+          # The web image carries no public API URL: the running container sets API_PUBLIC_URL.
+          # APP_RELEASE / APP_REVISION become the OCI version / revision labels and the
+          # release GET /api/health and build_info report.
+          args=(--build-arg "APP_RELEASE=$RELEASE" --build-arg "APP_REVISION=$REVISION")
+          docker build -f apps/api/Dockerfile "${args[@]}" -t "$REG/dukaanai-api:$ARCH_TAG" .
+          docker build -f apps/web/Dockerfile "${args[@]}" -t "$REG/dukaanai-web:$ARCH_TAG" .
+          docker build -f deploy/db-ops/Dockerfile "${args[@]}" -t "$REG/dukaanai-db-ops:$ARCH_TAG" .
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            got="$(docker image inspect --format '{{ .Os }}/{{ .Architecture }} {{ index .Config.Labels "org.opencontainers.image.version" }} {{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REG/$image:$ARCH_TAG")"
+            echo "$image $got"
+            [ "$got" = "linux/$ARCH $RELEASE $REVISION" ] || { echo "::error::$image is '$got', expected 'linux/$ARCH $RELEASE $REVISION'"; exit 1; }
+          done
+      # trivy-scan.sh pins the x86-64 Trivy and uses a trivy already on PATH
+      # first, so the arm64 leg puts the same version's arm64 build there,
+      # pinned by its own sha256. A version bump in the script fails here until
+      # this pin follows it.
+      - name: Trivy for arm64 (pinned)
+        if: matrix.arch == 'arm64'
+        env:
+          TRIVY_ARM64_VERSION: 0.75.0
+          TRIVY_ARM64_SHA256: a1ee9f6ffb7d112b64ff726a2a0717c21175c1114361391f4a132956751a13b3
+        run: |
+          script_version="$(sed -n 's/^TRIVY_VERSION="\(.*\)"$/\1/p' scripts/certify/trivy-scan.sh)"
+          [ "$script_version" = "$TRIVY_ARM64_VERSION" ] || { echo "::error::scripts/certify/trivy-scan.sh pins Trivy $script_version but this step pins the arm64 build of $TRIVY_ARM64_VERSION: bump both"; exit 1; }
+          dir="$RUNNER_TEMP/trivy-arm64"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/trivy.tgz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_ARM64_VERSION}/trivy_${TRIVY_ARM64_VERSION}_Linux-ARM64.tar.gz"
+          echo "${TRIVY_ARM64_SHA256}  $dir/trivy.tgz" | sha256sum -c -
+          tar -xzf "$dir/trivy.tgz" -C "$dir" trivy
+          echo "$dir" >> "$GITHUB_PATH"
+      # Roadmap 9.14: a release image with a fixable HIGH/CRITICAL vulnerability is
+      # not pushed, on either architecture. Trivy is pinned by sha256 (no third-party action).
+      - name: Vulnerability gate on the images (Trivy, fixable HIGH/CRITICAL)
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/certify/trivy-scan.sh gate "$REG/dukaanai-api:$ARCH_TAG" "$REG/dukaanai-web:$ARCH_TAG" "$REG/dukaanai-db-ops:$ARCH_TAG"
+      - name: Push the architecture tags
+        run: |
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            docker push "$REG/$image:$ARCH_TAG"
+          done
+      # Roadmap 9.14: a CycloneDX SBOM per image and architecture is the release's bill of materials.
+      - name: Software bill of materials (CycloneDX) per image
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          mkdir -p "$RUNNER_TEMP/sbom"
+          for image in api web db-ops; do
+            bash scripts/certify/trivy-scan.sh sbom "$REG/dukaanai-$image:$ARCH_TAG" "$RUNNER_TEMP/sbom/sbom-dukaanai-$image-$ARCH.cdx.json"
+          done
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: sbom-${{ needs.prepare.outputs.image_tag }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/sbom
+          retention-days: 90
+          if-no-files-found: error
+
+  # The tags people pull: :<image_tag> (and :main on a main build) as one
+  # index over the two architecture images, so `docker pull` on an x86-64
+  # runner and on an ARM server each get their own. A tag build
+  # publishes :vX.Y.Z alone.
+  manifest:
+    name: Publish the multi-arch tags
+    needs: [prepare, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REG: ${{ needs.prepare.outputs.registry }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+      EXTRA: ${{ needs.prepare.outputs.extra }}
+    steps:
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Create and check the indexes
+        run: |
+          {
+            echo "### Pushed images"
+            echo
+            echo "| Image | Tags | Index digest (deploy by digest: docs/STAGING.md) | Platforms |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do
+            tags=(-t "$REG/$image:$IMAGE_TAG")
+            [ -z "$EXTRA" ] || tags+=(-t "$REG/$image:$EXTRA")
+            docker buildx imagetools create "${tags[@]}" "$REG/$image:$IMAGE_TAG-amd64" "$REG/$image:$IMAGE_TAG-arm64"
+            digest="$(docker buildx imagetools inspect --format '{{ .Manifest.Digest }}' "$REG/$image:$IMAGE_TAG")"
+            # Attestation entries, when the builder adds them, are unknown/unknown.
+            platforms="$(docker buildx imagetools inspect --raw "$REG/$image:$IMAGE_TAG" | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)" | select(. != "unknown/unknown")] | unique | join(" ")')"
+            [ "$platforms" = "linux/amd64 linux/arm64" ] || { echo "::error::$REG/$image:$IMAGE_TAG lists '$platforms', expected linux/amd64 and linux/arm64"; exit 1; }
+            echo "$REG/$image:$IMAGE_TAG@$digest ($platforms)"
+            echo "| $image | $IMAGE_TAG${EXTRA:+, $EXTRA} | \`$REG/$image@$digest\` | $platforms |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  # The draft release of the tag is created here, once, with the CHANGELOG.md
+  # section as its notes and the SBOMs attached; its id goes to the certify
+  # attach job so both write to the same release (audit R6). The only job
+  # besides that one with contents: write (audit R24).
+  release-assets:
+    name: Draft release with the SBOMs (version tags)
+    needs: [gate, prepare, manifest]
+    if: needs.gate.outputs.kind == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.attach.outputs.release-id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: sbom-${{ needs.prepare.outputs.image_tag }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/sbom
+      - name: Attach the SBOMs to the release of the tag
+        id: attach
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.gate.outputs.tag }}
+          RELEASE_NOTES_FILE: ${{ runner.temp }}/release-notes.md
+        run: |
+          node scripts/release/release.mjs notes "$TAG" > "$RELEASE_NOTES_FILE"
+          bash scripts/certify/attach-release.sh "$TAG" "$RUNNER_TEMP"/sbom/sbom-*.cdx.json
+
+  certify:
+    name: Certify the release candidate images
+    needs: [gate, prepare, manifest]
+    if: needs.gate.outputs.kind == 'tag' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: read
+    env:
+      REG: ${{ needs.prepare.outputs.registry }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+      LABEL: ${{ needs.gate.outputs.tag || needs.prepare.outputs.sha }}
+      RELEASE: ${{ needs.prepare.outputs.release }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+      - name: Pull the images the release pushed (the candidates, by tag; the digests go into the bundle)
+        run: |
+          for image in dukaanai-api dukaanai-web dukaanai-db-ops; do docker pull "$REG/$image:$IMAGE_TAG"; done
+      # The suites boot the fixture module from the checkout (same commit as
+      # the images) and send every request to the containers; the drills run
+      # the repository's scripts against the stack's MySQL (mysql, mysqldump
+      # and mysqlbinlog 8 come with the runner image).
+      - run: npm ci
+      - run: npx turbo run build --filter=@dukaanai/invoice-math
+      - name: Chromium for the browser suite
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: rclone for the off-site drill
+        run: sudo apt-get install -y -q rclone >/dev/null
+      - name: Certify
+        run: bash scripts/certify/certify.sh --api "$REG/dukaanai-api:$IMAGE_TAG" --web "$REG/dukaanai-web:$IMAGE_TAG" --db-ops "$REG/dukaanai-db-ops:$IMAGE_TAG" --out "$RUNNER_TEMP/certification" --label "$LABEL" --release "$RELEASE"
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/certification/SUMMARY.md" ]; then cat "$RUNNER_TEMP/certification/SUMMARY.md" >> "$GITHUB_STEP_SUMMARY"; else echo "no SUMMARY.md was written" >> "$GITHUB_STEP_SUMMARY"; fi
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: certification-${{ env.LABEL }}
+          path: ${{ runner.temp }}/certification
+          retention-days: 90
+          if-no-files-found: error
+
+  # The evidence bundle joins the SBOMs on the SAME draft release (by id).
+  certification-asset:
+    name: Attach the evidence bundle to the release of the tag
+    needs: [gate, release-assets, certify]
+    if: always() && needs.gate.outputs.kind == 'tag' && needs.release-assets.result == 'success' && (needs.certify.result == 'success' || needs.certify.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      LABEL: ${{ needs.gate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: certification-${{ needs.gate.outputs.tag }}
+          path: ${{ runner.temp }}/certification
+      - name: Attach
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.release-assets.outputs.release_id }}
+        run: |
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/certification-$LABEL.tar.gz" certification
+          bash scripts/certify/attach-release.sh "$LABEL" "$RUNNER_TEMP/certification-$LABEL.tar.gz"

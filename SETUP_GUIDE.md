@@ -1,10 +1,23 @@
+> **Historical document, superseded.** Kept for the record: it describes an
+> earlier state of the project (mock data, Next.js 14, Node 18/20, features
+> that were never built) and is no longer maintained. Current documentation:
+> [README.md](./README.md) (what is built, how to run it, the docs map),
+> [AGENTS.md](./AGENTS.md) (architecture and sharp edges) and
+> [docs/](./docs) (deployment, operations, release, go-live).
+
 # DukaanAI - Setup Guide
 
 ## 🚀 Quick Start Guide
 
+> **The current setup is README.md, "Run it with Docker" and "Run it for
+> development"** (Node.js 22 from `.nvmrc`, `npm ci` at the repository root,
+> MySQL 8 and Redis 7, the API on port 3002 and the web on port 3010). The
+> steps below are the original front-end-only guide: the mock data they
+> mention no longer exists, every page calls the API.
+
 ### Prerequisites
-- **Node.js 20 LTS** - [Download](https://nodejs.org/)
-- **npm or yarn** - Comes with Node.js
+- **Node.js 22** (`.nvmrc`; the `engines` floor is 22.12) - [Download](https://nodejs.org/)
+- **npm** - Comes with Node.js
 - **Git** - [Download](https://git-scm.com/)
 - **VS Code** (Recommended) - [Download](https://code.visualstudio.com/)
 
@@ -211,13 +224,13 @@ primary: "262.1 80% 50.4%"
 ```
 
 ### Add a New Page
-1. Create folder: `src/app/your-page-name/`
-2. Create file: `src/app/your-page-name/page.tsx`
+1. Create folder: `src/app/(app)/your-page-name/`
+2. Create file: `src/app/(app)/your-page-name/page.tsx`
 3. Add route to sidebar: `src/components/navigation/Sidebar.tsx`
 
 Example:
 ```typescript
-// src/app/your-page-name/page.tsx
+// src/app/(app)/your-page-name/page.tsx
 export default function YourPageName() {
   return (
     <div>
@@ -378,7 +391,7 @@ Recommended extensions for development:
 1. **Explore the Codebase**
    - Check out `/src/components/` for component examples
    - Look at `/src/data/mockData.ts` for data structure
-   - Review `/src/app/dashboard/page.tsx` for page structure
+   - Review `/src/app/(app)/dashboard/page.tsx` for page structure
 
 2. **Customize the UI**
    - Change colors in `tailwind.config.ts`

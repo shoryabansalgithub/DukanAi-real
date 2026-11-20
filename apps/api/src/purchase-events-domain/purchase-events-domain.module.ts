@@ -11,14 +11,16 @@ import { EventsReplayService } from './services/events-replay.service';
 import { EventsStatisticsService } from './services/events-statistics.service';
 import { EventsProcessorService } from './services/events-processor.service';
 import { PurchaseOutboxRelayCron } from './workers/purchase-outbox-relay.cron';
+import { OutboxModule } from '../common/outbox/outbox.module';
+import { webhookDeliveryQueue } from '../product-events/webhook-delivery.queue';
 
 @Module({
   imports: [
     PrismaModule,
-    BullModule.registerQueue(
-      { name: 'purchase-events' },
-      { name: 'webhook-delivery' },
-    ),
+    OutboxModule,
+    BullModule.registerQueue({ name: 'purchase-events' }),
+    // The same options as the product relay's registration (audit R7).
+    webhookDeliveryQueue(),
   ],
   controllers: [PurchaseEventsController],
   providers: [

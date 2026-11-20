@@ -1,0 +1,7 @@
+# DukaanAI on Kubernetes (roadmap 9.7, 9.8). README.md in this directory.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dukaanai
+  labels:
+    app.kubernetes.io/part-of: dukaanai

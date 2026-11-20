@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dukaanai-api
+  labels:
+    app.kubernetes.io/name: dukaanai-api
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  selector:
+    app.kubernetes.io/name: dukaanai-api
+  ports:
+    - name: http
+      port: 3002
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dukaanai-web
+  labels:
+    app.kubernetes.io/name: dukaanai-web
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  selector:
+    app.kubernetes.io/name: dukaanai-web
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+# No selector and no endpoints: the Ingress routes /api/metrics here so the
+# scrape endpoint does not exist from the internet (the controller answers
+# 503). Prometheus scrapes dukaanai-api:3002 inside the cluster
+# (deploy/prometheus/prometheus.yml, the NetworkPolicy's monitoring rule).
+apiVersion: v1
+kind: Service
+metadata:
+  name: dukaanai-blackhole
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  ports:
+    - name: http
+      port: 80

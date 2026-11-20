@@ -1,0 +1,85 @@
+# The edge on Kubernetes (roadmap 9.8), the Ingress equivalent of
+# deploy/edge/Caddyfile for ingress-nginx + cert-manager: HTTPS for both
+# hosts with certificates from the named ClusterIssuer, HTTP redirected,
+# HSTS, the client address in X-Forwarded-For (ingress-nginx sets it from the
+# connection it accepted and ignores a client-supplied value unless
+# use-forwarded-headers is on: one hop, TRUST_PROXY=1), request bodies capped
+# above UPLOAD_MAX_MEDIA_BYTES (50 MB), upstream timeouts above
+# BILLING_GATEWAY_TIMEOUT_MS (30 s), and /api/metrics routed into a Service
+# with no endpoints (the second Ingress below).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dukaanai
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: 64m
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [app.example.com, api.example.com]
+      secretName: dukaanai-tls
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dukaanai-web
+                port: { name: http }
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dukaanai-api
+                port: { name: http }
+---
+# /api/metrics does not exist from the internet, in any letter case (audit
+# 2026-10-11, R10): Express routes case-insensitively, so a Prefix path
+# `/api/metrics` let `/API/metrics` through to the scrape endpoint. With
+# use-regex ingress-nginx writes the path as a case-insensitive regular
+# expression location (`location ~* "^/api/metrics"`), matched against the
+# normalised URI (`/api//metrics`, `/api/./metrics` included), and routes it
+# to dukaanai-blackhole (no endpoints: the controller answers 503).
+# ingress-nginx applies use-regex to every path of the host, so the API
+# host's `/` above becomes `~* "^/"`, which still matches every other
+# request; the longer metrics location is chosen first. The TLS section
+# repeats the host so it is served over HTTPS like the rest (the certificate
+# is cert-manager's, issued for the Ingress above).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dukaanai-metrics-blackhole
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.example.com]
+      secretName: dukaanai-tls
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /api/metrics
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dukaanai-blackhole
+                port: { name: http }

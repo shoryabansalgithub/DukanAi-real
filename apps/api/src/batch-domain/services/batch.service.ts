@@ -1,7 +1,10 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CreateBatchDto, AddBatchStockDto } from '../dto/batch.dto';
 import { BatchStatus } from '@prisma/client';
+import { assertOwned } from '../../prisma/tenant-ownership';
+import { assertVariantOfProduct } from '../../inventory-domain/services/inventory-domain.service';
+import { ListQueryDto, pageArgs } from '../../common/pagination';
 
 @Injectable()
 export class BatchService {
@@ -13,17 +16,24 @@ export class BatchService {
    * Returns only batches that belong to the requesting shop. Batch quantities
    * are derived from their physical-bin allocations rather than client data.
    */
-  async listBatches(shopId: string) {
-    const batches = await this.prisma.batch.findMany({
-      where: { shopId },
-      include: {
-        product: { select: { name: true, sku: true } },
-        batchStocks: { select: { quantity: true, reservedQuantity: true } },
-      },
-      orderBy: [{ expiryDate: 'asc' }, { createdAt: 'desc' }],
-    });
+  async listBatches(shopId: string, query?: ListQueryDto) {
+    const { skip, take } = pageArgs(query);
+    const where = { shopId };
+    const [batches, total] = await Promise.all([
+      this.prisma.batch.findMany({
+        where,
+        include: {
+          product: { select: { name: true, sku: true } },
+          batchStocks: { select: { quantity: true, reservedQuantity: true } },
+        },
+        orderBy: [{ expiryDate: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
+        skip,
+        take,
+      }),
+      this.prisma.batch.count({ where }),
+    ]);
 
-    return batches.map((batch) => ({
+    const items = batches.map((batch) => ({
       id: batch.id,
       product: batch.product.name,
       sku: batch.product.sku,
@@ -37,12 +47,16 @@ export class BatchService {
       supplierLotNumber: batch.supplierLotNumber,
       status: batch.status,
     }));
+    return { items, total, skip, take };
   }
 
   /**
    * Registers a new Batch (Lot) in the system.
    */
   async createBatch(shopId: string, dto: CreateBatchDto) {
+    await assertOwned(this.prisma, 'product', dto.productId, shopId);
+    // A variant must be one of the batch's product (release audit T6e).
+    await assertVariantOfProduct(this.prisma, shopId, dto.productId, dto.variantId);
     const existing = await this.prisma.batch.findUnique({
       where: { shopId_batchNumber: { shopId, batchNumber: dto.batchNumber } }
     });
@@ -74,10 +88,21 @@ export class BatchService {
    */
   async addBatchStock(shopId: string, batchId: string, dto: AddBatchStockDto) {
     return this.prisma.$transaction(async (tx) => {
-      
+      await assertOwned(tx, 'batch', batchId, shopId);
+      await assertOwned(tx, 'inventoryItem', dto.inventoryItemId, shopId);
+      // The bin must hold the batch's product (and variant).
+      const [batch, item] = await Promise.all([
+        tx.batch.findFirstOrThrow({ where: { id: batchId, shopId }, select: { productId: true, variantId: true } }),
+        tx.inventoryItem.findFirstOrThrow({ where: { id: dto.inventoryItemId, shopId }, select: { productId: true, variantId: true } }),
+      ]);
+      if (batch.productId !== item.productId || (batch.variantId ?? null) !== (item.variantId ?? null)) {
+        throw new BadRequestException({ message: 'The inventory item holds another product than the batch.', code: 'BATCH_ITEM_MISMATCH' });
+      }
+
       const batchStock = await tx.batchStock.upsert({
         where: {
-          batchId_inventoryItemId: {
+          shopId_batchId_inventoryItemId: {
+            shopId,
             batchId,
             inventoryItemId: dto.inventoryItemId
           }

@@ -1,0 +1,106 @@
+# Ingress: the API accepts connections only from the Ingress controller, the
+# web pods and the monitoring namespace (the scrape); the web only from the
+# Ingress controller. Namespaces are matched by the kubernetes.io/metadata.name
+# label every namespace carries; rename the two if the cluster's
+# ingress-nginx or Prometheus live elsewhere.
+#
+# Egress (audit 2026-10-11, R25): every pod of the namespace may reach DNS
+# (kube-dns in kube-system) and nothing else unless listed. The assumptions,
+# to adjust to the provider before applying:
+#   - the managed MySQL listens on 3306 and the managed Redis on 6379 or 6380
+#     (TLS), both OUTSIDE the cluster; narrow `0.0.0.0/0` to the providers'
+#     private ranges when they are known;
+#   - SMTP submission is 587 or 465 (SMTP_URL);
+#   - everything else the API calls is HTTPS on 443: Google token
+#     verification, Gemini (OCR), Sentry, the shops' webhooks (http webhooks
+#     need EVENTS_WEBHOOK_ALLOW_HTTP and port 80 here), and the backup
+#     agent's off-site remote;
+#   - the web reaches the API pods on 3002 and Google sign-in on 443;
+#   - the migration Job reaches only the database (migrate/networkpolicy.yaml,
+#     applied with the Job).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dukaanai-api
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dukaanai-api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dukaanai-web
+      ports:
+        - port: 3002
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - { port: 3306, protocol: TCP }
+        - { port: 6379, protocol: TCP }
+        - { port: 6380, protocol: TCP }
+        - { port: 443, protocol: TCP }
+        - { port: 587, protocol: TCP }
+        - { port: 465, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dukaanai-web
+  labels:
+    app.kubernetes.io/part-of: dukaanai
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dukaanai-web
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 3000
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dukaanai-api
+      ports:
+        - { port: 3002, protocol: TCP }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - { port: 443, protocol: TCP }
